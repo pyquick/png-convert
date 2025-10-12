@@ -145,3 +145,37 @@ QGroupBox::title {
 #settings_button:pressed {
     background-color: #3a3a3a;
 }
+
+/* TabWidget with Slide Animation */
+QTabWidget::pane {
+    border: 1px solid #404040;
+    border-radius: 20px;
+    padding: 5px;
+    background-color: #2d2d2d;
+}
+
+QTabBar::tab {
+    background: #404040;
+    border: 1px solid #404040;
+    border-radius: 4px 4px 0px 0px;
+    padding: 12px 20px;
+    margin-right: 4px;
+    color: #b3b3b3;
+    font-weight: 500;
+}
+
+QTabBar::tab:selected {
+    background: #0078d4;
+    color: #ffffff;
+    border-bottom: 2px solid #0078d4;
+}
+
+QTabBar::tab:hover {
+    background: #4a4a4a;
+    color: #e0e0e0;
+}
+
+QTabBar::tab:!selected:hover {
+    background: #454545;
+    color: #cccccc;
+}

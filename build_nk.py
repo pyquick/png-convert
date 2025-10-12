@@ -43,6 +43,7 @@ def compile_gui():
         "--include-data-file=" + os.path.join(current_dir,"AppIcon.png")+ f"=./AppIcon.png",
         "--include-data-file=" + os.path.join(current_dir,"AppIcond.png")+ f"=./AppIcond.png",
         "--include-data-dir="+os.path.join(current_dir,"qss")+"=./qss",
+        "--include-data-dir="+os.path.join(current_dir,"support","CLI","Darwin")+"=./support/CLI/Darwin",
         "--macos-app-name=Converter", # App name
         "--macos-app-mode=gui",
         "--macos-app-version=2.0",

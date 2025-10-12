@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl, QObject
-from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
+from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
                                QPushButton, QLabel, QLineEdit, QTextEdit, QProgressBar, 
                                QTabWidget, QWidget, QGroupBox, QListWidget, QListWidgetItem,
                                QFileDialog, QCheckBox, QComboBox, QFrame, QMessageBox, QMenu)
@@ -30,18 +30,46 @@ class CreateZipWorker(QObject):
     def __init__(self, output_path, sources, archive_format):
         super().__init__()
         self.output_path = output_path
-        
         self.sources = sources
         self.archive_format = archive_format
 
     def run(self):
         try:
+            # 验证输入参数
+            if not self.output_path:
+                raise ValueError("Output path is empty")
+            if not self.sources:
+                raise ValueError("No source files specified")
+            if not self.archive_format:
+                raise ValueError("Archive format is not specified")
+            
+            # 检查源文件是否存在
+            for source in self.sources:
+                if not os.path.exists(source):
+                    raise ValueError(f"Source file does not exist: {source}")
+            
             create_archive(self.output_path, self.sources, self.archive_format, self._update_progress_callback)
             self.finished.emit()
+        except ValueError as e:
+            # 处理值错误
+            self.conversion_error.emit(f"Input error: {str(e)}")
+        except FileNotFoundError as e:
+            # 处理文件未找到错误
+            self.conversion_error.emit(f"File not found: {str(e)}")
+        except PermissionError as e:
+            # 处理权限错误
+            self.conversion_error.emit(f"Permission denied: {str(e)}")
+        except OSError as e:
+            # 处理操作系统错误
+            self.conversion_error.emit(f"System error: {str(e)}")
         except NotImplementedError as e:
+            # 处理未实现的错误
             self.conversion_error.emit(str(e))
         except Exception as e:
-            self.conversion_error.emit(str(e))
+            # 处理所有其他异常
+            import traceback
+            error_msg = f"Unexpected error: {str(e)}\n{traceback.format_exc()}"
+            self.conversion_error.emit(error_msg)
 
     def _update_progress_callback(self, message, percentage):
         self.progress_updated.emit(message, percentage)
@@ -102,18 +130,26 @@ class ListZipContentsWorker(QObject):
     def __init__(self, zip_path):
         super().__init__()
         self.archive_path = zip_path # Renamed for clarity with generic archive_manager
+        self.result = None  # 添加result属性用于存储结果
 
     def run(self):
         try:
+            print(f"[DEBUG] ListZipContentsWorker: Starting to list contents of {self.archive_path}")
             contents = list_archive_contents(self.archive_path)
+            print(f"[DEBUG] ListZipContentsWorker: Got {len(contents) if contents else 0} items")
+            self.result = contents  # 设置result属性
             self.finished.emit(contents)
         except RuntimeError as e:
             # 处理需要密码的情况
+            print(f"[DEBUG] ListZipContentsWorker: RuntimeError - {str(e)}")
             if "password" in str(e).lower() or "encrypted" in str(e).lower():
                 self.password_required.emit(str(e))
             else:
                 self.conversion_error.emit(str(e))
         except Exception as e:
+            print(f"[DEBUG] ListZipContentsWorker: Exception - {str(e)}")
+            import traceback
+            traceback.print_exc()
             self.conversion_error.emit(str(e))
 
 
@@ -131,6 +167,33 @@ class ZipGUI(QMainWindow):
         except Exception as e:
             print(f"Error loading QSS file {qss_path}: {e}")
             return ""
+    
+    def _show_popup(self, target, icon, title, content, duration=2000):
+        """显示弹窗并在控制台打印消息"""
+        print(f"[{title}] {content}")  # 在控制台打印消息
+        PopupTeachingTip.create(
+            target=target,
+            icon=icon,
+            title=title,
+            content=content,
+            isClosable=True,
+            tailPosition=TeachingTipTailPosition.TOP,
+            duration=duration,
+            parent=self
+        )
+    
+    def _show_info_bar(self, title, content, icon=InfoBarIcon.SUCCESS, duration=2000):
+        """显示信息栏并在控制台打印消息"""
+        print(f"[{title}] {content}")  # 在控制台打印消息
+        InfoBar.success(
+            title=title,
+            content=content,
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=duration,
+            parent=self
+        )
 
     @property
     def LIGHT_QSS(self):
@@ -146,7 +209,7 @@ class ZipGUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("Archive File Processing Tool")
         self.setGeometry(200, 200, 800, 600)
-        self.setMinimumSize(600, 500)
+        self.setMinimumSize(600, 800)
         
         # Enable drag and drop for the main window
         self.setAcceptDrops(True)
@@ -213,6 +276,9 @@ class ZipGUI(QMainWindow):
         self.create_add_tab()
         self.create_list_tab()
         
+        # Connect tab change event
+        self.notebook.currentChanged.connect(self.on_tab_changed)
+        
         # Add a stretch to the main_layout to push everything to the top
         self.main_layout.addStretch(1)
         
@@ -269,10 +335,14 @@ class ZipGUI(QMainWindow):
         format_label = QLabel("Archive Format:")
         self.create_format_combo = ModelComboBox()
         # Filter formats to only allow creation of supported types
-        self.create_format_combo.addItems([f.upper() for f in SUPPORTED_ARCHIVE_FORMATS if f != 'tgz'])
+        creation_formats = []
+        for fmt in SUPPORTED_ARCHIVE_FORMATS:
+            if fmt != 'tgz':
+                creation_formats.append(fmt.upper())
+        
+        self.create_format_combo.addItems(creation_formats)
         self.create_format_combo.setCurrentText("ZIP")
         setCustomStyleSheet(self.create_format_combo, CON.qss_combo, CON.qss_combo)
-        self.create_format_combo.currentIndexChanged.connect(self.on_create_format_change)
         format_layout.addWidget(format_label)
         format_layout.addWidget(self.create_format_combo, 1)
         tab_sizer.addLayout(format_layout)
@@ -282,7 +352,7 @@ class ZipGUI(QMainWindow):
         sources_box_sizer = QVBoxLayout(sources_box)
         
         self.sources_listbox = ListWidget()
-        self.sources_listbox.setMinimumHeight(200)  # 设置最小高度
+        self.sources_listbox.setMinimumHeight(400)  # 设置最小高度
         sources_box_sizer.addWidget(self.sources_listbox, 2)  # 增加拉伸权重
         # 设置右键点击立即选中
         self.sources_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -450,6 +520,7 @@ class ZipGUI(QMainWindow):
 
         self.contents_listbox = ListWidget()
         self.contents_listbox.setMinimumHeight(250)  # 设置更大的最小高度
+        self.contents_listbox.setDragEnabled(True)  # 启用拖动功能
         contents_box_sizer.addWidget(self.contents_listbox, 3)  # 增加拉伸权重
         # 设置右键菜单
         self.contents_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -465,14 +536,89 @@ class ZipGUI(QMainWindow):
         tab_sizer.addStretch(1) # Push content to top
 
     # --- Event handlers (converted to PySide6) ---
-    def on_create_format_change(self):
-        selected_format = self.create_format_combo.currentText().lower()
-        self.create_archive_format = selected_format
-        # Adjust output path suffix automatically
-        if self.create_output_path:
-            base_name = os.path.splitext(self.create_output_path)[0]
-            self.create_output_path = f"{base_name}.{selected_format}"
-            self.create_output_text.setText(self.create_output_path)
+    def on_tab_changed(self, index):
+        """Handle tab change events with improved slide animation effect"""
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
+        
+        # Get current tab widget
+        current_widget = self.notebook.currentWidget()
+        if not current_widget:
+            return
+            
+        # Adjust source files area size when switching tabs
+        if index == 0:  # Create Archive tab
+            # Make source files area larger when on Create Archive tab
+            self.sources_listbox.setMinimumHeight(300)
+        else:
+            # Make source files area smaller when on other tabs
+            self.sources_listbox.setMinimumHeight(200)
+            
+        # Skip animation during initial startup to prevent layout issues
+        if not hasattr(self, '_previous_tab_index') and not self.notebook.isVisible():
+            self._previous_tab_index = index
+            # Update layout immediately for initial setup
+            self.reset_widget_layout(current_widget)
+            return
+            
+        # Get tab widget dimensions
+        tab_width = self.notebook.width()
+        tab_height = self.notebook.height()
+        
+        # Skip animation if window is not yet properly sized
+        if tab_width <= 0 or tab_height <= 0:
+            self._previous_tab_index = index
+            # Update layout immediately if dimensions are not valid
+            self.reset_widget_layout(current_widget)
+            return
+        
+        # Determine slide direction based on tab index
+        if hasattr(self, '_previous_tab_index'):
+            if index > self._previous_tab_index:
+                # Sliding from right to left - start from right side
+                start_pos = QRect(tab_width, 0, tab_width, tab_height)
+            else:
+                # Sliding from left to right - start from left side (negative position)
+                start_pos = QRect(-tab_width, 0, tab_width, tab_height)
+        else:
+            # First time, slide from right
+            start_pos = QRect(tab_width, 0, tab_width, tab_height)
+        
+        # Set initial position
+        current_widget.setGeometry(start_pos)
+        
+        # Create slide animation
+        self.slide_animation = QPropertyAnimation(current_widget, b"geometry")
+        self.slide_animation.setDuration(500)  # 500ms animation for even smoother slide
+        self.slide_animation.setStartValue(start_pos)
+        self.slide_animation.setEndValue(QRect(0, 0, tab_width, tab_height))
+        self.slide_animation.setEasingCurve(QEasingCurve.Type.OutQuart)  # Smoother easing curve
+        
+        # Connect to a function to reset layout after animation
+        self.slide_animation.finished.connect(lambda: self.reset_widget_layout(current_widget))
+        
+        # Store current tab index for next animation
+        self._previous_tab_index = index
+        
+        # Start the animation
+        self.slide_animation.start()
+        
+        # Force update of the current widget's layout during animation
+        current_widget.layout().update()
+    
+    def reset_widget_layout(self, widget):
+        """Reset widget layout after animation completes"""
+        # Reset the geometry to ensure proper layout
+        widget.setGeometry(0, 0, widget.width(), widget.height())
+        
+        # Force layout update
+        if widget.layout():
+            widget.layout().update()
+            widget.layout().activate()
+            
+        # Repaint the widget to ensure all elements are properly displayed
+        widget.repaint()
+    
+    
 
     def browse_create_output(self):
         file_dialog = QFileDialog(self)
@@ -513,59 +659,61 @@ class ZipGUI(QMainWindow):
                 self.sources_listbox.addItem(f"[FOLDER] {folder_path}")
 
     def remove_source(self):
-        selected_items = self.sources_listbox.selectedItems()
-        if not selected_items:
-            PopupTeachingTip.create(
-                target=self.sources_listbox,
-                icon=InfoBarIcon.INFORMATION,
-                title='Info',
-                content='Please select items to remove.',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+        """移除选中的源文件"""
+        if not self.source_files_list.selectedIndexes():
+            self._show_popup(
+                target=self.source_files_list,
+                icon=InfoBarIcon.WARNING,
+                title='警告',
+                content='请先选择要移除的项目',
+                duration=3000
             )
             return
+
+        # 获取选中的行
+        selected_rows = sorted(set(index.row() for index in self.source_files_list.selectedIndexes()), reverse=True)
         
-        for item in selected_items:
-            row = self.sources_listbox.row(item)
-            self.sources_listbox.takeItem(row)
-            # Remove the item from self.create_sources list by value, not index
-            # This is safer if multiple items are selected and then removed in a loop
-            item_text = item.text()
-            if item_text.startswith("[FOLDER] "):
-                item_text = item_text[len("[FOLDER] "):]
-            if item_text in self.create_sources:
-                self.create_sources.remove(item_text)
+        # 从后往前删除，避免索引变化
+        for row in selected_rows:
+            self.source_files_model.removeRow(row)
+        
+        # 更新状态
+        self.update_create_status()
+        
+        # 显示移除成功信息
+        self._show_info_bar(
+            icon=InfoBarIcon.SUCCESS,
+            title='移除成功',
+            content=f'已移除 {len(selected_rows)} 个项目',
+            duration=2000
+        )
 
     def update_create_progress(self, message, progress):
         self.create_progress_label.setText(message)
+        print(f"[Create Progress] {message}")  # 在控制台打印进度信息
         if progress >= 0:
             self.create_progress.setValue(int(progress))
 
     def start_create_archive(self):
+        # 检查是否指定了输出文件
         if not self.create_output_path:
-            PopupTeachingTip.create(
+            self._show_popup(
                 target=self.create_output_text,
-                icon=InfoBarIcon.ERROR,
-                title='Error',
-                content='Please specify an output archive file.',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+                icon=InfoBarIcon.WARNING,
+                title='警告',
+                content='请指定输出文件路径',
+                duration=3000
             )
             return
+
+        # 检查是否添加了源文件
         if not self.create_sources:
-            PopupTeachingTip.create(
-                target=self.sources_listbox,
-                icon=InfoBarIcon.ERROR,
-                title='Error',
-                content='Please add at least one source file or folder.',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+            self._show_popup(
+                target=self.source_files_list,
+                icon=InfoBarIcon.WARNING,
+                title='警告',
+                content='请添加要压缩的文件或文件夹',
+                duration=3000
             )
             return
         # RAR format is now supported through external rar command
@@ -588,30 +736,24 @@ class ZipGUI(QMainWindow):
         if self.create_zip_worker_thread and self.create_zip_worker_thread.isRunning():
             self.create_zip_worker_thread.quit()
             self.create_zip_worker_thread.wait()
-        PopupTeachingTip.create(
+        self._show_popup(
             target=self.create_progress,
             icon=InfoBarIcon.SUCCESS,
             title='Success',
             content='Archive created successfully!',
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.TOP,
-            duration=2000,
-            parent=self
+            duration=2000
         )
 
     def on_create_archive_error(self, error_message):
         if self.create_zip_worker_thread and self.create_zip_worker_thread.isRunning():
             self.create_zip_worker_thread.quit()
             self.create_zip_worker_thread.wait()
-        PopupTeachingTip.create(
+        self._show_popup(
             target=self.create_progress,
             icon=InfoBarIcon.ERROR,
             title='Error',
             content=f'Error creating archive: {str(error_message)}',
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.TOP,
-            duration=3000,
-            parent=self
+            duration=3000
         )
         self.create_progress_label.setText("Archive creation failed.")
 
@@ -648,32 +790,27 @@ class ZipGUI(QMainWindow):
 
     def update_extract_progress(self, message, progress):
         self.extract_progress_label.setText(message)
+        print(f"[Extract Progress] {message}")  # 在控制台打印进度信息
         if progress >= 0:
             self.extract_progress.setValue(int(progress))
 
     def start_extract_archive(self):
         if not self.extract_zip_path:
-            PopupTeachingTip.create(
+            self._show_popup(
                 target=self.extract_zip_text,
                 icon=InfoBarIcon.ERROR,
-                title='Error',
-                content='Please specify an archive file to extract.',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+                title='错误',
+                content='请指定要解压的归档文件',
+                duration=2000
             )
             return
         if not self.extract_dest_path:
-            PopupTeachingTip.create(
+            self._show_popup(
                 target=self.extract_dest_text,
                 icon=InfoBarIcon.ERROR,
-                title='Error',
-                content='Please specify a destination folder.',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+                title='错误',
+                content='请指定解压目标文件夹',
+                duration=2000
             )
             return
 
@@ -694,30 +831,24 @@ class ZipGUI(QMainWindow):
         if self.extract_zip_worker_thread and self.extract_zip_worker_thread.isRunning():
             self.extract_zip_worker_thread.quit()
             self.extract_zip_worker_thread.wait()
-        PopupTeachingTip.create(
+        self._show_popup(
             target=self.extract_progress,
             icon=InfoBarIcon.SUCCESS,
             title='Success',
             content='Archive extracted successfully!',
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.TOP,
-            duration=2000,
-            parent=self
+            duration=2000
         )
 
     def on_extract_archive_error(self, error_message):
         if self.extract_zip_worker_thread and self.extract_zip_worker_thread.isRunning():
             self.extract_zip_worker_thread.quit()
             self.extract_zip_worker_thread.wait()
-        PopupTeachingTip.create(
+        self._show_popup(
             target=self.extract_progress,
             icon=InfoBarIcon.ERROR,
             title='Error',
             content=f'Error extracting archive: {str(error_message)}',
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.TOP,
-            duration=3000,
-            parent=self
+            duration=3000
         )
         self.extract_progress_label.setText("Archive extraction failed.")
 
@@ -735,7 +866,7 @@ class ZipGUI(QMainWindow):
     def browse_add_file(self):
         file_dialog = QFileDialog(self)
         file_dialog.setNameFilter("All files (*.*)")
-        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)  # Allow multiple file selection
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
         if file_dialog.exec():
             selected_files = file_dialog.selectedFiles()
             if selected_files:
@@ -747,32 +878,27 @@ class ZipGUI(QMainWindow):
 
     def update_add_progress(self, message, progress):
         self.add_progress_label.setText(message)
+        print(f"[Add Progress] {message}")  # 在控制台打印进度信息
         if progress >= 0:
             self.add_progress.setValue(int(progress))
 
     def start_add_to_archive(self):
         if not self.add_zip_path:
-            PopupTeachingTip.create(
+            self._show_popup(
                 target=self.add_zip_text,
                 icon=InfoBarIcon.ERROR,
-                title='Error',
-                content='Please specify an existing archive file to add to.',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+                title='错误',
+                content='请指定要添加文件的现有归档文件',
+                duration=2000
             )
             return
         if not self.add_file_path:
-            PopupTeachingTip.create(
+            self._show_popup(
                 target=self.add_files_listbox,
                 icon=InfoBarIcon.ERROR,
-                title='Error',
-                content='Please specify a file to add to the archive.',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+                title='错误',
+                content='请指定要添加到归档的文件',
+                duration=2000
             )
             return
         archive_format = Path(self.add_zip_path).suffix.lower().lstrip('.')
@@ -812,30 +938,24 @@ class ZipGUI(QMainWindow):
         file_count = len(self.add_to_zip_worker.files_to_add) if hasattr(self.add_to_zip_worker, 'files_to_add') else 1
         file_text = "files" if file_count > 1 else "file"
         
-        PopupTeachingTip.create(
+        self._show_popup(
             target=self.add_progress,
             icon=InfoBarIcon.SUCCESS,
             title='Success',
             content=f'{file_count} {file_text} added to archive successfully!',
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.TOP,
-            duration=2000,
-            parent=self
+            duration=2000
         )
 
     def on_add_to_archive_error(self, error_message):
         if self.add_to_zip_worker_thread and self.add_to_zip_worker_thread.isRunning():
             self.add_to_zip_worker_thread.quit()
             self.add_to_zip_worker_thread.wait()
-        PopupTeachingTip.create(
+        self._show_popup(
             target=self.add_progress,
             icon=InfoBarIcon.ERROR,
             title='Error',
             content=f'Error adding file to archive: {str(error_message)}',
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.TOP,
-            duration=3000,
-            parent=self
+            duration=3000
         )
         self.add_progress_label.setText("Archive file addition failed.")
 
@@ -884,26 +1004,20 @@ class ZipGUI(QMainWindow):
             clipboard = QApplication.clipboard()
             clipboard.setText(file_path)
             
-            PopupTeachingTip.create(
+            self._show_popup(
                 target=self.sources_listbox,
                 icon=InfoBarIcon.SUCCESS,
-                title='Success',
-                content=f'File path copied: {os.path.basename(file_path)}',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+                title='成功',
+                content=f'文件路径已复制: {os.path.basename(file_path)}',
+                duration=2000
             )
         else:
-            PopupTeachingTip.create(
+            self._show_popup(
                 target=self.sources_listbox,
                 icon=InfoBarIcon.ERROR,
-                title='Error',
-                content='File does not exist.',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+                title='错误',
+                content='文件不存在',
+                duration=2000
             )
     
     def show_contents_context_menu(self, position):
@@ -934,28 +1048,22 @@ class ZipGUI(QMainWindow):
         clipboard = QApplication.clipboard()
         clipboard.setText(filename)
         
-        PopupTeachingTip.create(
+        self._show_popup(
             target=self.contents_listbox,
             icon=InfoBarIcon.SUCCESS,
-            title='Success',
-            content=f'Content path copied: {filename}',
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.TOP,
-            duration=2000,
-            parent=self
+            title='成功',
+            content=f'内容路径已复制: {filename}',
+            duration=2000
         )
 
     def start_list_archive_contents(self):
         if not self.list_zip_path:
-            PopupTeachingTip.create(
+            self._show_popup(
                 target=self.list_zip_text,
                 icon=InfoBarIcon.ERROR,
                 title='Error',
                 content='Please select an archive file to list contents.',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+                duration=2000
             )
             return
 
@@ -973,6 +1081,7 @@ class ZipGUI(QMainWindow):
         self.list_zip_worker_thread.start()
 
     def update_contents_list(self, contents):
+        print(f"[DEBUG] update_contents_list: Received {len(contents) if contents else 0} items")
         if self.list_zip_worker_thread and self.list_zip_worker_thread.isRunning():
             self.list_zip_worker_thread.quit()
             self.list_zip_worker_thread.wait()
@@ -980,32 +1089,50 @@ class ZipGUI(QMainWindow):
         # 重置密码保护状态
         self.is_password_protected = False
         if contents:
+            print(f"[DEBUG] update_contents_list: Processing {len(contents)} items")
             for item in contents:
-                    self.contents_listbox.addItem(item)
-            InfoBar.success(
+                # 格式化显示内容信息
+                if isinstance(item, dict) and "name" in item:
+                    name = item["name"]
+                    size = item.get("size", 0)
+                    is_dir = item.get("is_dir", False)
+                    
+                    if is_dir:
+                        display_text = f"{name} <DIR>"
+                    else:
+                        # 格式化文件大小
+                        if size < 1024:
+                            size_str = f"{size} B"
+                        elif size < 1024 * 1024:
+                            size_str = f"{size // 1024} KB"
+                        elif size < 1024 * 1024 * 1024:
+                            size_str = f"{size // (1024 * 1024)} MB"
+                        else:
+                            size_str = f"{size // (1024 * 1024 * 1024)} GB"
+                        display_text = f"{name} ({size_str})"
+                    
+                    self.contents_listbox.addItem(display_text)
+                else:
+                    # 如果item不是字典，直接添加
+                    self.contents_listbox.addItem(str(item))
+            
+            self._show_info_bar(
                 title='Success',
                 content='Archive contents listed successfully!',
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=2000,
-                parent=self
+                duration=2000
             )
         else:
+            print("[DEBUG] update_contents_list: No contents found")
             self.contents_listbox.addItem("No contents found or invalid archive.")
-            PopupTeachingTip.create(
+            self._show_popup(
                 target=self.contents_listbox,
                 icon=InfoBarIcon.WARNING,
                 title='Warning',
                 content='No contents found or invalid archive.',
-                isClosable=True,
-                tailPosition=TeachingTipTailPosition.TOP,
-                duration=2000,
-                parent=self
+                duration=2000
             )
 
     def on_password_required(self, error_message):
-        """处理需要密码的情况"""
         if self.list_zip_worker_thread and self.list_zip_worker_thread.isRunning():
             self.list_zip_worker_thread.quit()
             self.list_zip_worker_thread.wait()
@@ -1013,15 +1140,12 @@ class ZipGUI(QMainWindow):
         # 设置密码保护状态
         self.is_password_protected = True
         
-        PopupTeachingTip.create(
+        self._show_popup(
             target=self.contents_listbox,
             icon=InfoBarIcon.WARNING,
             title='Password Required',
             content=f'This archive is password protected: {str(error_message)}',
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.TOP,
-            duration=3000,
-            parent=self
+            duration=3000
         )
         self.contents_listbox.clear()
         self.contents_listbox.addItem("Password protected archive - contents cannot be listed")
@@ -1030,15 +1154,12 @@ class ZipGUI(QMainWindow):
         if self.list_zip_worker_thread and self.list_zip_worker_thread.isRunning():
             self.list_zip_worker_thread.quit()
             self.list_zip_worker_thread.wait()
-        PopupTeachingTip.create(
+        self._show_popup(
             target=self.contents_listbox,
             icon=InfoBarIcon.ERROR,
             title='Error',
             content=f'Error listing archive contents: {str(error_message)}',
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.TOP,
-            duration=3000,
-            parent=self
+            duration=3000
         )
         self.contents_listbox.clear()
         self.contents_listbox.addItem("Error listing contents.")
@@ -1073,15 +1194,26 @@ class ZipGUI(QMainWindow):
                         event.acceptProposedAction()
                         return
                 else:
-                    # For other tabs, only accept single archive files
-                    if len(urls) == 1:
-                        file_path = urls[0].toLocalFile()
-                        if os.path.isfile(file_path):
-                            # Check if it's a supported archive format
-                            file_ext = Path(file_path).suffix.lower().lstrip('.')
-                            if file_ext in SUPPORTED_ARCHIVE_FORMATS:
-                                event.acceptProposedAction()
-                                return
+                     # For other tabs, handle based on current tab
+                     if current_tab == 0:  # Create Archive tab - accept any files/folders
+                         # Accept if we have at least one valid file or folder
+                         valid_items = []
+                         for url in urls:
+                             file_path = url.toLocalFile()
+                             if os.path.exists(file_path):
+                                 valid_items.append(file_path)
+                         
+                         if valid_items:
+                             event.acceptProposedAction()
+                             return
+                     elif len(urls) == 1:  # Extract and List Contents tabs - only accept single archive files
+                         file_path = urls[0].toLocalFile()
+                         if os.path.isfile(file_path):
+                             # Check if it's a supported archive format
+                             file_ext = Path(file_path).suffix.lower().lstrip('.')
+                             if file_ext in SUPPORTED_ARCHIVE_FORMATS:
+                                 event.acceptProposedAction()
+                                 return
         event.ignore()
 
     def dropEvent(self, event: QDropEvent):
@@ -1146,62 +1278,72 @@ class ZipGUI(QMainWindow):
                         self.update_add_files_list(unique_files)
                         
                         # Show success message
-                        InfoBar.success(
+                        self._show_info_bar(
                             title='Files added',
                             content=f'Added {len(files_to_add)} items to add list',
-                            orient=Qt.Horizontal,
-                            isClosable=True,
-                            position=InfoBarPosition.TOP,
-                            duration=2000,
-                            parent=self
+                            duration=2000
                         )
                     elif archive_files:
                         # Only archive file was dropped
-                        InfoBar.success(
+                        self._show_info_bar(
                             title='Archive file set',
                             content=f'Set {os.path.basename(archive_files[0])} as target archive',
-                            orient=Qt.Orientation.Horizontal,
-                            isClosable=True,
-                            position=InfoBarPosition.TOP,
-                            duration=2000,
-                            parent=self
+                            duration=2000
                         )
                     
                     event.acceptProposedAction()
                     return
                 
                 else:
-                    # For other tabs, handle single files as before
-                    if len(urls) == 1:
+                    # For other tabs, handle based on current tab
+                    if current_tab == 0:  # Create Archive tab
+                        # Add all files to source files list
+                        for url in urls:
+                            file_path = url.toLocalFile()
+                            if os.path.exists(file_path) and file_path not in self.create_sources:
+                                self.create_sources.append(file_path)
+                                if os.path.isdir(file_path):
+                                    self.sources_listbox.addItem(f"[FOLDER] {file_path}")
+                                else:
+                                    self.sources_listbox.addItem(file_path)
+                        event.acceptProposedAction()
+                        self._show_info_bar(
+                            title='Files Added',
+                            content=f'Added {len(urls)} items to source list',
+                            duration=2000
+                        )
+                        return
+                    elif len(urls) == 1:  # Extract and List Contents tabs - only handle single archive files
                         file_path = urls[0].toLocalFile()
                         if os.path.isfile(file_path):
                             # Check if it's a supported archive format
                             file_ext = Path(file_path).suffix.lower().lstrip('.')
                             if file_ext in SUPPORTED_ARCHIVE_FORMATS:
-                                # Handle based on current tab
-                                if current_tab == 0:  # Create Archive tab
-                                    # Set as output archive file
-                                    self.create_output_path = file_path
-                                    self.create_output_text.setText(file_path)
-                                    # Auto-detect format from file extension
-                                    self.create_format_combo.setCurrentText(file_ext.upper())
-                                    event.acceptProposedAction()
-                                    
-                                elif current_tab == 1:  # Extract Archive tab
+                                if current_tab == 1:  # Extract Archive tab
                                     # Switch to Extract tab and set the file
                                     self.extract_zip_path = file_path
                                     self.extract_zip_text.setText(file_path)
                                     # Auto-configure output directory
                                     self.auto_set_extract_dest_from_file(file_path)
                                     event.acceptProposedAction()
+                                    self._show_info_bar(
+                                        title='File Added',
+                                        content=f'Archive file set: {os.path.basename(file_path)}',
+                                        duration=2000
+                                    )
                                     
                                 elif current_tab == 3:  # List Contents tab
                                     # Set as archive file and automatically list contents
                                     self.list_zip_path = file_path
                                     self.list_zip_text.setText(file_path)
                                     # Automatically list contents
-                                    self.start_list_archive_contents()
+                                    QTimer.singleShot(100, self.start_list_archive_contents)
                                     event.acceptProposedAction()
+                                    self._show_info_bar(
+                                        title='File Added',
+                                        content=f'Archive file set: {os.path.basename(file_path)}',
+                                        duration=2000
+                                    )
                                 
                                 return
         event.ignore()

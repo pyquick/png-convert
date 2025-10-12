@@ -1,48 +1,49 @@
-def _patch_sdk_version() -> None:
-        """
-        Patch LC_BUILD_VERSION in Load Command to report the macOS 26 SDK
+_application_output="./dist/Converter.app"
 
-        This will enable the Solarium refresh when running on macOS 26
-        Minor visual anomalies and padding issues exist, disable if not addressed before release
-        """
-        _application_output="./dist/Converter.app"
-        _file = _application_output + "/Contents" + "/MacOS" + "/Converter"
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-        _find    = b'\x00\x01\x0C\x00'
-        _replace = b'\x00\x00\x1A\x00'
-        print("Patching LC_BUILD_VERSION")
-        with open(_file, "rb") as f:
-            data = f.read()
-            data = data.replace(_find, _replace)
+import subprocess
+import os
 
-        with open(_file, "wb") as f:
-            f.write(data)
-def _patch_load_command():
-        """
-        Patch LC_VERSION_MIN_MACOSX in Load Command to report 10.10
+KEY = "com.apple.SwiftUI.IgnoreSolariumLinkedOnCheck"
+def _run_defaults_write(target: str, yes_or_no: str) -> int:
+    """
+    内部函数：调用 defaults 写入布尔值
+    target: bundle 标识，或 '-g' 代表全局
+    yes_or_no: 'YES' 或 'NO'
+    返回：进程返回码（0 成功）
+    """
+    # 保存当前工作目录
+    original_cwd = os.getcwd()
+    try:
+        # 切换到 ./dist 目录执行命令
+        #os.chdir("./dist")
+        proc = subprocess.run(
+            ["/usr/bin/defaults", "write", target, KEY, "-bool", yes_or_no],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        return proc.returncode
+    finally:
+        # 确保总是返回原始工作目录
+        os.chdir(original_cwd)
 
-        By default Pyinstaller will create binaries supporting 10.13+
-        However this limitation is entirely arbitrary for our libraries
-        and instead we're able to support 10.10 without issues.
+def enable(target: str) -> int:
+    """
+    启用“force liquid glass”：
+    等价于 defaults write <target> com.apple.SwiftUI.IgnoreSolariumLinkedOnCheck -bool YES
+    target: bundle 标识，或 '-g' 代表全局
+    返回：0 成功，非 0 失败
+    """
+    return _run_defaults_write(target, "YES")
 
-        To verify set version:
-          otool -l ./dist/OCLP-R.app/Contents/MacOS/OCLP-R
-
-              cmd LC_VERSION_MIN_MACOSX
-          cmdsize 16
-          version 10.13
-              sdk 10.9
-        """
-        _application_output="./dist/Converter.app"
-        _file = _application_output + "/Contents" + "/MacOS" + "/Converter"
-
-        _find    = b'\x00\x0D\x0A\x00'
-        _replace = b'\x00\x0A\x0A\x00' # 10.10 (0xA0A)
-
-        print("Patching LC_VERSION_MIN_MACOSX")
-        with open(_file, "rb") as f:
-            data = f.read()
-            data = data.replace(_find, _replace, 1)
-
-        with open(_file, "wb") as f:
-            f.write(data)
+def disable(target: str) -> int:
+    """
+    禁用“force liquid glass”：
+    等价于 defaults write <target> com.apple.SwiftUI.IgnoreSolariumLinkedOnCheck -bool NO
+    target: bundle 标识，或 '-g' 代表全局
+    返回：0 成功，非 0 失败
+    """
+    return _run_defaults_write(target, "NO")

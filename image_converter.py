@@ -108,7 +108,7 @@ class ICNSConverterGUI(QMainWindow):
         self.setWindowTitle("Image Converter")
         self.setGeometry(200, 200, 1000, 1000)
         self.setMinimumSize(1200, 400)
-
+        #self.layout().setSizeConstraint(QLayout.SetFixedSize)
         self.init_variables()
         self.setup_ui()
         self.center_window()
@@ -350,6 +350,9 @@ class ICNSConverterGUI(QMainWindow):
         self.tab_widget = QTabWidget()
         self.main_layout.addWidget(self.tab_widget)
         
+        # Connect tab change signal for animation effect
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
+        
         # Main converter tab
         self.converter_tab = QWidget()
         self.tab_widget.addTab(self.converter_tab, "Converter")
@@ -544,15 +547,15 @@ class ICNSConverterGUI(QMainWindow):
         history_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         history_layout.addWidget(history_title)
         
-        # History list
-        self.history_list = ListWidget()
-        history_layout.addWidget(self.history_list)
-        
-        # Clear history button
+        # Clear history button (moved up)
         clear_history_btn = PushButton("Clear History")
         clear_history_btn.clicked.connect(self.clear_conversion_history)
         setCustomStyleSheet(clear_history_btn, CON.qss, CON.qss)
         history_layout.addWidget(clear_history_btn, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        # History list
+        self.history_list = ListWidget()
+        history_layout.addWidget(self.history_list)
         
         # Load existing history
         self.load_conversion_history()
@@ -644,15 +647,29 @@ class ICNSConverterGUI(QMainWindow):
         # Clear existing items
         self.options_tree.clear()
         
-        # Create main categories
-        basic_item = QTreeWidgetItem(["Basic Options"])
-        processing_item = QTreeWidgetItem(["Image Processing"])
-        advanced_item = QTreeWidgetItem(["Advanced Settings"])
+        # Create main categories with icons for better visual hierarchy
+        basic_item = QTreeWidgetItem(["📋 Basic Options"])
+        processing_item = QTreeWidgetItem(["🎨 Image Processing"])
+        advanced_item = QTreeWidgetItem(["⚙️ Advanced Settings"])
         
         # Add to tree
         self.options_tree.addTopLevelItem(basic_item)
         self.options_tree.addTopLevelItem(processing_item)
         self.options_tree.addTopLevelItem(advanced_item)
+        
+        # Set font for categories to make them stand out
+        bold_font = self.options_tree.font()
+        bold_font.setBold(True)
+        bold_font.setPointSize(bold_font.pointSize() + 1)
+        
+        basic_item.setFont(0, bold_font)
+        processing_item.setFont(0, bold_font)
+        advanced_item.setFont(0, bold_font)
+        
+        # Set background colors for categories
+        basic_item.setBackground(0, QColor(240, 248, 255, 80))  # Light blue
+        processing_item.setBackground(0, QColor(240, 255, 240, 80))  # Light green
+        advanced_item.setBackground(0, QColor(255, 248, 240, 80))  # Light orange
         
         # Basic Options
         self._create_basic_options(basic_item)
@@ -678,92 +695,95 @@ class ICNSConverterGUI(QMainWindow):
         format_widget = QWidget()
         format_widget.setMinimumSize(300, 55)
         format_layout = QHBoxLayout(format_widget)
-        v_layout=QVBoxLayout(format_widget)
-        format_layout.setContentsMargins(5, 2, 5, 2)
+        format_layout.setContentsMargins(5, 8, 5, 8)
         
-        format_label = QLabel("Output Format:")
+        format_label = QLabel("🗂️ Output Format:")
+        format_label.setMinimumWidth(120)  # Ensure consistent width for labels
         
         self.format_combo = ModelComboBox()
-        
         self.format_combo.addItems(convert.SUPPORTED_FORMATS)
-        
         self.format_combo.currentIndexChanged.connect(self.on_format_change)
+        setCustomStyleSheet(self.format_combo, CON.qss_combo, CON.qss_combo)
         
         format_layout.addWidget(format_label)
-        setCustomStyleSheet(self.format_combo, CON.qss_combo, CON.qss_combo)
-        format_layout.addWidget(self.format_combo)
+        format_layout.addWidget(self.format_combo, 1)  # Give combo box more stretch
         
         format_item = QTreeWidgetItem()
         parent_item.addChild(format_item)
-        
         self.options_tree.setItemWidget(format_item, 0, format_widget)
+        
+        # Size Options (grouped in a sub-item)
+        size_item = QTreeWidgetItem(["📏 Size Options"])
+        parent_item.addChild(size_item)
         
         # Minimum Size
         min_size_widget = QWidget()
         min_size_layout = QHBoxLayout(min_size_widget)
+        min_size_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        min_size_widget.setMinimumSize(300, 45)
         
-        min_size_layout.setContentsMargins(5, 2, 5, 2)
-        min_size_widget.setMinimumSize(300, 65)
-        min_size_label = QLabel("Minimum Size:")
-        self.spin=CON.qss_spin
+        min_size_label = QLabel("Min Size:")
+        min_size_label.setMinimumWidth(80)
         self.min_spin = SpinBox()
-        setCustomStyleSheet(self.min_spin, self.spin, self.spin)
+        setCustomStyleSheet(self.min_spin, CON.qss_spin, CON.qss_spin)
         self.min_spin.setRange(16, 512)
-        
+        self.min_spin.setSuffix(" px")  # Add unit suffix
         self.min_spin.valueChanged.connect(self.on_min_size_change)
         
         min_size_layout.addWidget(min_size_label)
-       
-        min_size_layout.addWidget(self.min_spin)
+        min_size_layout.addWidget(self.min_spin, 1)
         
-        min_size_item = QTreeWidgetItem()
-        parent_item.addChild(min_size_item)
-        self.options_tree.setItemWidget(min_size_item, 0, min_size_widget)
+        min_size_sub_item = QTreeWidgetItem()
+        size_item.addChild(min_size_sub_item)
+        self.options_tree.setItemWidget(min_size_sub_item, 0, min_size_widget)
         
         # Maximum Size
         max_size_widget = QWidget()
-        max_size_widget.setMinimumSize(300, 65)
         max_size_layout = QHBoxLayout(max_size_widget)
-        max_size_layout.setContentsMargins(5, 2, 5, 2)
+        max_size_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        max_size_widget.setMinimumSize(300, 45)
         
-        max_size_label = QLabel("Maximum Size:")
+        max_size_label = QLabel("Max Size:")
+        max_size_label.setMinimumWidth(80)
         self.max_spin = SpinBox()
-        setCustomStyleSheet(self.max_spin, self.spin, self.spin)
+        setCustomStyleSheet(self.max_spin, CON.qss_spin, CON.qss_spin)
         self.max_spin.setRange(32, 1024)
-        
+        self.max_spin.setSuffix(" px")  # Add unit suffix
         self.max_spin.valueChanged.connect(self.on_max_size_change)
         
         max_size_layout.addWidget(max_size_label)
-       
-        max_size_layout.addWidget(self.max_spin)
+        max_size_layout.addWidget(self.max_spin, 1)
         
-        max_size_item = QTreeWidgetItem()
-        parent_item.addChild(max_size_item)
-        self.options_tree.setItemWidget(max_size_item, 0, max_size_widget)
+        max_size_sub_item = QTreeWidgetItem()
+        size_item.addChild(max_size_sub_item)
+        self.options_tree.setItemWidget(max_size_sub_item, 0, max_size_widget)
         
-        # Auto-detect button
+        # Auto-detect button (also indented)
         auto_widget = QWidget()
         auto_layout = QHBoxLayout(auto_widget)
-        auto_layout.setContentsMargins(5, 2, 5, 2)
-        auto_widget.setMinimumSize(10, 52)  # 适当调小按钮尺寸
-        self.auto_button = PrimaryPushButton("Auto-detect Max Size")
-        # Apply custom style to auto button
+        auto_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        auto_widget.setMinimumSize(300, 40)
+        
+        self.auto_button = PrimaryPushButton("🔍 Auto-detect Max Size")
         setCustomStyleSheet(self.auto_button, CON.qss, CON.qss)
         self.auto_button.clicked.connect(self.on_auto_detect)
         auto_layout.addWidget(self.auto_button)
         
-        auto_item = QTreeWidgetItem()
-        parent_item.addChild(auto_item)
-        self.options_tree.setItemWidget(auto_item, 0, auto_widget)
+        auto_sub_item = QTreeWidgetItem()
+        size_item.addChild(auto_sub_item)
+        self.options_tree.setItemWidget(auto_sub_item, 0, auto_widget)
+        
+        # Expand size options by default
+        size_item.setExpanded(True)
     
     def _create_processing_options(self, parent_item):
         """Create image processing options widgets"""
         # Keep aspect ratio
         aspect_widget = QWidget()
         aspect_layout = QHBoxLayout(aspect_widget)
-        aspect_layout.setContentsMargins(5, 2, 5, 2)
-        aspect_widget.setMinimumSize(200,40)
-        self.keep_aspect_check = CheckBox("Maintain original aspect ratio")
+        aspect_layout.setContentsMargins(5, 8, 5, 8)
+        aspect_widget.setMinimumSize(300, 45)
+        self.keep_aspect_check = CheckBox("📐 Maintain original aspect ratio")
         self.keep_aspect_check.stateChanged.connect(self.on_keep_aspect_changed)
         aspect_layout.addWidget(self.keep_aspect_check)
         
@@ -774,12 +794,11 @@ class ICNSConverterGUI(QMainWindow):
         # Auto crop
         crop_widget = QWidget()
         crop_layout = QHBoxLayout(crop_widget)
-        crop_layout.setContentsMargins(5, 2, 5, 2)
-        
-        self.auto_crop_check = CheckBox("Auto-crop non-square to square")
+        crop_layout.setContentsMargins(5, 8, 5, 8)
+        crop_widget.setMinimumSize(300, 45)
+        self.auto_crop_check = CheckBox("✂️ Auto-crop non-square to square")
         self.auto_crop_check.stateChanged.connect(self.on_auto_crop_changed)
         crop_layout.addWidget(self.auto_crop_check)
-        crop_widget.setMinimumSize(200,40)
         crop_item = QTreeWidgetItem()
         parent_item.addChild(crop_item)
         self.options_tree.setItemWidget(crop_item, 0, crop_widget)
@@ -787,16 +806,20 @@ class ICNSConverterGUI(QMainWindow):
         # Quality slider
         quality_widget = QWidget()
         quality_layout = QHBoxLayout(quality_widget)
-        quality_layout.setContentsMargins(5, 2, 5, 2)
-        quality_widget.setMinimumSize(200,45)
-        quality_layout.addWidget(QLabel("Quality:"))
+        quality_layout.setContentsMargins(5, 8, 5, 8)
+        quality_widget.setMinimumSize(300, 55)
+        quality_label = QLabel("🎨 Quality:")
+        quality_label.setMinimumWidth(100)  # Ensure consistent width for labels
+        quality_layout.addWidget(quality_label)
+        
         self.quality_slider = Slider(Qt.Orientation.Horizontal)
         self.quality_slider.setRange(1, 100)
         self.quality_slider.setValue(85)
         self.quality_slider.valueChanged.connect(self.on_quality_changed)
-        quality_layout.addWidget(self.quality_slider)
+        quality_layout.addWidget(self.quality_slider, 1)  # Give slider more stretch
         
         self.quality_label = QLabel("85")
+        self.quality_label.setMinimumWidth(30)  # Ensure consistent width for label
         quality_layout.addWidget(self.quality_label)
         
         quality_item = QTreeWidgetItem()
@@ -808,33 +831,90 @@ class ICNSConverterGUI(QMainWindow):
         # ICNS method
         method_widget = QWidget()
         method_layout = QHBoxLayout(method_widget)
-        method_layout.setContentsMargins(5, 2, 5, 2)
-        method_widget.setMinimumSize(100, 80)
-        method_layout.addWidget(QLabel("ICNS method:"))
+        method_layout.setContentsMargins(5, 8, 5, 8)
+        method_widget.setMinimumSize(300, 55)
+        
+        method_label = QLabel("⚙️ ICNS method:")
+        method_label.setMinimumWidth(120)  # Ensure consistent width for labels
+        method_layout.addWidget(method_label)
+        
         self.icns_method_combo = ModelComboBox()
         self.icns_method_combo.addItems(["iconutil (Recommended)", "Pillow Fallback"])
         self.icns_method_combo.currentTextChanged.connect(self.on_icns_method_changed)
         setCustomStyleSheet(self.icns_method_combo, CON.qss_combo, CON.qss_combo)
-        method_layout.addWidget(self.icns_method_combo)
+        method_layout.addWidget(self.icns_method_combo, 1)  # Give combo box more stretch
         
         method_item = QTreeWidgetItem()
         parent_item.addChild(method_item)
-        
         self.options_tree.setItemWidget(method_item, 0, method_widget)
         
         # Overwrite confirmation
         overwrite_widget = QWidget()
         overwrite_layout = QHBoxLayout(overwrite_widget)
-        overwrite_layout.setContentsMargins(5, 2, 5, 2)
-        overwrite_widget.setMinimumSize(100, 80)
-        self.overwrite_confirm_check = CheckBox("Confirm before overwriting files")
+        overwrite_layout.setContentsMargins(5, 8, 5, 8)
+        overwrite_widget.setMinimumSize(300, 45)
+        self.overwrite_confirm_check = CheckBox("⚠️ Confirm before overwriting files")
         self.overwrite_confirm_check.stateChanged.connect(self.on_overwrite_confirm_changed)
         overwrite_layout.addWidget(self.overwrite_confirm_check)
         
-        #method_widget.setMinimumSize(100, 150)
         overwrite_item = QTreeWidgetItem()
         parent_item.addChild(overwrite_item)
         self.options_tree.setItemWidget(overwrite_item, 0, overwrite_widget)
+    
+    def on_tab_changed(self, index):
+        """Handle tab change with slide animation effect"""
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
+        
+        # Get current tab widget
+        current_widget = self.tab_widget.currentWidget()
+        if not current_widget:
+            return
+            
+        # Skip animation during initial startup to prevent layout issues
+        if not hasattr(self, '_previous_tab_index') and not self.tab_widget.isVisible():
+            self._previous_tab_index = index
+            return
+            
+        # Get tab widget dimensions
+        tab_width = self.tab_widget.width()
+        tab_height = self.tab_widget.height()
+        
+        # Skip animation if window is not yet properly sized
+        if tab_width <= 0 or tab_height <= 0:
+            self._previous_tab_index = index
+            return
+        
+        # Determine slide direction based on tab index
+        if hasattr(self, '_previous_tab_index'):
+            if index > self._previous_tab_index:
+                # Sliding from right to left - start from 80% of width to prevent going out of bounds
+                start_pos = QRect(int(tab_width * 0.8), 0, tab_width, tab_height)
+            else:
+                # Sliding from left to right - start from -80% of width to prevent going out of bounds
+                start_pos = QRect(int(-tab_width * 0.8), 0, tab_width, tab_height)
+        else:
+            # First time, slide from right - start from 80% of width
+            start_pos = QRect(int(tab_width * 0.8), 0, tab_width, tab_height)
+        
+        # Set initial position
+        current_widget.setGeometry(start_pos)
+        
+        # Create slide animation
+        self.slide_animation = QPropertyAnimation(current_widget, b"geometry")
+        self.slide_animation.setDuration(300)  # 300ms animation for smooth slide
+        self.slide_animation.setStartValue(start_pos)
+        self.slide_animation.setEndValue(QRect(0, 0, tab_width, tab_height))
+        self.slide_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        
+        # Store current tab index for next animation
+        self._previous_tab_index = index
+        
+        # Start the animation
+        self.slide_animation.start()
+        
+        # Update status bar with current tab
+        tab_text = self.tab_widget.tabText(index)
+        self.status_bar.showMessage(f"Switched to {tab_text} tab")
     
     def _on_tree_item_expanded(self, item):
         """Handle tree item expansion"""

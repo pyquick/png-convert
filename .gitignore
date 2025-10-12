@@ -5,7 +5,7 @@ __pycache__/
 .DS_Store
 # C extensions
 *.so
-
+nuitka-crash-report.xml
 # Distribution / packaging
 .Python
 build/

@@ -14,7 +14,6 @@ import sys
 import os
 import argparse
 import tempfile
-import shutil
 import subprocess
 from PIL import Image
 

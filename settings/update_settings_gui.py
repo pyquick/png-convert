@@ -79,7 +79,7 @@ class DownloadThread(QThread):
 
 
 class UpdateDialog(QWidget):
-    __version__ = "2.0.0B5" 
+    __version__ = "2.0.0B4" 
 
     def __init__(self):
         super().__init__()
@@ -520,7 +520,7 @@ class UpdateDialog(QWidget):
                     speed_str = format_size(download_speed) + "/s"
                     
                     self.progress_label.setText(
-                        f"{progress}% - {downloaded_str}/{total_str} - {speed_str} - 剩余: {eta_str}"
+                        f"{progress}% - {downloaded_str}/{total_str} - {speed_str} - ETA: {eta_str}"
                     )
                 
                 self._last_downloaded = downloaded_bytes

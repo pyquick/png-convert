@@ -198,6 +198,43 @@ QPushButton#settings_button:pressed {
 
 /* Text Elements with Transparent Backgrounds */
 QWidget QLabel {
+    color: #333;
+    background-color: transparent;
+}
+
+/* TabWidget with Slide Animation */
+QTabWidget::pane {
+    border: 1px solid #bdc3c7;
+    border-radius: 20px;
+    padding: 5px;
+    background-color: rgba(255, 255, 255, 0.7);
+}
+
+QTabBar::tab {
+    background: #ecf0f1;
+    border: 1px solid #bdc3c7;
+    border-radius: 4px 4px 0px 0px;
+    padding: 12px 20px;
+    margin-right: 4px;
+    color: #7f8c8d;
+    font-weight: 500;
+}
+
+QTabBar::tab:selected {
+    background: #3498db;
+    color: #ffffff;
+    border-bottom: 2px solid #3498db;
+}
+
+QTabBar::tab:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d5dbdb, stop:1 #c5cbcb);
+    color: #2c3e50;
+}
+
+QTabBar::tab:!selected:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d0d3d4, stop:1 #c0c3c4);
+    color: #34495e;
+}
     background-color: transparent;
 }
 

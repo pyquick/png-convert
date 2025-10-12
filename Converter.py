@@ -6,6 +6,9 @@ import sys
 import os
 import threading
 import time
+target="com.pyquick.converter"
+from patch import enable
+enable(target)
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -330,7 +333,7 @@ class ImageAppDialog(AnimatedAppDialog):
         layout.addWidget(title)
         
         # Subtitle
-        subtitle = QLabel("正在启动应用...")
+        subtitle = QLabel("Starting...")
         subtitle.setStyleSheet("""
             font-size: 14px;
             color: #666;
@@ -372,7 +375,7 @@ class ZipAppDialog(AnimatedAppDialog):
         layout.addWidget(title)
         
         # Subtitle
-        subtitle = QLabel("正在启动应用...")
+        subtitle = QLabel("Starting...")
         subtitle.setStyleSheet("""
             font-size: 14px;
             color: #666;

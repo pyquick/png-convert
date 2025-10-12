@@ -1,12 +1,16 @@
 #!/bin/bash
 
+# Restart Application Script
+# Launch application from /Applications directory
 
-TARGET_DIR="$HOME/.converter/update/com"
+TARGET_DIR="/Applications"
 APP_NAME="Converter.app"
-echo "🚀 准备重启应用程序..."
 
-# 重启应用程序
+# Wait 2 seconds to ensure update script completes
 sleep 2
-open -n "$TARGET_DIR/$APP_NAME"
 
-exit 0
+# Launch application
+echo "🚀 Launching application: $TARGET_DIR/$APP_NAME"
+open "$TARGET_DIR/$APP_NAME"
+
+echo "✅ Application has been launched"
