@@ -79,7 +79,7 @@ class DownloadThread(QThread):
 
 
 class UpdateDialog(QWidget):
-    __version__ = "2.0.0B4" 
+    __version__ = "2.0.0B6" 
 
     def __init__(self):
         super().__init__()
