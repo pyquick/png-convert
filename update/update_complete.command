@@ -1,8 +1,10 @@
 #!/bin/bash
- 
-# Update Application Script - Extract update files and copy to /Applications directory
-# Usage: update_apply.command [temp_update_dir]
+
+# Complete Update Script - Kill processes, extract update files and copy to /Applications directory
+# Usage: update_complete.command [temp_update_dir]
 # If temp_update_dir is provided, use it as the source directory, otherwise use the default path
+
+echo "🔄 Starting complete update process..."
 
 # Get the temporary update directory from the first parameter, if provided
 TEMP_UPDATE_DIR="$1"
@@ -20,6 +22,32 @@ APP_NAME="Converter.app"
 
 # Create target directory
 mkdir -p "$TARGET_DIR"
+
+# Kill all Python processes related to Converter
+echo "🛑 Terminating Python processes related to Converter..."
+pkill -f "python.*arc_gui.py" 2>/dev/null || true
+pkill -f "python.*Converter.py" 2>/dev/null || true
+pkill -f "python.*converter" 2>/dev/null || true
+
+# Kill Converter.app processes
+echo "🛑 Terminating Converter.app processes..."
+pkill -f "Converter.app" 2>/dev/null || true
+pkill -f "com.pyquick.converter" 2>/dev/null || true
+
+# Wait for processes to fully terminate
+echo "⏳ Waiting for processes to terminate..."
+sleep 3
+
+# Force kill any remaining processes
+echo "🔨 Force killing any remaining processes..."
+pkill -9 -f "python.*arc_gui.py" 2>/dev/null || true
+pkill -9 -f "python.*Converter.py" 2>/dev/null || true
+pkill -9 -f "python.*converter" 2>/dev/null || true
+pkill -9 -f "Converter.app" 2>/dev/null || true
+pkill -9 -f "com.pyquick.converter" 2>/dev/null || true
+
+# Wait again
+sleep 2
 
 # Check if system temporary directory is passed
 if [ -n "$TEMP_UPDATE_DIR" ] && [ -d "$TEMP_UPDATE_DIR" ]; then
@@ -114,3 +142,4 @@ echo "📋 Also copying to user directory: $USER_TARGET_DIR"
 cp -R "$SOURCE_APP" "$USER_TARGET_DIR/"
 
 echo "✅ Update completed! Application has been updated to: $TARGET_DIR/$APP_NAME"
+echo "🚀 You can now launch the application from /Applications/Converter.app"

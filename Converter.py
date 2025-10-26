@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QIcon, QPainter, QPixmap, QPalette
 from PySide6.QtCore import QSize, Qt, QSettings, QPropertyAnimation, QEasingCurve, QTimer
 import multiprocessing
-from qfluentwidgets import Theme, setTheme
+from qfluentwidgets import Theme, setTheme,qconfig,SystemThemeListener
  # Keep for freeze_support, but remove direct Process usage
 from settings.update_settings_gui import UpdateDialog
 from settings.settings_gui import SettingsDialog
@@ -92,7 +92,8 @@ class IconButtonsWindow(QWidget):
         # Load theme setting immediately
         self.settings = QSettings("MyCompany", "ConverterApp")
         self.theme_setting = self.settings.value("theme", 0, type=int)
-
+        self.themeListener = SystemThemeListener(self)
+        
         self.path= os.path.dirname(os.path.abspath(__file__))
         # Define paths for icon files
         self.app_icon_path = os.path.join(self.path,"AppIcon.png")
@@ -117,9 +118,23 @@ class IconButtonsWindow(QWidget):
             create_placeholder_icon(self.zipd_icon_path, "dimgray", "ZipD")
 
         self.init_ui()
+        setTheme(Theme.AUTO)
+        self.themeListener.start()
+        qconfig.themeChanged.connect(self._onThemeChanged)
         # Apply theme based on settings or initial system detection
         self._apply_system_theme_from_settings() 
-    
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        # 停止监听器线程
+        if hasattr(self, 'themeListener'):
+            self.themeListener.terminate()
+            self.themeListener.deleteLater()
+        super().closeEvent(event)
+    def _onThemeChanged(self, theme: Theme):
+        """主题变化处理"""
+        # 更新界面以响应主题变化
+        self.update()
+        setTheme(Theme.AUTO)
     def _apply_system_theme(self, is_dark_mode): # This method will now be primarily for paletteChanged signal
         # Only apply system theme if setting is System Default
         if self.settings.value("theme", 0, type=int) == 0:

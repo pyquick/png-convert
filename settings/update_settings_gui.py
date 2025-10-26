@@ -18,9 +18,10 @@ from PySide6.QtWidgets import (
     QSpacerItem,
     QSizePolicy,
     QProgressBar,
+    QMessageBox,
     QAbstractButton
 )
-from PySide6.QtCore import QSettings, Qt, QThread, Signal
+from PySide6.QtCore import QSettings, Qt, QThread, Signal, QTimer, QTimer
 from PySide6.QtGui import QFont
 from darkdetect import isDark
 from update.update_manager import UpdateManager
@@ -47,43 +48,147 @@ class CheckUpdateThread(QThread):
 
 
 class DownloadThread(QThread):
-    progress_updated = Signal(int, int, int)  # 进度百分比, 已下载字节, 总字节
-    download_finished = Signal(dict)
+    progress_updated = Signal(dict)
+    finished = Signal(dict)
     
-    def __init__(self, update_info, target_directory):
+    def __init__(self, download_url, version, include_prerelease=False):
         super().__init__()
-        self.update_info = update_info
-        self.target_directory = target_directory
-        self._is_cancelled = False
+        self.download_url = download_url
+        self.version = version
+        self.include_prerelease = include_prerelease
+        self.is_cancelled = False
+        self.progress_callback = None
+        self.downloader = None  # Initialize downloader attribute
         
-    def cancel(self):
-        """取消下载"""
-        self._is_cancelled = True
-    
     def run(self):
         try:
-            # 定义进度回调函数
-            def progress_callback(progress, downloaded_bytes, total_bytes):
-                if self._is_cancelled:
-                    # 如果已取消，抛出异常停止下载
-                    raise Exception("Download cancelled by user")
-                self.progress_updated.emit(progress, downloaded_bytes, total_bytes)
+            print(f"DownloadThread started, is_cancelled: {self.is_cancelled}")
             
-            result = download_and_apply_update(self.update_info, self.target_directory, progress_callback)
-            self.download_finished.emit(result)
+            # Check if cancelled before starting download
+            if self.is_cancelled:
+                print("DownloadThread: cancelled before download")
+                result = {
+                    "status": "cancelled",
+                    "message": "Download cancelled by user"
+                }
+                self.finished.emit(result)
+                return
+            
+            # Create a simple progress callback that emits signals
+            def progress_callback(progress, downloaded, total_size):
+                if not self.is_cancelled:
+                    progress_data = {
+                        "progress": progress,
+                        "downloaded": downloaded,
+                        "total": total_size
+                    }
+                    self.progress_updated.emit(progress_data)
+            
+            # Set the progress callback
+            self.progress_callback = progress_callback
+            
+            # Create update info dictionary
+            update_info = {
+                "download_url": self.download_url,
+                "latest_version": self.version
+            }
+            
+            # Create UpdateDownloader instance for cancellation
+            from update.download_update import UpdateDownloader
+            import tempfile
+            temp_dir = tempfile.mkdtemp(prefix="update_")
+            
+            try:
+                self.downloader = UpdateDownloader(
+                    download_url=self.download_url,
+                    target_directory=temp_dir,
+                    max_threads=64  # Use 64 threads
+                )
+                
+                # Download update only (don't apply it)
+                print("DownloadThread: starting download")
+                result = self.downloader.download_update(self.version, progress_callback)
+                print(f"DownloadThread: download completed with status: {result.get('status')}")
+                
+                # Check if the download was cancelled
+                if result.get("status") == "cancelled":
+                    print("DownloadThread: result status is cancelled")
+                    self.finished.emit(result)
+                    return
+                
+                # Check if cancelled during download
+                if self.is_cancelled or (self.downloader and hasattr(self.downloader, '_cancelled') and self.downloader._cancelled):
+                    print("DownloadThread: cancelled during download")
+                    result = {
+                        "status": "cancelled",
+                        "message": "Download cancelled by user",
+                        "temp_dir": temp_dir
+                    }
+                    self.finished.emit(result)
+                    return
+                    
+                # Check again if cancelled
+                if self.is_cancelled:
+                    print("DownloadThread: cancelled after download")
+                    result = {
+                        "status": "cancelled",
+                        "message": "Download cancelled by user",
+                        "temp_dir": temp_dir
+                    }
+                    self.finished.emit(result)
+                    return
+                
+                # Add downloader to result for cleanup
+                result["downloader"] = self.downloader
+                result["temp_dir"] = temp_dir
+                print("DownloadThread: emitting success result")
+                self.finished.emit(result)
+                
+            except Exception as e:
+                print(f"DownloadThread exception: {e}")
+                error_result = {
+                    "status": "error",
+                    "message": f"Download failed: {str(e)}",
+                    "temp_dir": temp_dir
+                }
+                self.finished.emit(error_result)
+            
         except Exception as e:
-            if "cancelled" in str(e).lower():
-                self.download_finished.emit({"status": "cancelled", "message": "Download cancelled by user"})
-            else:
-                self.download_finished.emit({"status": "error", "message": str(e)})
-
+            print(f"DownloadThread outer exception: {e}")
+            error_result = {
+                "status": "error",
+                "message": f"Thread initialization failed: {str(e)}"
+            }
+            self.finished.emit(error_result)
+    
+    def cancel(self):
+        """Cancel the download"""
+        print("DownloadThread: cancel() called")
+        self.is_cancelled = True
+        
+        # Cancel the downloader
+        if self.downloader:
+            print("DownloadThread: cancelling downloader")
+            self.downloader.cancel()
+            # Wait a moment to ensure cancellation is complete
+            import time
+            time.sleep(0.1)
+        
+        # Request thread exit
+        self.quit()
+        
+        # Wait for thread to completely stop
+        if not self.wait(1000):  # Wait up to 1 second
+            print("Warning: DownloadThread did not stop within 1 second, forcing termination")
+            self.terminate()
+            self.wait(500)  # Wait another 500ms to ensure termination is complete
 
 class UpdateDialog(QWidget):
-    __version__ = "2.0.0B6" 
+    __version__ = "2.0.0B7" 
 
     def __init__(self):
         super().__init__()
-        # 移除SystemThemeListener以避免线程问题
+        # Remove SystemThemeListener to avoid thread issues
         # self.themeListener = SystemThemeListener(self)
        
        
@@ -92,7 +197,7 @@ class UpdateDialog(QWidget):
         self.check_thread = None
         self.download_thread = None
        
-        # 检测当前版本类型
+        # Detect current version type
         self._detect_current_version_type()
         
         self.init_ui()
@@ -429,9 +534,12 @@ class UpdateDialog(QWidget):
             self.progress_label.setText("0%")
             self.progress_label.setVisible(True)
             
-            # 启动下载线程，下载到/Applications目录
-            target_dir = "/Applications"
-            os.makedirs(target_dir, exist_ok=True)
+            # 获取下载URL和版本信息
+            download_url = self.current_update_info.get("download_url")
+            latest_version = self.current_update_info.get("latest_version")
+            
+            # 获取预发布设置
+            include_prerelease, prerelease_type = self._get_update_check_params()
             
             # 重置下载计时器
             if hasattr(self, '_download_start_time'):
@@ -441,9 +549,10 @@ class UpdateDialog(QWidget):
             if hasattr(self, '_last_time'):
                 delattr(self, '_last_time')
             
-            self.download_thread = DownloadThread(self.current_update_info, target_dir)
+            # 使用新的DownloadThread类
+            self.download_thread = DownloadThread(download_url, latest_version, include_prerelease)
             self.download_thread.progress_updated.connect(self.on_progress_updated)
-            self.download_thread.download_finished.connect(self.on_download_finished)
+            self.download_thread.finished.connect(self.on_download_finished)
             self.download_thread.start()
             
             # 将下载按钮改为取消按钮
@@ -458,6 +567,23 @@ class UpdateDialog(QWidget):
             self.download_thread.cancel()
             self.download_button.setEnabled(False)
             self.update_status_label.setText("Cancelling download...")
+            
+            # 设置一个定时器来检查线程是否已停止
+            def check_thread_stopped():
+                # 检查线程是否已停止
+                if self.download_thread is None:
+                    # 线程已被清理，直接返回
+                    return
+                    
+                if not self.download_thread.isRunning():
+                    # 线程已停止，显示取消状态
+                    self.show_cancelled_state()
+                else:
+                    # 线程仍在运行，继续等待
+                    QTimer.singleShot(500, check_thread_stopped)
+            
+            # 开始检查线程状态
+            QTimer.singleShot(500, check_thread_stopped)
     
     def start_swing_animation(self):
         """启动左右摆动动画"""
@@ -467,7 +593,16 @@ class UpdateDialog(QWidget):
         """更新摆动动画"""
         pass
     
-    def on_progress_updated(self, progress, downloaded_bytes, total_bytes):
+    def on_progress_updated(self, progress_data):
+        """处理下载进度更新"""
+        if not progress_data:
+            return
+            
+        # 从progress_data中获取进度信息
+        progress = progress_data.get("progress", 0)
+        downloaded_bytes = progress_data.get("downloaded", 0)
+        total_bytes = progress_data.get("total", 0)
+        
         # 更新进度条显示实际进度
         if progress > 0:
             # 显示实际进度条，隐藏不确定进度条
@@ -482,25 +617,25 @@ class UpdateDialog(QWidget):
                 self._last_downloaded = 0
                 self._last_time = current_time
             
-            # 计算瞬时速度
-            time_diff = current_time - self._last_time
-            if time_diff > 0.5:  # 每0.5秒更新一次速度
-                downloaded_diff = downloaded_bytes - self._last_downloaded
-                download_speed = downloaded_diff / time_diff  # bytes per second
+            # 计算平均速度和剩余时间
+            elapsed_time = current_time - self._download_start_time
+            if elapsed_time > 1.0:  # 至少1秒后再计算速度
+                # 计算平均下载速度
+                avg_download_speed = downloaded_bytes / elapsed_time  # bytes per second
                 
                 # 计算剩余时间
                 remaining_bytes = total_bytes - downloaded_bytes
-                if download_speed > 0:
-                    remaining_time = remaining_bytes / download_speed
+                if avg_download_speed > 0 and total_bytes > 0:
+                    remaining_time = remaining_bytes / avg_download_speed
                     # 格式化剩余时间
                     if remaining_time > 3600:
                         eta_str = f"{remaining_time/3600:.1f}h"
                     elif remaining_time > 60:
                         eta_str = f"{remaining_time/60:.1f}m"
                     else:
-                        eta_str = f"{remaining_time:.1f}s"
+                        eta_str = f"{remaining_time:.0f}s"
                 else:
-                    eta_str = "未知"
+                    eta_str = "计算中"
                 
                 # 格式化文件大小
                 def format_size(bytes_size):
@@ -517,14 +652,11 @@ class UpdateDialog(QWidget):
                 if hasattr(self, 'progress_label'):
                     downloaded_str = format_size(downloaded_bytes)
                     total_str = format_size(total_bytes)
-                    speed_str = format_size(download_speed) + "/s"
+                    speed_str = format_size(avg_download_speed) + "/s"
                     
                     self.progress_label.setText(
                         f"{progress}% - {downloaded_str}/{total_str} - {speed_str} - ETA: {eta_str}"
                     )
-                
-                self._last_downloaded = downloaded_bytes
-                self._last_time = current_time
         
         if progress == 100:
             self.progress_bar.pause()
@@ -549,6 +681,18 @@ class UpdateDialog(QWidget):
             if hasattr(self, '_last_time'):
                 delattr(self, '_last_time')
             
+            # 清理下载线程
+            if hasattr(self, 'download_thread') and self.download_thread:
+                if self.download_thread.downloader:
+                    self.download_thread.downloader.cleanup()
+                
+                # 确保线程完全停止后再设置为None
+                if self.download_thread.isRunning():
+                    self.download_thread.quit()
+                    self.download_thread.wait(2000)  # 最多等待2秒
+                
+                self.download_thread = None
+            
             # 保存更新信息
             self.update_result = result
             
@@ -565,8 +709,13 @@ class UpdateDialog(QWidget):
         else:
             # 下载失败或取消
             if result["status"] == "cancelled":
+                # 先将进度条设置为100%
+                self.download_progress_bar.setValue(100)
+                self.progress_label.setText("100%")
+                QApplication.processEvents()  # 确保界面更新
                 
-                self.update_status_label.setText("❌ Download cancelled by user")
+                # 短暂延迟后显示取消状态
+                QTimer.singleShot(500, lambda: self.show_cancelled_state())
             else:
                 # 确保错误消息正确处理非ASCII字符
                 try:
@@ -575,75 +724,188 @@ class UpdateDialog(QWidget):
                 except Exception as e:
                     # 如果出现编码问题，显示基本错误信息
                     self.update_status_label.setText(f"❌ 下载失败: 处理错误消息时出现编码问题")
+                
+                self.progress_bar.setVisible(False)
+                self.download_progress_bar.setVisible(False)
+                
+                # 隐藏数字进度标签
+                if hasattr(self, 'progress_label'):
+                    self.progress_label.setVisible(False)
+                
+                # 清理下载计时器变量
+                if hasattr(self, '_download_start_time'):
+                    delattr(self, '_download_start_time')
+                if hasattr(self, '_last_downloaded'):
+                    delattr(self, '_last_downloaded')
+                if hasattr(self, '_last_time'):
+                    delattr(self, '_last_time')
+                
+                # 恢复下载按钮
+                self.download_button.setText("Download Update")
+                self.download_button.clicked.disconnect()
+                self.download_button.clicked.connect(self.download_update)
+                self.download_button.setEnabled(True)
+                self.download_button.setVisible(True)
+                
+                self.update_button.setEnabled(True)
+    
+    def show_cancelled_state(self):
+        """显示取消下载的状态，恢复到初始形态"""
+        self.update_status_label.setText("Ready to check for updates.")
+        
+        # 隐藏进度条
+        self.progress_bar.setVisible(False)
+        self.download_progress_bar.setVisible(False)
+        
+        # 隐藏数字进度标签
+        if hasattr(self, 'progress_label'):
+            self.progress_label.setVisible(False)
+        
+        # 隐藏发布内容浏览器
+        self.release_content_browser.setVisible(False)
+        
+        # 清理下载计时器变量
+        if hasattr(self, '_download_start_time'):
+            delattr(self, '_download_start_time')
+        if hasattr(self, '_last_downloaded'):
+            delattr(self, '_last_downloaded')
+        if hasattr(self, '_last_time'):
+            delattr(self, '_last_time')
+        
+        # Clean up downloader and thread
+        if hasattr(self, 'download_thread') and self.download_thread:
+            if self.download_thread.downloader:
+                self.download_thread.downloader.cleanup()
             
-            self.progress_bar.setVisible(False)
-            self.download_progress_bar.setVisible(False)
+            # 确保线程完全停止后再设置为None
+            if self.download_thread.isRunning():
+                self.download_thread.quit()
+                self.download_thread.wait(2000)  # 最多等待2秒
             
-            # 隐藏数字进度标签
-            if hasattr(self, 'progress_label'):
-                self.progress_label.setVisible(False)
-            
-            # 清理下载计时器变量
-            if hasattr(self, '_download_start_time'):
-                delattr(self, '_download_start_time')
-            if hasattr(self, '_last_downloaded'):
-                delattr(self, '_last_downloaded')
-            if hasattr(self, '_last_time'):
-                delattr(self, '_last_time')
-            
-            # 恢复下载按钮
-            self.download_button.setText("Download Update")
-            self.download_button.clicked.disconnect()
-            self.download_button.clicked.connect(self.download_update)
-            self.download_button.setEnabled(True)
-            self.download_button.setVisible(True)
-            
-            self.update_button.setEnabled(True)
+            self.download_thread = None
+        
+        # 隐藏下载按钮，显示检查更新按钮
+        self.download_button.setVisible(False)
+        self.download_button.setEnabled(False)
+        
+        # 启用检查更新按钮
+        self.update_button.setEnabled(True)
     
     def apply_update(self):
         """应用更新"""
         if hasattr(self, 'update_result'):
-            # 获取更新文件的路径
-            temp_dir = self.update_result.get("temp_dir", "")
-            if temp_dir and os.path.exists(temp_dir):
-                # 执行更新脚本
-                update_script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "update", "update_apply.command")
+            # 新的下载流程已经自动应用了更新，所以这里只需要显示成功消息
+            if self.update_result.get("status") == "success":
+                # 更新状态显示
+                self.update_status_label.setText("✅ Update applied successfully! Please restart the application.")
                 
-                if os.path.exists(update_script_path):
-                    try:
-                        # 执行更新脚本
-                        os.system(f"'{update_script_path}' '{temp_dir}' &")
-                        print(f"✅ 更新脚本已执行: {update_script_path} with temp_dir: {temp_dir}")
-                        
-                        # 更新状态显示
-                        self.update_status_label.setText("✅ Update applied successfully! Please restart the application.")
-                        
-                        # 显示重启按钮
-                        self.restart_button.setVisible(True)
-                        self.restart_button.setEnabled(True)
-                        
-                        # 停止进度条
-                        self.progress_bar.pause()
-                        self.progress_bar.setVisible(False)
-                        
-                    except Exception as e:
-                        print(f"❌ 执行更新脚本时出错: {e}")
-                        self.update_status_label.setText(f"❌ Apply update failed: {e}")
-                        
-                else:
-                    print(f"❌ 更新脚本不存在: {update_script_path}")
-                    self.update_status_label.setText("❌ Update script not found, please restart manually")
-                    
+                # 显示重启按钮
+                self.restart_button.setVisible(True)
+                self.restart_button.setEnabled(True)
+                
+                # 停止进度条
+                self.progress_bar.pause()
+                self.progress_bar.setVisible(False)
             else:
-                print(f"❌ 更新文件路径无效: {temp_dir}")
-                self.update_status_label.setText("❌ Update files not found, please restart manually")
+                # 处理错误情况
+                error_message = self.update_result.get("message", "Unknown error")
+                self.update_status_label.setText(f"❌ Update failed: {error_message}")
                 
+                # 停止进度条
+                self.progress_bar.pause()
+                self.progress_bar.setVisible(False)
         else:
             print("❌ update_result属性不存在")
             self.update_status_label.setText("❌ Update information lost, please restart manually")
             
 
      
+    def __del__(self):
+        """析构函数，确保所有线程都被正确清理"""
+        try:
+            # 清理下载线程
+            if hasattr(self, 'download_thread') and self.download_thread is not None:
+                if self.download_thread.isRunning():
+                    self.download_thread.quit()
+                    if not self.download_thread.wait(1000):
+                        self.download_thread.terminate()
+                        self.download_thread.wait(500)
+                
+                # 清理下载器
+                if hasattr(self.download_thread, 'downloader') and self.download_thread.downloader:
+                    self.download_thread.downloader.cleanup()
+                
+                self.download_thread = None
+            
+            # 清理检查更新线程
+            if hasattr(self, 'check_thread') and self.check_thread is not None:
+                if self.check_thread.isRunning():
+                    self.check_thread.quit()
+                    if not self.check_thread.wait(1000):
+                        self.check_thread.terminate()
+                        self.check_thread.wait(500)
+                
+                self.check_thread = None
+        except:
+            # 在析构函数中忽略所有异常
+            pass
+    
+    def closeEvent(self, event):
+        """重写窗口关闭事件，下载时阻止关闭"""
+        # 检查是否有下载正在进行
+        if hasattr(self, 'download_thread') and self.download_thread is not None and self.download_thread.isRunning():
+            # 下载正在进行，显示提示并阻止关闭
+            reply = QMessageBox.question(
+                self, 
+                "下载进行中", 
+                "正在下载更新，确定要关闭窗口吗？\n关闭窗口将取消下载。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                # 用户确认关闭，先取消下载
+                self.cancel_download()
+                
+                # 等待更长时间确保线程完全停止
+                max_wait_time = 5000  # 最多等待5秒
+                wait_step = 500  # 每次等待500ms
+                total_waited = 0
+                
+                while self.download_thread and self.download_thread.isRunning() and total_waited < max_wait_time:
+                    QApplication.processEvents()  # 处理待处理的事件
+                    self.download_thread.wait(wait_step)  # 等待一小段时间
+                    total_waited += wait_step
+                
+                # 如果线程仍在运行，强制终止
+                if self.download_thread and self.download_thread.isRunning():
+                    self.download_thread.terminate()
+                    self.download_thread.wait(1000)  # 再等待1秒
+                    
+                # 清理下载器
+                if self.download_thread and self.download_thread.downloader:
+                    self.download_thread.downloader.cleanup()
+                
+                self.download_thread = None
+                
+                # 允许关闭窗口
+                event.accept()
+            else:
+                # 用户取消关闭，阻止窗口关闭
+                event.ignore()
+        else:
+            # 没有下载在进行，检查是否有检查更新线程
+            if hasattr(self, 'check_thread') and self.check_thread is not None and self.check_thread.isRunning():
+                # 检查更新正在进行，取消它
+                self.check_thread.quit()
+                if not self.check_thread.wait(1000):  # 等待最多1秒
+                    self.check_thread.terminate()
+                    self.check_thread.wait(500)  # 再等待500ms
+                self.check_thread = None
+            
+            # 允许正常关闭
+            event.accept()
+    
     def restart_application(self):
         """重启应用程序"""
         try:

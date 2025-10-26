@@ -20,7 +20,7 @@ def example_update_workflow():
     print("=== 应用程序更新工作流程示例 ===")
     
     # 1. 初始化更新管理器
-    current_version = "2.0.0B6"  # 从配置文件或代码中获取当前版本
+    current_version = "2.0.0B7"  # 从配置文件或代码中获取当前版本
     manager = UpdateManager(current_version)
     
     print(f"当前应用程序版本: {current_version}")

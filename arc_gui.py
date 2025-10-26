@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayo
                                QPushButton, QLabel, QLineEdit, QTextEdit, QProgressBar, 
                                QTabWidget, QWidget, QGroupBox, QListWidget, QListWidgetItem,
                                QFileDialog, QCheckBox, QComboBox, QFrame, QMessageBox, QMenu)
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPalette
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPalette, QPixmap
 from qfluentwidgets import *
 
 from con import CON
@@ -17,6 +17,7 @@ from support.toggle import ThemeManager
 # Add the current directory to Python path to import convertzip module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from support.archive_manager import create_archive, extract_archive, add_to_archive, list_archive_contents, SUPPORTED_ARCHIVE_FORMATS
+from support.password_detector import PasswordDetector, detect_password_protection
 
 # Remove the problematic reconfigure calls
 # sys.stdout.reconfigure(encoding='utf-8')
@@ -27,15 +28,16 @@ class CreateZipWorker(QObject):
     progress_updated = Signal(str, int)
     conversion_error = Signal(str)
 
-    def __init__(self, output_path, sources, archive_format):
+    def __init__(self, output_path, sources, archive_format, password=None):
         super().__init__()
         self.output_path = output_path
         self.sources = sources
         self.archive_format = archive_format
+        self.password = password
 
     def run(self):
         try:
-            # 验证输入参数
+            # Validate input parameters
             if not self.output_path:
                 raise ValueError("Output path is empty")
             if not self.sources:
@@ -43,30 +45,30 @@ class CreateZipWorker(QObject):
             if not self.archive_format:
                 raise ValueError("Archive format is not specified")
             
-            # 检查源文件是否存在
+            # Check if source files exist
             for source in self.sources:
                 if not os.path.exists(source):
                     raise ValueError(f"Source file does not exist: {source}")
             
-            create_archive(self.output_path, self.sources, self.archive_format, self._update_progress_callback)
+            create_archive(self.output_path, self.sources, self.archive_format, self._update_progress_callback, self.password)
             self.finished.emit()
         except ValueError as e:
-            # 处理值错误
+            # Handle value errors
             self.conversion_error.emit(f"Input error: {str(e)}")
         except FileNotFoundError as e:
-            # 处理文件未找到错误
+            # Handle file not found errors
             self.conversion_error.emit(f"File not found: {str(e)}")
         except PermissionError as e:
-            # 处理权限错误
+            # Handle permission errors
             self.conversion_error.emit(f"Permission denied: {str(e)}")
         except OSError as e:
-            # 处理操作系统错误
+            # Handle OS errors
             self.conversion_error.emit(f"System error: {str(e)}")
         except NotImplementedError as e:
-            # 处理未实现的错误
+            # Handle not implemented errors
             self.conversion_error.emit(str(e))
         except Exception as e:
-            # 处理所有其他异常
+            # Handle all other exceptions
             import traceback
             error_msg = f"Unexpected error: {str(e)}\n{traceback.format_exc()}"
             self.conversion_error.emit(error_msg)
@@ -78,16 +80,24 @@ class ExtractZipWorker(QObject):
     finished = Signal()
     progress_updated = Signal(str, int)
     conversion_error = Signal(str)
+    password_required = Signal(str) # Emits error message when password is required
 
-    def __init__(self, zip_path, dest_path):
+    def __init__(self, zip_path, dest_path, password=None):
         super().__init__()
         self.archive_path = zip_path # Renamed for clarity with generic archive_manager
         self.extract_to = dest_path
+        self.password = password
 
     def run(self):
         try:
-            extract_archive(self.archive_path, self.extract_to, self._update_progress_callback)
+            extract_archive(self.archive_path, self.extract_to, self._update_progress_callback, self.password)
             self.finished.emit()
+        except RuntimeError as e:
+            # Handle password required case
+            if "password" in str(e).lower() or "encrypted" in str(e).lower():
+                self.password_required.emit(str(e))
+            else:
+                self.conversion_error.emit(str(e))
         except Exception as e:
             self.conversion_error.emit(str(e))
 
@@ -127,20 +137,21 @@ class ListZipContentsWorker(QObject):
     conversion_error = Signal(str)
     password_required = Signal(str) # Emits error message when password is required
 
-    def __init__(self, zip_path):
+    def __init__(self, zip_path, password=None):
         super().__init__()
         self.archive_path = zip_path # Renamed for clarity with generic archive_manager
-        self.result = None  # 添加result属性用于存储结果
+        self.password = password
+        self.result = None  # Add result attribute to store results
 
     def run(self):
         try:
             print(f"[DEBUG] ListZipContentsWorker: Starting to list contents of {self.archive_path}")
-            contents = list_archive_contents(self.archive_path)
+            contents = list_archive_contents(self.archive_path, password=self.password)
             print(f"[DEBUG] ListZipContentsWorker: Got {len(contents) if contents else 0} items")
             self.result = contents  # 设置result属性
             self.finished.emit(contents)
         except RuntimeError as e:
-            # 处理需要密码的情况
+            # Handle password required case
             print(f"[DEBUG] ListZipContentsWorker: RuntimeError - {str(e)}")
             if "password" in str(e).lower() or "encrypted" in str(e).lower():
                 self.password_required.emit(str(e))
@@ -169,8 +180,8 @@ class ZipGUI(QMainWindow):
             return ""
     
     def _show_popup(self, target, icon, title, content, duration=2000):
-        """显示弹窗并在控制台打印消息"""
-        print(f"[{title}] {content}")  # 在控制台打印消息
+        """Display popup and print message to console"""
+        print(f"[{title}] {content}")  # Print message to console
         PopupTeachingTip.create(
             target=target,
             icon=icon,
@@ -183,8 +194,8 @@ class ZipGUI(QMainWindow):
         )
     
     def _show_info_bar(self, title, content, icon=InfoBarIcon.SUCCESS, duration=2000):
-        """显示信息栏并在控制台打印消息"""
-        print(f"[{title}] {content}")  # 在控制台打印消息
+        """Display info bar and print message to console"""
+        print(f"[{title}] {content}")  # Print message to console
         InfoBar.success(
             title=title,
             content=content,
@@ -224,15 +235,15 @@ class ZipGUI(QMainWindow):
         self.themeListener.start()
         qconfig.themeChanged.connect(self._onThemeChanged)
     def closeEvent(self, event):
-        """窗口关闭事件"""
-        # 停止监听器线程
+        """Window close event"""
+        # Stop listener thread
         if hasattr(self, 'themeListener'):
             self.themeListener.terminate()
             self.themeListener.deleteLater()
         super().closeEvent(event)
     def _onThemeChanged(self, theme: Theme):
-        """主题变化处理"""
-        # 更新界面以响应主题变化
+        """Theme change handling"""
+        # Update interface to respond to theme changes
         self.update()
         setTheme(Theme.AUTO)
     def init_variables(self):
@@ -262,6 +273,7 @@ class ZipGUI(QMainWindow):
         
         # Password protection status for archive contents
         self.is_password_protected = False
+        self._current_password = None
 
     def setup_ui(self):
         self.main_widget = QWidget(self)
@@ -323,7 +335,7 @@ class ZipGUI(QMainWindow):
         
         self.create_output_text = LineEdit()
         setCustomStyleSheet(self.create_output_text, CON.qss_line, CON.qss_line)
-        # self.create_output_text.setReadOnly(True)  # 允许用户手动输入路径
+        # self.create_output_text.setReadOnly(True)  # Allow users to manually input path
         output_box_sizer.addWidget(self.create_output_text, 1)
         output_button = PushButton("Browse...")
         output_button.clicked.connect(self.browse_create_output)
@@ -352,9 +364,9 @@ class ZipGUI(QMainWindow):
         sources_box_sizer = QVBoxLayout(sources_box)
         
         self.sources_listbox = ListWidget()
-        self.sources_listbox.setMinimumHeight(400)  # 设置最小高度
-        sources_box_sizer.addWidget(self.sources_listbox, 2)  # 增加拉伸权重
-        # 设置右键点击立即选中
+        self.sources_listbox.setMinimumHeight(400)  # Set minimum height
+        sources_box_sizer.addWidget(self.sources_listbox, 2)  # Increase stretch weight
+        # Set right-click to immediately select
         self.sources_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.sources_listbox.customContextMenuRequested.connect(self.show_sources_context_menu)
         
@@ -386,9 +398,10 @@ class ZipGUI(QMainWindow):
         tab_sizer.addWidget(self.create_progress)
 
         # Create button
-        create_button = PrimaryPushButton("Create Archive") # Changed button text
-        create_button.clicked.connect(self.start_create_archive) # Changed signal
-        tab_sizer.addWidget(create_button, 0, Qt.AlignmentFlag.AlignCenter)
+        self.create_button = PrimaryPushButton("Create Archive") # Changed button text
+
+        self.create_button.clicked.connect(self.start_create_archive) # Changed signal
+        tab_sizer.addWidget(self.create_button, 0, Qt.AlignmentFlag.AlignCenter)
         
         tab_sizer.addStretch(1) # Push content to top
 
@@ -403,7 +416,7 @@ class ZipGUI(QMainWindow):
 
         self.extract_zip_text = LineEdit()
         setCustomStyleSheet(self.extract_zip_text, CON.qss_line, CON.qss_line)
-        # self.extract_zip_text.setReadOnly(True)  # 允许用户手动输入路径
+        # self.extract_zip_text.setReadOnly(True)  # Allow users to manually input path
         zip_box_sizer.addWidget(self.extract_zip_text, 1)
         zip_button = PushButton("Browse...")
 
@@ -417,7 +430,7 @@ class ZipGUI(QMainWindow):
 
         self.extract_dest_text = LineEdit()
         setCustomStyleSheet(self.extract_dest_text, CON.qss_line, CON.qss_line)
-        # self.extract_dest_text.setReadOnly(True)  # 允许用户手动输入路径
+        # self.extract_dest_text.setReadOnly(True)  # Allow users to manually input path
         dest_box_sizer.addWidget(self.extract_dest_text, 1)
         dest_button = PushButton("Browse...")
 
@@ -425,6 +438,16 @@ class ZipGUI(QMainWindow):
         dest_box_sizer.addWidget(dest_button)
         tab_sizer.addWidget(dest_box)
 
+        # Password status indicator
+        password_status_box = QHBoxLayout()
+        self.extract_password_status_label = QLabel("Archive Status: Unknown")
+        self.extract_password_status_icon = QLabel()
+        self.extract_password_status_icon.setFixedSize(16, 16)
+        password_status_box.addWidget(self.extract_password_status_label)
+        password_status_box.addWidget(self.extract_password_status_icon)
+        password_status_box.addStretch()
+        tab_sizer.addLayout(password_status_box)
+        
         # Progress bar
         self.extract_progress_label = QLabel("")
         tab_sizer.addWidget(self.extract_progress_label)
@@ -435,10 +458,10 @@ class ZipGUI(QMainWindow):
         tab_sizer.addWidget(self.extract_progress)
 
         # Extract button
-        extract_button = PrimaryPushButton("Extract Archive") # Changed button text
+        self.extract_button = PrimaryPushButton("Extract Archive") # Changed button text
 
-        extract_button.clicked.connect(self.start_extract_archive) # Changed signal
-        tab_sizer.addWidget(extract_button, 0, Qt.AlignmentFlag.AlignCenter)
+        self.extract_button.clicked.connect(self.start_extract_archive) # Changed signal
+        tab_sizer.addWidget(self.extract_button, 0, Qt.AlignmentFlag.AlignCenter)
         
         tab_sizer.addStretch(1) # Push content to top
 
@@ -453,7 +476,7 @@ class ZipGUI(QMainWindow):
 
         self.add_zip_text = LineEdit()
         setCustomStyleSheet(self.add_zip_text, CON.qss_line, CON.qss_line)
-        # self.add_zip_text.setReadOnly(True)  # 允许用户手动输入路径
+        # self.add_zip_text.setReadOnly(True)  # Allow users to manually input path
         zip_box_sizer.addWidget(self.add_zip_text, 1)
         zip_button = PushButton("Browse...")
 
@@ -488,10 +511,10 @@ class ZipGUI(QMainWindow):
         tab_sizer.addWidget(self.add_progress)
 
         # Add button
-        add_button = PrimaryPushButton("Add to Archive") # Changed button text
+        self.add_button = PrimaryPushButton("Add to Archive") # Changed button text
 
-        add_button.clicked.connect(self.start_add_to_archive) # Changed signal
-        tab_sizer.addWidget(add_button, 0, Qt.AlignmentFlag.AlignCenter)
+        self.add_button.clicked.connect(self.start_add_to_archive) # Changed signal
+        tab_sizer.addWidget(self.add_button, 0, Qt.AlignmentFlag.AlignCenter)
         
         tab_sizer.addStretch(1) # Push content to top
 
@@ -506,7 +529,7 @@ class ZipGUI(QMainWindow):
         
         self.list_zip_text = LineEdit()
         setCustomStyleSheet(self.list_zip_text, CON.qss_line, CON.qss_line)
-        # self.list_zip_text.setReadOnly(True)  # 允许用户手动输入路径
+        # self.list_zip_text.setReadOnly(True)  # Allow users to manually input path
         zip_box_sizer.addWidget(self.list_zip_text, 1)
         zip_button = PushButton("Browse...")
 
@@ -514,31 +537,175 @@ class ZipGUI(QMainWindow):
         zip_box_sizer.addWidget(zip_button)
         tab_sizer.addWidget(zip_box)
         
+        # Password status indicator
+        password_status_box = QHBoxLayout()
+        self.password_status_label = QLabel("Archive Status: Unknown")
+        self.password_status_icon = QLabel()
+        self.password_status_icon.setFixedSize(16, 16)
+        password_status_box.addWidget(self.password_status_label)
+        password_status_box.addWidget(self.password_status_icon)
+        password_status_box.addStretch()
+        tab_sizer.addLayout(password_status_box)
+        
         # Listbox for contents
         contents_box = QGroupBox("Archive Contents") # Changed group box title
         contents_box_sizer = QVBoxLayout(contents_box)
 
         self.contents_listbox = ListWidget()
-        self.contents_listbox.setMinimumHeight(250)  # 设置更大的最小高度
-        self.contents_listbox.setDragEnabled(True)  # 启用拖动功能
-        contents_box_sizer.addWidget(self.contents_listbox, 3)  # 增加拉伸权重
-        # 设置右键菜单
+        self.contents_listbox.setMinimumHeight(250)  # Set larger minimum height
+        self.contents_listbox.setDragEnabled(True)  # Enable drag functionality
+        contents_box_sizer.addWidget(self.contents_listbox, 3)  # Increase stretch weight
+        # Set right-click menu
         self.contents_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.contents_listbox.customContextMenuRequested.connect(self.show_contents_context_menu)
         tab_sizer.addWidget(contents_box, 2) # Give contents box more stretch
 
         # List button
-        list_button = PrimaryPushButton("List Contents")
+        self.list_button = PrimaryPushButton("List Contents")
 
-        list_button.clicked.connect(self.start_list_archive_contents) # Changed signal
-        tab_sizer.addWidget(list_button, 0, Qt.AlignmentFlag.AlignCenter)
+        self.list_button.clicked.connect(self.start_list_archive_contents) # Changed signal
+        tab_sizer.addWidget(self.list_button, 0, Qt.AlignmentFlag.AlignCenter)
         
         tab_sizer.addStretch(1) # Push content to top
 
     # --- Event handlers (converted to PySide6) ---
+    def update_password_status(self, is_protected, status_text=None, tab="list"):
+        """Update the password status indicator with improved visual feedback
+        
+        Args:
+            is_protected: Whether the archive is password protected
+            status_text: Optional custom status text
+            tab: Which tab to update ('list' or 'extract')
+        """
+        # Update the password protection status attribute
+        self.is_password_protected = is_protected
+        
+        # Determine which label and icon to update based on the tab
+        if tab == "list":
+            status_label = getattr(self, 'password_status_label', None)
+            status_icon = getattr(self, 'password_status_icon', None)
+        elif tab == "extract":
+            status_label = getattr(self, 'extract_password_status_label', None)
+            status_icon = getattr(self, 'extract_password_status_icon', None)
+        else:
+            return  # Invalid tab specified
+            
+        if not status_label or not status_icon:
+            return  # UI elements not available
+            
+        if is_protected:
+            status_label.setText("Archive Status: Password Protected")
+            # Set icon to locked - use our new SVG icon
+            icon_path = os.path.join(os.path.dirname(__file__), "assets", "lock.svg")
+            if os.path.exists(icon_path):
+                try:
+                    # Use SVG icon with proper scaling
+                    pixmap = QPixmap(icon_path)
+                    scaled_pixmap = pixmap.scaled(16, 16, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    status_icon.setPixmap(scaled_pixmap)
+                    # Set a tooltip for additional information
+                    status_icon.setToolTip("This archive is password protected")
+                except:
+                    # Fallback to text indicator if GUI is not available
+                    status_icon.setText("🔒")
+                    status_icon.setToolTip("This archive is password protected")
+            else:
+                # Fallback to text indicator if icon not available
+                status_icon.setText("🔒")
+                status_icon.setToolTip("This archive is password protected")
+            
+            # Set label style to indicate password protection
+            status_label.setStyleSheet("color: #e67e22; font-weight: bold;")
+        else:
+            if status_text:
+                status_label.setText(f"Archive Status: {status_text}")
+            else:
+                status_label.setText("Archive Status: No Password Protection")
+            
+            # Set icon to unlocked - use our new SVG icon
+            icon_path = os.path.join(os.path.dirname(__file__), "assets", "unlock.svg")
+            if os.path.exists(icon_path):
+                try:
+                    # Use SVG icon with proper scaling
+                    pixmap = QPixmap(icon_path)
+                    scaled_pixmap = pixmap.scaled(16, 16, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    status_icon.setPixmap(scaled_pixmap)
+                    # Set a tooltip for additional information
+                    status_icon.setToolTip("This archive is not password protected")
+                except:
+                    # Fallback to text indicator if GUI is not available
+                    status_icon.setText("🔓")
+                    status_icon.setToolTip("This archive is not password protected")
+            else:
+                # Fallback to text indicator if icon not available
+                status_icon.setText("🔓")
+                status_icon.setToolTip("This archive is not password protected")
+            
+            # Reset label style to normal
+            status_label.setStyleSheet("color: #27ae60; font-weight: normal;")
+    
+    def update_password_status_list(self, is_protected, status_text=None):
+        """Convenience method to update password status in the List tab"""
+        self.update_password_status(is_protected, status_text, "list")
+    
+    def update_password_status_extract(self, is_protected, status_text=None):
+        """Convenience method to update password status in the Extract tab"""
+        self.update_password_status(is_protected, status_text, "extract")
+    
+    def update_archive_status(self, status_text, is_success=True):
+        """Update the archive status indicator with visual feedback
+        
+        Args:
+            status_text: Status text to display
+            is_success: Whether the operation was successful
+        """
+        # Update the create progress label with the status
+        if hasattr(self, 'create_progress_label'):
+            self.create_progress_label.setText(status_text)
+            
+            # Set style based on success/failure
+            if is_success:
+                self.create_progress_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+            else:
+                self.create_progress_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+                
+            # Reset style after a delay
+            QTimer.singleShot(5000, lambda: self.create_progress_label.setStyleSheet(""))
+    
+    def _verify_password_strength(self, password):
+        """Verify password strength for archive creation
+        
+        Args:
+            password: Password to verify
+            
+        Returns:
+            bool: True if password meets minimum requirements, False otherwise
+        """
+        if not password:
+            return False
+        
+        # Basic password strength check
+        if len(password) < 6:
+            return False
+        
+        # Password is considered valid for archive creation
+        # We don't need to verify it against an existing archive since we're creating a new one
+        return True
+    
     def on_tab_changed(self, index):
-        """Handle tab change events with improved slide animation effect"""
-        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
+        """Handle tab change events with optional slide animation effect based on UI_FLUENT environment variable"""
+        import sys
+        import os
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'support'))
+        try:
+            from support.check_flag import check_flag
+        except ImportError:
+            # Fallback function if check_flag is not available
+            def check_flag(flag: str) -> bool:
+                return os.environ.get(flag, "NO").upper() == "YES"
+        
+        # Check if UI_FLUENT environment variable is set to YES using check_flag function
+        ui_fluent_enabled = check_flag("UI_FLUENT")
         
         # Get current tab widget
         current_widget = self.notebook.currentWidget()
@@ -552,6 +719,15 @@ class ZipGUI(QMainWindow):
         else:
             # Make source files area smaller when on other tabs
             self.sources_listbox.setMinimumHeight(200)
+        
+        # Skip animation if UI_FLUENT is not enabled
+        if not ui_fluent_enabled:
+            self._previous_tab_index = index
+            self.reset_widget_layout(current_widget)
+            return
+            
+        # Proceed with animation if UI_FLUENT is enabled
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
             
         # Skip animation during initial startup to prevent layout issues
         if not hasattr(self, '_previous_tab_index') and not self.notebook.isVisible():
@@ -603,8 +779,10 @@ class ZipGUI(QMainWindow):
         self.slide_animation.start()
         
         # Force update of the current widget's layout during animation
-        current_widget.layout().update()
-    
+        layout = current_widget.layout()
+        if layout:
+            layout.update()
+
     def reset_widget_layout(self, widget):
         """Reset widget layout after animation completes"""
         # Reset the geometry to ensure proper layout
@@ -659,70 +837,133 @@ class ZipGUI(QMainWindow):
                 self.sources_listbox.addItem(f"[FOLDER] {folder_path}")
 
     def remove_source(self):
-        """移除选中的源文件"""
-        if not self.source_files_list.selectedIndexes():
+        """Remove selected source files"""
+        if not self.sources_listbox.selectedIndexes():
             self._show_popup(
-                target=self.source_files_list,
+                target=self.sources_listbox,
                 icon=InfoBarIcon.WARNING,
-                title='警告',
-                content='请先选择要移除的项目',
+                title='Warning',
+                content='Please select items to remove first',
                 duration=3000
             )
             return
 
-        # 获取选中的行
-        selected_rows = sorted(set(index.row() for index in self.source_files_list.selectedIndexes()), reverse=True)
+        # Get selected rows
+        selected_rows = sorted(set(index.row() for index in self.sources_listbox.selectedIndexes()), reverse=True)
         
-        # 从后往前删除，避免索引变化
+        # Remove from back to front to avoid index changes
         for row in selected_rows:
-            self.source_files_model.removeRow(row)
+            self.sources_listbox.takeItem(row)
+            if row < len(self.create_sources):
+                self.create_sources.pop(row)
         
-        # 更新状态
-        self.update_create_status()
-        
-        # 显示移除成功信息
+        # Show removal success message
         self._show_info_bar(
             icon=InfoBarIcon.SUCCESS,
-            title='移除成功',
-            content=f'已移除 {len(selected_rows)} 个项目',
+            title='Removal Successful',
+            content=f'Removed {len(selected_rows)} items',
             duration=2000
         )
 
     def update_create_progress(self, message, progress):
         self.create_progress_label.setText(message)
-        print(f"[Create Progress] {message}")  # 在控制台打印进度信息
+        print(f"[Create Progress] {message}")  # Print progress information to console
         if progress >= 0:
             self.create_progress.setValue(int(progress))
 
     def start_create_archive(self):
-        # 检查是否指定了输出文件
+        # Check if output file is specified
         if not self.create_output_path:
             self._show_popup(
                 target=self.create_output_text,
                 icon=InfoBarIcon.WARNING,
-                title='警告',
-                content='请指定输出文件路径',
+                title='Warning',
+                content='Please specify output file path',
                 duration=3000
             )
             return
 
-        # 检查是否添加了源文件
+        # Check if source files are added
         if not self.create_sources:
             self._show_popup(
-                target=self.source_files_list,
+                target=self.sources_listbox,
                 icon=InfoBarIcon.WARNING,
-                title='警告',
-                content='请添加要压缩的文件或文件夹',
+                title='Warning',
+                content='Please add files or folders to compress',
                 duration=3000
             )
             return
         # RAR format is now supported through external rar command
         # No need to show error message
 
+        # Check if password protection is needed
+        password = None
+        max_password_attempts = 3
+        password_attempt = 0
+        
+        if self.create_archive_format in ['zip', 'rar', '7z']:
+            # Ask user if they want to add password protection
+            from qfluentwidgets import MessageBox, FluentIcon
+            box = MessageBox(
+                'Password Protection',
+                f'Do you want to add password protection to the {self.create_archive_format.upper()} archive?',
+                self
+            )
+            box.yesButton.setText('Yes, add password')
+            box.cancelButton.setText('No, create without password')
+            
+            if box.exec():
+                # User wants to add password protection
+                while password_attempt < max_password_attempts:
+                    password_attempt += 1
+                    from password_dialog import get_password
+                    
+                    prompt_text = f"Enter password for the {self.create_archive_format.upper()} archive:"
+                    if password_attempt > 1:
+                        prompt_text = f"Password verification failed. Please try again ({password_attempt}/{max_password_attempts}):"
+                    
+                    password = get_password(self, "Set Password", prompt_text)
+                    
+                    if not password:
+                        # User cancelled password entry
+                        self._show_popup(
+                            target=self.create_progress,
+                            icon=InfoBarIcon.WARNING,
+                            title='Cancelled',
+                            content='Archive creation cancelled.',
+                            duration=2000
+                        )
+                        return
+                    
+                    # Verify password by creating a small test archive
+                    if self._verify_password_strength(password):
+                        # Password is valid, break the loop
+                        break
+                    else:
+                        # Password is too weak or invalid
+                        if password_attempt >= max_password_attempts:
+                            self._show_popup(
+                                target=self.create_progress,
+                                icon=InfoBarIcon.ERROR,
+                                title='Password Verification Failed',
+                                content=f'Failed to verify password after {max_password_attempts} attempts. Archive creation cancelled.',
+                                duration=3000
+                            )
+                            return
+                        else:
+                            self._show_popup(
+                                target=self.create_progress,
+                                icon=InfoBarIcon.WARNING,
+                                title='Weak Password',
+                                content='Please enter a stronger password (at least 6 characters).',
+                                duration=2000
+                            )
+                            password = None  # Reset password to try again
+
         self.create_progress_label.setText("Starting archive creation...")
         self.create_progress.setValue(0)
         
-        self.create_zip_worker = CreateZipWorker(self.create_output_path, self.create_sources, self.create_archive_format)
+        self.create_zip_worker = CreateZipWorker(self.create_output_path, self.create_sources, self.create_archive_format, password)
         self.create_zip_worker_thread = QThread()
         self.create_zip_worker.moveToThread(self.create_zip_worker_thread)
 
@@ -733,21 +974,32 @@ class ZipGUI(QMainWindow):
         self.create_zip_worker_thread.start()
 
     def on_create_archive_finished(self):
-        if self.create_zip_worker_thread and self.create_zip_worker_thread.isRunning():
-            self.create_zip_worker_thread.quit()
-            self.create_zip_worker_thread.wait()
+        # 使用强制线程清理方法
+        self._force_cleanup_create_thread()
+        
+        # Update archive status
+        archive_info = f"Archive created successfully: {os.path.basename(self.create_output_path)}"
+        if self.create_zip_worker and hasattr(self.create_zip_worker, 'password') and self.create_zip_worker.password:
+            archive_info += " (Password Protected)"
+        
         self._show_popup(
             target=self.create_progress,
             icon=InfoBarIcon.SUCCESS,
             title='Success',
-            content='Archive created successfully!',
+            content=archive_info,
             duration=2000
         )
+        
+        # Update archive status display
+        self.update_archive_status(archive_info, True)
 
     def on_create_archive_error(self, error_message):
-        if self.create_zip_worker_thread and self.create_zip_worker_thread.isRunning():
-            self.create_zip_worker_thread.quit()
-            self.create_zip_worker_thread.wait()
+        # 使用强制线程清理方法
+        self._force_cleanup_create_thread()
+        
+        # Update archive status
+        archive_info = f"Archive creation failed: {str(error_message)}"
+        
         self._show_popup(
             target=self.create_progress,
             icon=InfoBarIcon.ERROR,
@@ -756,6 +1008,32 @@ class ZipGUI(QMainWindow):
             duration=3000
         )
         self.create_progress_label.setText("Archive creation failed.")
+        
+        # Update archive status display
+        self.update_archive_status(archive_info, False)
+    
+    def _force_cleanup_create_thread(self):
+        """强制清理创建归档的线程，确保完全终止"""
+        if self.create_zip_worker_thread:
+            if self.create_zip_worker_thread.isRunning():
+                # 先尝试正常退出
+                self.create_zip_worker_thread.quit()
+                if not self.create_zip_worker_thread.wait(500):  # 等待0.5秒
+                    # 如果正常退出失败，强制终止
+                    self.create_zip_worker_thread.terminate()
+                    if not self.create_zip_worker_thread.wait(500):  # 再等待0.5秒
+                        # 如果终止也失败，尝试杀死线程
+                        self.create_zip_worker_thread.kill()
+                        self.create_zip_worker_thread.wait(500)  # 等待0.5秒
+            
+            # 删除线程对象
+            self.create_zip_worker_thread.deleteLater()
+            self.create_zip_worker_thread = None
+        
+        if self.create_zip_worker:
+            # 删除worker对象
+            self.create_zip_worker.deleteLater()
+            self.create_zip_worker = None
 
 
     def browse_extract_archive(self):
@@ -767,6 +1045,20 @@ class ZipGUI(QMainWindow):
         if file_dialog.exec():
             self.extract_zip_path = file_dialog.selectedFiles()[0]
             self.extract_zip_text.setText(self.extract_zip_path)
+            # Auto-detect password protection using the new PasswordDetector
+            try:
+                from support.password_detector import password_detector
+                detection_result = password_detector.is_password_protected(self.extract_zip_path)
+                if detection_result['is_protected']:
+                    self.update_password_status_extract(True, f"Password Protected ({detection_result['format']})")
+                    self.is_password_protected = True
+                else:
+                    self.update_password_status_extract(False, f"No Password Protection ({detection_result['format']})")
+                    self.is_password_protected = False
+            except Exception as e:
+                print(f"Warning: Could not detect password protection: {e}")
+                self.update_password_status_extract(False, "Archive Selected")
+                self.is_password_protected = False
             # Auto-configure output directory to the file's parent directory
             self.auto_set_extract_dest_from_file(self.extract_zip_path)
 
@@ -790,7 +1082,7 @@ class ZipGUI(QMainWindow):
 
     def update_extract_progress(self, message, progress):
         self.extract_progress_label.setText(message)
-        print(f"[Extract Progress] {message}")  # 在控制台打印进度信息
+        print(f"[Extract Progress] {message}")  # Print progress information to console
         if progress >= 0:
             self.extract_progress.setValue(int(progress))
 
@@ -799,8 +1091,8 @@ class ZipGUI(QMainWindow):
             self._show_popup(
                 target=self.extract_zip_text,
                 icon=InfoBarIcon.ERROR,
-                title='错误',
-                content='请指定要解压的归档文件',
+                title='Error',
+                content='Please specify the archive file to extract',
                 duration=2000
             )
             return
@@ -808,29 +1100,72 @@ class ZipGUI(QMainWindow):
             self._show_popup(
                 target=self.extract_dest_text,
                 icon=InfoBarIcon.ERROR,
-                title='错误',
-                content='请指定解压目标文件夹',
+                title='Error',
+                content='Please specify the extraction destination folder',
                 duration=2000
             )
             return
 
+        # 清理可能存在的旧线程
+        self._force_cleanup_thread()
+
         self.extract_progress_label.setText("Starting archive extraction...")
         self.extract_progress.setValue(0)
 
-        self.extract_zip_worker = ExtractZipWorker(self.extract_zip_path, self.extract_dest_path)
+        # Check if archive is password protected by attempting to list contents first
+        try:
+            list_archive_contents(self.extract_zip_path)
+            # If listing succeeds without password, proceed without password
+            password = None
+            # Update password status to indicate no password protection
+            self.update_password_status_extract(False, "No Password Protection")
+        except RuntimeError as e:
+            if "password" in str(e).lower() or "encrypted" in str(e).lower():
+                # Archive is password protected, prompt for password
+                # Update password status to indicate password protection
+                self.update_password_status_extract(True, "Password Required")
+                from password_dialog import get_password
+                password = get_password(self, "Enter Password", 
+                                      f"The archive '{os.path.basename(self.extract_zip_path)}' is password protected.\nPlease enter the password:")
+                if not password:
+                    # User cancelled password entry
+                    self._show_popup(
+                        target=self.extract_progress,
+                        icon=InfoBarIcon.WARNING,
+                        title='Cancelled',
+                        content='Archive extraction cancelled.',
+                        duration=2000
+                    )
+                    return
+            else:
+                # Different error, proceed without password
+                password = None
+                # Update password status to indicate no password protection
+                self.update_password_status_extract(False, "No Password Protection")
+        except Exception:
+            # Unexpected error, proceed without password
+            password = None
+            # Update password status to indicate unknown status
+            self.update_password_status_extract(False, "Archive Status Unknown")
+
+        self.extract_zip_worker = ExtractZipWorker(self.extract_zip_path, self.extract_dest_path, password)
         self.extract_zip_worker_thread = QThread()
         self.extract_zip_worker.moveToThread(self.extract_zip_worker_thread)
 
         self.extract_zip_worker.finished.connect(self.on_extract_archive_finished)
         self.extract_zip_worker.progress_updated.connect(self.update_extract_progress)
         self.extract_zip_worker.conversion_error.connect(self.on_extract_archive_error)
+        self.extract_zip_worker.password_required.connect(self.on_extract_archive_error)
         self.extract_zip_worker_thread.started.connect(self.extract_zip_worker.run)
         self.extract_zip_worker_thread.start()
 
     def on_extract_archive_finished(self):
-        if self.extract_zip_worker_thread and self.extract_zip_worker_thread.isRunning():
-            self.extract_zip_worker_thread.quit()
-            self.extract_zip_worker_thread.wait()
+        # 确保线程被正确清理
+        self._force_cleanup_thread()
+        
+        # Update password status to indicate successful extraction
+        self.update_password_status_extract(self.is_password_protected if hasattr(self, 'is_password_protected') else False, "Extraction Successful")
+        
         self._show_popup(
             target=self.extract_progress,
             icon=InfoBarIcon.SUCCESS,
@@ -840,9 +1175,78 @@ class ZipGUI(QMainWindow):
         )
 
     def on_extract_archive_error(self, error_message):
-        if self.extract_zip_worker_thread and self.extract_zip_worker_thread.isRunning():
-            self.extract_zip_worker_thread.quit()
-            self.extract_zip_worker_thread.wait()
+        # Check if error is due to incorrect password
+        error_msg_lower = str(error_message).lower()
+        is_password_error = (
+            "password" in error_msg_lower and (
+                "incorrect" in error_msg_lower or 
+                "wrong" in error_msg_lower or
+                "bad" in error_msg_lower or
+                "invalid" in error_msg_lower or
+                "failed" in error_msg_lower
+            )
+        ) or (
+            "bad password" in error_msg_lower or
+            "authentication failed" in error_msg_lower or
+            "password required" in error_msg_lower
+        )
+        
+        if is_password_error:
+            # Update password status to indicate incorrect password
+            self.update_password_status_extract(True, "Incorrect Password")
+            
+            # 循环提示用户输入密码，直到输入正确的密码或取消
+            while True:
+                # Prompt for password again with error message
+                from password_dialog import get_password
+                password = get_password(self, "Incorrect Password", 
+                                      f"The password you entered for '{os.path.basename(self.extract_zip_path)}' is incorrect.\nPlease try again:",
+                                      "Incorrect password. Please try again.")
+                if password:
+                    # 强制终止之前的线程
+                    self._force_cleanup_thread()
+                    
+                    # Retry extraction with new password
+                    self.extract_progress_label.setText("Retrying archive extraction...")
+                    self.extract_progress.setValue(0)
+                    
+                    # 创建新的工作线程
+                    self.extract_zip_worker = ExtractZipWorker(self.extract_zip_path, self.extract_dest_path, password)
+                    self.extract_zip_worker_thread = QThread()
+                    self.extract_zip_worker.moveToThread(self.extract_zip_worker_thread)
+
+                    # 连接信号
+                    self.extract_zip_worker.finished.connect(self.on_extract_archive_finished)
+                    self.extract_zip_worker.progress_updated.connect(self.update_extract_progress)
+                    self.extract_zip_worker.conversion_error.connect(self.on_extract_archive_error)
+                    self.extract_zip_worker.password_required.connect(self.on_extract_archive_error)
+                    self.extract_zip_worker_thread.started.connect(self.extract_zip_worker.run)
+                    
+                    # 启动线程
+                    self.extract_zip_worker_thread.start()
+                    return
+                else:
+                    # User cancelled password entry
+                    # 强制终止之前的线程
+                    self._force_cleanup_thread()
+                    
+                    self._show_popup(
+                        target=self.extract_progress,
+                        icon=InfoBarIcon.WARNING,
+                        title='Cancelled',
+                        content='Archive extraction cancelled.',
+                        duration=2000
+                    )
+                    self.extract_progress_label.setText("Archive extraction cancelled.")
+                    return
+        
+        # 对于非密码错误，确保线程被正确清理
+        self._force_cleanup_thread()
+        
+        # Show error message for other types of errors
+        # Update password status to indicate extraction error
+        self.update_password_status_extract(False, "Extraction Error")
+        
         self._show_popup(
             target=self.extract_progress,
             icon=InfoBarIcon.ERROR,
@@ -851,6 +1255,29 @@ class ZipGUI(QMainWindow):
             duration=3000
         )
         self.extract_progress_label.setText("Archive extraction failed.")
+    
+    def _force_cleanup_thread(self):
+        """强制清理线程，确保完全终止"""
+        if self.extract_zip_worker_thread:
+            if self.extract_zip_worker_thread.isRunning():
+                # 先尝试正常退出
+                self.extract_zip_worker_thread.quit()
+                if not self.extract_zip_worker_thread.wait(500):  # 等待0.5秒
+                    # 如果正常退出失败，强制终止
+                    self.extract_zip_worker_thread.terminate()
+                    if not self.extract_zip_worker_thread.wait(500):  # 再等待0.5秒
+                        # 如果终止也失败，尝试杀死线程
+                        self.extract_zip_worker_thread.kill()
+                        self.extract_zip_worker_thread.wait(500)  # 等待0.5秒
+            
+            # 删除线程对象
+            self.extract_zip_worker_thread.deleteLater()
+            self.extract_zip_worker_thread = None
+        
+        if self.extract_zip_worker:
+            # 删除worker对象
+            self.extract_zip_worker.deleteLater()
+            self.extract_zip_worker = None
 
 
     def browse_add_archive(self):
@@ -862,6 +1289,19 @@ class ZipGUI(QMainWindow):
         if file_dialog.exec():
             self.add_zip_path = file_dialog.selectedFiles()[0]
             self.add_zip_text.setText(self.add_zip_path)
+            # Auto-detect password protection using the new PasswordDetector
+            try:
+                from support.password_detector import password_detector
+                detection_result = password_detector.is_password_protected(self.add_zip_path)
+                if detection_result['is_protected']:
+                    self.is_password_protected = True
+                    print(f"Archive is password protected ({detection_result['format']})")
+                else:
+                    self.is_password_protected = False
+                    print(f"Archive has no password protection ({detection_result['format']})")
+            except Exception as e:
+                print(f"Warning: Could not detect password protection: {e}")
+                self.is_password_protected = False
 
     def browse_add_file(self):
         file_dialog = QFileDialog(self)
@@ -878,7 +1318,7 @@ class ZipGUI(QMainWindow):
 
     def update_add_progress(self, message, progress):
         self.add_progress_label.setText(message)
-        print(f"[Add Progress] {message}")  # 在控制台打印进度信息
+        print(f"[Add Progress] {message}")  # Print progress information to console
         if progress >= 0:
             self.add_progress.setValue(int(progress))
 
@@ -887,8 +1327,8 @@ class ZipGUI(QMainWindow):
             self._show_popup(
                 target=self.add_zip_text,
                 icon=InfoBarIcon.ERROR,
-                title='错误',
-                content='请指定要添加文件的现有归档文件',
+                title='Error',
+                content='Please specify an existing archive file to add files to',
                 duration=2000
             )
             return
@@ -896,8 +1336,8 @@ class ZipGUI(QMainWindow):
             self._show_popup(
                 target=self.add_files_listbox,
                 icon=InfoBarIcon.ERROR,
-                title='错误',
-                content='请指定要添加到归档的文件',
+                title='Error',
+                content='Please specify files to add to the archive',
                 duration=2000
             )
             return
@@ -930,12 +1370,14 @@ class ZipGUI(QMainWindow):
         self.add_to_zip_worker_thread.start()
 
     def on_add_to_archive_finished(self):
-        if self.add_to_zip_worker_thread and self.add_to_zip_worker_thread.isRunning():
-            self.add_to_zip_worker_thread.quit()
-            self.add_to_zip_worker_thread.wait()
+        # 使用强制线程清理方法
+        self._force_cleanup_add_thread()
         
         # Count number of files added
-        file_count = len(self.add_to_zip_worker.files_to_add) if hasattr(self.add_to_zip_worker, 'files_to_add') else 1
+        file_count = 1
+        if self.add_to_zip_worker and hasattr(self.add_to_zip_worker, 'files_to_add'):
+            if isinstance(self.add_to_zip_worker.files_to_add, list):
+                file_count = len(self.add_to_zip_worker.files_to_add)
         file_text = "files" if file_count > 1 else "file"
         
         self._show_popup(
@@ -947,9 +1389,9 @@ class ZipGUI(QMainWindow):
         )
 
     def on_add_to_archive_error(self, error_message):
-        if self.add_to_zip_worker_thread and self.add_to_zip_worker_thread.isRunning():
-            self.add_to_zip_worker_thread.quit()
-            self.add_to_zip_worker_thread.wait()
+        # 使用强制线程清理方法
+        self._force_cleanup_add_thread()
+        
         self._show_popup(
             target=self.add_progress,
             icon=InfoBarIcon.ERROR,
@@ -958,15 +1400,38 @@ class ZipGUI(QMainWindow):
             duration=3000
         )
         self.add_progress_label.setText("Archive file addition failed.")
+    
+    def _force_cleanup_add_thread(self):
+        """强制清理添加到归档的线程，确保完全终止"""
+        if self.add_to_zip_worker_thread:
+            if self.add_to_zip_worker_thread.isRunning():
+                # 先尝试正常退出
+                self.add_to_zip_worker_thread.quit()
+                if not self.add_to_zip_worker_thread.wait(500):  # 等待0.5秒
+                    # 如果正常退出失败，强制终止
+                    self.add_to_zip_worker_thread.terminate()
+                    if not self.add_to_zip_worker_thread.wait(500):  # 再等待0.5秒
+                        # 如果终止也失败，尝试杀死线程
+                        self.add_to_zip_worker_thread.kill()
+                        self.add_to_zip_worker_thread.wait(500)  # 等待0.5秒
+            
+            # 删除线程对象
+            self.add_to_zip_worker_thread.deleteLater()
+            self.add_to_zip_worker_thread = None
+        
+        if self.add_to_zip_worker:
+            # 删除worker对象
+            self.add_to_zip_worker.deleteLater()
+            self.add_to_zip_worker = None
 
     def update_add_files_list(self, files):
-        """更新添加文件列表显示"""
+        """Update the add files list display"""
         if not hasattr(self, 'add_files_listbox'):
             return
             
         self.add_files_listbox.clear()
         
-        # 始终显示文件列表
+        # Always display the file list
         for file_path in files:
             self.add_files_listbox.addItem(os.path.basename(file_path))
 
@@ -979,10 +1444,27 @@ class ZipGUI(QMainWindow):
         if file_dialog.exec():
             self.list_zip_path = file_dialog.selectedFiles()[0]
             self.list_zip_text.setText(self.list_zip_path)
+            # Auto-detect password protection using the new PasswordDetector
+            try:
+                from support.password_detector import password_detector
+                detection_result = password_detector.is_password_protected(self.list_zip_path)
+                if detection_result['is_protected']:
+                    self.update_password_status_list(True, f"Password Protected ({detection_result['format']})")
+                    self.is_password_protected = True
+                else:
+                    self.update_password_status_list(False, f"No Password Protection ({detection_result['format']})")
+                    self.is_password_protected = False
+            except Exception as e:
+                print(f"Warning: Could not detect password protection: {e}")
+                self.update_password_status_list(False, "Archive Selected")
+                self.is_password_protected = False
+            # Clear any stored password for the previous archive
+            if hasattr(self, '_current_password'):
+                delattr(self, '_current_password')
             self.start_list_archive_contents() # Automatically list contents after selecting file
 
     def show_sources_context_menu(self, position):
-        """显示source files列表的右键菜单"""
+        """Show right-click menu for source files list"""
         item = self.sources_listbox.itemAt(position)
         if not item:
             return
@@ -995,7 +1477,7 @@ class ZipGUI(QMainWindow):
             self.copy_source_file(item)
     
     def copy_source_file(self, item):
-        """复制source file到剪贴板"""
+        """Copy source file to clipboard"""
         file_path = item.text()
         if file_path.startswith("[FOLDER] "):
             file_path = file_path[len("[FOLDER] "):]
@@ -1007,21 +1489,21 @@ class ZipGUI(QMainWindow):
             self._show_popup(
                 target=self.sources_listbox,
                 icon=InfoBarIcon.SUCCESS,
-                title='成功',
-                content=f'文件路径已复制: {os.path.basename(file_path)}',
+                title='Success',
+                content=f'File path copied: {os.path.basename(file_path)}',
                 duration=2000
             )
         else:
             self._show_popup(
                 target=self.sources_listbox,
                 icon=InfoBarIcon.ERROR,
-                title='错误',
-                content='文件不存在',
+                title='Error',
+                content='File does not exist',
                 duration=2000
             )
     
     def show_contents_context_menu(self, position):
-        """显示archive contents列表的右键菜单"""
+        """Show right-click menu for archive contents list"""
         item = self.contents_listbox.itemAt(position)
         if not item:
             return
@@ -1029,7 +1511,7 @@ class ZipGUI(QMainWindow):
         menu = QMenu()
         copy_action = menu.addAction("Copy File")
         
-        # 检查文件是否受密码保护
+        # Check if file is password protected
         if self.is_password_protected:
             copy_action.setEnabled(False)
             copy_action.setText("Copy File (Disabled - Password Protected)")
@@ -1039,10 +1521,10 @@ class ZipGUI(QMainWindow):
             self.copy_archive_content(item)
     
     def copy_archive_content(self, item):
-        """复制archive content文件路径到剪贴板"""
+        """Copy archive content file path to clipboard"""
         content_text = item.text()
         
-        # 提取文件名（去掉大小信息）
+        # Extract file name (remove size information)
         filename = content_text.split()[0] if content_text else content_text
         
         clipboard = QApplication.clipboard()
@@ -1051,8 +1533,8 @@ class ZipGUI(QMainWindow):
         self._show_popup(
             target=self.contents_listbox,
             icon=InfoBarIcon.SUCCESS,
-            title='成功',
-            content=f'内容路径已复制: {filename}',
+            title='Success',
+            content=f'Content path copied: {filename}',
             duration=2000
         )
 
@@ -1070,15 +1552,35 @@ class ZipGUI(QMainWindow):
         self.contents_listbox.clear()
         self.contents_listbox.addItem("Listing contents...")
 
-        self.list_zip_worker = ListZipContentsWorker(self.list_zip_path)
+        # Reset password protection status
+        self.is_password_protected = False
+        
+        # Check if we have a stored password for this archive
+        password = getattr(self, '_current_password', None)
+        
+        self.list_zip_worker = ListZipContentsWorker(self.list_zip_path, password=password)
         self.list_zip_worker_thread = QThread()
         self.list_zip_worker.moveToThread(self.list_zip_worker_thread)
 
-        self.list_zip_worker.finished.connect(self.update_contents_list)
+        self.list_zip_worker.finished.connect(self.on_list_zip_finished)
         self.list_zip_worker.conversion_error.connect(self.on_list_archive_error)
         self.list_zip_worker.password_required.connect(self.on_password_required)
         self.list_zip_worker_thread.started.connect(self.list_zip_worker.run)
         self.list_zip_worker_thread.start()
+
+    def on_list_zip_finished(self, contents):
+        """Handle successful completion of listing zip contents"""
+        # 使用强制线程清理方法
+        self._force_cleanup_list_thread()
+        
+        # Update password status for successful listing
+        if hasattr(self, '_current_password') and self._current_password:
+            self.update_password_status_list(True, "Password Verified")
+        else:
+            self.update_password_status_list(False, "No Password")
+        
+        # Call the original update_contents_list function
+        self.update_contents_list(contents)
 
     def update_contents_list(self, contents):
         print(f"[DEBUG] update_contents_list: Received {len(contents) if contents else 0} items")
@@ -1086,12 +1588,12 @@ class ZipGUI(QMainWindow):
             self.list_zip_worker_thread.quit()
             self.list_zip_worker_thread.wait()
         self.contents_listbox.clear()
-        # 重置密码保护状态
+        # Reset password protection status
         self.is_password_protected = False
         if contents:
             print(f"[DEBUG] update_contents_list: Processing {len(contents)} items")
             for item in contents:
-                # 格式化显示内容信息
+                # Format display contents information
                 if isinstance(item, dict) and "name" in item:
                     name = item["name"]
                     size = item.get("size", 0)
@@ -1100,7 +1602,7 @@ class ZipGUI(QMainWindow):
                     if is_dir:
                         display_text = f"{name} <DIR>"
                     else:
-                        # 格式化文件大小
+                        # Format file size
                         if size < 1024:
                             size_str = f"{size} B"
                         elif size < 1024 * 1024:
@@ -1113,8 +1615,11 @@ class ZipGUI(QMainWindow):
                     
                     self.contents_listbox.addItem(display_text)
                 else:
-                    # 如果item不是字典，直接添加
+                    # If item is not a dictionary, directly add
                     self.contents_listbox.addItem(str(item))
+            
+            # Update password status based on successful listing
+            self.update_password_status_list(self.is_password_protected, "Contents Listed Successfully")
             
             self._show_info_bar(
                 title='Success',
@@ -1124,6 +1629,10 @@ class ZipGUI(QMainWindow):
         else:
             print("[DEBUG] update_contents_list: No contents found")
             self.contents_listbox.addItem("No contents found or invalid archive.")
+            
+            # Update password status for no contents found
+            self.update_password_status_list(False, "No Contents Found")
+            
             self._show_popup(
                 target=self.contents_listbox,
                 icon=InfoBarIcon.WARNING,
@@ -1133,27 +1642,103 @@ class ZipGUI(QMainWindow):
             )
 
     def on_password_required(self, error_message):
-        if self.list_zip_worker_thread and self.list_zip_worker_thread.isRunning():
-            self.list_zip_worker_thread.quit()
-            self.list_zip_worker_thread.wait()
+        # 使用强制线程清理方法
+        self._force_cleanup_list_thread()
         
-        # 设置密码保护状态
+        # Set password protection status
         self.is_password_protected = True
         
-        self._show_popup(
-            target=self.contents_listbox,
-            icon=InfoBarIcon.WARNING,
-            title='Password Required',
-            content=f'This archive is password protected: {str(error_message)}',
-            duration=3000
-        )
-        self.contents_listbox.clear()
-        self.contents_listbox.addItem("Password protected archive - contents cannot be listed")
+        # Update password status display
+        self.update_password_status_list(True, "Password Required")
+        
+        # Import password dialog
+        try:
+            from password_dialog import get_password
+            
+            # Get password from user
+            password = get_password(
+                parent=self,
+                title="Password Required",
+                content="This archive is password protected. Please enter the password:"
+            )
+            
+            if password:
+                # Store the password for this archive
+                self._current_password = password
+                
+                # Retry listing contents with password
+                self.contents_listbox.clear()
+                self.contents_listbox.addItem("Retrying with password...")
+                
+                # Create new worker with password
+                self.list_zip_worker = ListZipContentsWorker(self.list_zip_path, password=password)
+                self.list_zip_worker_thread = QThread()
+                self.list_zip_worker.moveToThread(self.list_zip_worker_thread)
+
+                self.list_zip_worker.finished.connect(self.on_list_zip_finished)
+                self.list_zip_worker.conversion_error.connect(self.on_list_archive_error)
+                self.list_zip_worker.password_required.connect(self.on_password_required)
+                self.list_zip_worker_thread.started.connect(self.list_zip_worker.run)
+                self.list_zip_worker_thread.start()
+            else:
+                # User cancelled password entry
+                self._show_popup(
+                    target=self.contents_listbox,
+                    icon=InfoBarIcon.WARNING,
+                    title='Password Required',
+                    content='Password entry cancelled. Contents cannot be listed.',
+                    duration=3000
+                )
+                self.contents_listbox.clear()
+                self.contents_listbox.addItem("Password protected archive - contents cannot be listed")
+        except ImportError:
+            # Fallback if password dialog is not available
+            self._show_popup(
+                target=self.contents_listbox,
+                icon=InfoBarIcon.WARNING,
+                title='Password Required',
+                content=f'This archive is password protected: {str(error_message)}',
+                duration=3000
+            )
+            self.contents_listbox.clear()
+            self.contents_listbox.addItem("Password protected archive - contents cannot be listed")
 
     def on_list_archive_error(self, error_message):
-        if self.list_zip_worker_thread and self.list_zip_worker_thread.isRunning():
-            self.list_zip_worker_thread.quit()
-            self.list_zip_worker_thread.wait()
+        # 使用强制线程清理方法
+        self._force_cleanup_list_thread()
+            
+        # Check if this is a password error
+        error_str = str(error_message).lower()
+        if "password" in error_str and ("incorrect" in error_str or "required" in error_str or "invalid" in error_str):
+            # Handle password errors
+            self.is_password_protected = True
+            
+            # Update password status for password error
+            self.update_password_status_list(True, "Password Error")
+            
+            # If we already have a password, it was incorrect
+            if hasattr(self, '_current_password') and self._current_password:
+                # Clear the incorrect password
+                self._current_password = None
+                
+                # Show error message
+                self._show_popup(
+                    target=self.contents_listbox,
+                    icon=InfoBarIcon.ERROR,
+                    title='Incorrect Password',
+                    content='The password you entered is incorrect. Please try again.',
+                    duration=3000
+                )
+                
+                # Ask for password again
+                self.on_password_required(error_message)
+                return
+            else:
+                # No password provided yet, ask for one
+                self.on_password_required(error_message)
+                return
+        
+        # Handle other types of errors
         self._show_popup(
             target=self.contents_listbox,
             icon=InfoBarIcon.ERROR,
@@ -1163,6 +1748,32 @@ class ZipGUI(QMainWindow):
         )
         self.contents_listbox.clear()
         self.contents_listbox.addItem("Error listing contents.")
+        
+        # Update password status for other errors
+        self.update_password_status_list(False, "Error Listing Contents")
+    
+    def _force_cleanup_list_thread(self):
+        """强制清理列出归档内容的线程，确保完全终止"""
+        if self.list_zip_worker_thread:
+            if self.list_zip_worker_thread.isRunning():
+                # 先尝试正常退出
+                self.list_zip_worker_thread.quit()
+                if not self.list_zip_worker_thread.wait(500):  # 等待0.5秒
+                    # 如果正常退出失败，强制终止
+                    self.list_zip_worker_thread.terminate()
+                    if not self.list_zip_worker_thread.wait(500):  # 再等待0.5秒
+                        # 如果终止也失败，尝试杀死线程
+                        self.list_zip_worker_thread.kill()
+                        self.list_zip_worker_thread.wait(500)  # 等待0.5秒
+            
+            # 删除线程对象
+            self.list_zip_worker_thread.deleteLater()
+            self.list_zip_worker_thread = None
+        
+        if self.list_zip_worker:
+            # 删除worker对象
+            self.list_zip_worker.deleteLater()
+            self.list_zip_worker = None
 
     # --- Drag and Drop Event Handlers ---
     def dragEnterEvent(self, event: QDragEnterEvent):

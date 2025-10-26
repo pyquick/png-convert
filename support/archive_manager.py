@@ -14,51 +14,51 @@ SUPPORTED_ARCHIVE_FORMATS = [
     "xz", "tar.xz", "lzma", "zipx", "iso", "cab", "arj", "lzh"
 ]
 
-# CLI工具路径
+# CLI tool path
 CLI_BASE_PATH = os.path.join(os.path.dirname(__file__), "CLI", "Darwin")
 
 def _get_archive_type(file_path):
     """Determines the archive type based on file extension and magic bytes."""
     file_path_str = str(file_path).lower()
     
-    # 首先尝试通过文件头检测实际格式
+    # First try to detect actual format through file header
     try:
         with open(file_path, 'rb') as f:
-            magic = f.read(26)  # 读取更多字节以识别各种格式
+            magic = f.read(26)  # Read more bytes to identify various formats
             
-        # ZIP文件头: PK (0x504B)
+        # ZIP file header: PK (0x504B)
         if magic.startswith(b'PK'):
-            # 进一步检查是否是ZIPX格式
+            # Further check if it's ZIPX format
             if len(magic) >= 4 and magic[2:4] == b'\x07\x08':
                 return "zipx"
             return "zip"
             
-        # RAR文件头: Rar! (0x526172211A0700) 或 Rar! (0x526172211A070100)
+        # RAR file header: Rar! (0x526172211A0700) or Rar! (0x526172211A070100)
         if magic.startswith(b'Rar!'):
             return "rar"
             
-        # 7z文件头: 7z (0x377ABCAF271C)
+        # 7z file header: 7z (0x377ABCAF271C)
         if magic.startswith(b'7z\xBC\xAF\x27\x1C'):
             return "7z"
             
-        # CAB文件头: MSCF (0x4D534346)
+        # CAB file header: MSCF (0x4D534346)
         if magic.startswith(b'MSCF'):
             return "cab"
             
-        # ARJ文件头: 标识符在偏移0-1处是0x60EA
+        # ARJ file header: Identifier at offset 0-1 is 0x60EA
         if len(magic) >= 2 and magic[:2] == b'\xea\x60':
             return "arj"
             
-        # TAR文件头: 通常在偏移257处有"ustar"标识
+        # TAR file header: Usually has "ustar" identifier at offset 257
         if len(magic) >= 26:
-            # 重新读取更多字节以检测TAR
+            # Read more bytes again to detect TAR
             with open(file_path, 'rb') as f:
                 f.seek(257)
                 tar_magic = f.read(5)
             if tar_magic == b'ustar':
                 return "tar"
                 
-        # ISO文件头: 通常以"CD001"开头在偏移32769处 (ISO 9660)
+        # ISO file header: Usually starts with "CD001" at offset 32769 (ISO 9660)
         if len(magic) >= 6:
             with open(file_path, 'rb') as f:
                 f.seek(32769)
@@ -66,26 +66,26 @@ def _get_archive_type(file_path):
             if iso_header == b'CD001':
                 return "iso"
                 
-        # LZMA/XZ格式: 检查LZMA魔数
+        # LZMA/XZ format: Check LZMA magic number
         if len(magic) >= 6 and magic[:6] == b'\xfd7zXZ\x00':
             return "xz"
             
-        # BZ2格式: BZh
+        # BZ2 format: BZh
         if len(magic) >= 3 and magic[:3] == b'BZh':
             return "bz2"
             
-        # GZIP格式: \x1f\x8b
+        # GZIP format: \x1f\x8b
         if len(magic) >= 2 and magic[:2] == b'\x1f\x8b':
-            return "tar.gz"  # 通常GZIP用于TAR.GZ
+            return "tar.gz"
             
-        # LZMA格式 (无XZ容器)
+        # LZMA format (without XZ container)
         if len(magic) >= 5 and magic[:5] == b'\x5d\x00\x00\x80\x00':
             return "lzma"
     except (IOError, OSError):
-        # 如果读取文件失败，回退到扩展名检测
+        # If file reading fails, fall back to extension detection
         pass
     
-    # 如果文件头检测失败，回退到扩展名检测
+    # If file header detection fails, fall back to extension detection
     # Check for multi-part extensions first
     if file_path_str.endswith('.tar.bz2') or file_path_str.endswith('.tbz2'):
         return "tar.bz2"
@@ -123,7 +123,7 @@ def _get_archive_type(file_path):
     return None
 
 def _run_command_with_timeout(cmd, timeout=2, progress_callback=None):
-    """运行命令并设置超时限制"""
+    """Run command with timeout limit"""
     start_time = time.time()
     
     try:
@@ -144,9 +144,9 @@ def _run_command_with_timeout(cmd, timeout=2, progress_callback=None):
         raise
 
 def _get_cli_tool(tool_name, arch_specific=False):
-    """获取CLI工具路径"""
+    """Get CLI tool path"""
     if arch_specific:
-        # 根据架构选择工具
+        # Select tool based on architecture
         arch = platform.machine()
         if arch == "arm64":
             arch_dir = "AppleSi"
@@ -154,7 +154,7 @@ def _get_cli_tool(tool_name, arch_specific=False):
             arch_dir = "Intel"
         tool_path = os.path.join(CLI_BASE_PATH, arch_dir, tool_name)
     else:
-        # 使用通用工具
+        # Use universal tool
         tool_path = os.path.join(CLI_BASE_PATH, "Universal", tool_name)
     
     if os.path.exists(tool_path):
@@ -173,7 +173,7 @@ def _count_files_in_sources(source_paths):
             total += sum(1 for _ in path.rglob('*') if _.is_file())
     return max(total, 1)  # Ensure at least 1 to avoid division by zero
 
-def create_archive(output_path, source_paths, archive_format, progress_callback=None):
+def create_archive(output_path, source_paths, archive_format, progress_callback=None, password=None):
     """
     Create an archive file from the specified source paths.
 
@@ -182,9 +182,10 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
         source_paths (list): List of file/directory paths to include in the archive.
         archive_format (str): The format of the archive to create.
         progress_callback (function): Optional callback for progress updates.
+        password (str): Optional password for password-protected archives.
     """
     try:
-        # 验证输入参数
+        # Validate input parameters
         if not output_path:
             raise ValueError("Output path is empty")
         if not source_paths:
@@ -192,7 +193,7 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
         if not archive_format:
             raise ValueError("Archive format is not specified")
         
-        # 检查源文件是否存在
+        # Check if source files exist
         for source_path in source_paths:
             if not os.path.exists(source_path):
                 raise ValueError(f"Source file does not exist: {source_path}")
@@ -200,14 +201,18 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
         if progress_callback:
             progress_callback(f"Starting {archive_format} archive creation...", 0)
         
-        # 创建一个临时目录，目录名为压缩包名称（不带扩展名）
+        # Create a temporary directory with the archive name (without extension)
         archive_name = os.path.splitext(os.path.basename(output_path))[0]
         temp_dir = tempfile.mkdtemp()
         wrapper_dir = os.path.join(temp_dir, archive_name)
+        
+        # Ensure the wrapper directory doesn't already exist
+        if os.path.exists(wrapper_dir):
+            shutil.rmtree(wrapper_dir)
         os.makedirs(wrapper_dir)
         
         try:
-            # 复制所有源文件到包装目录中
+            # Copy all source files to the wrapper directory
             total_files = _count_files_in_sources(source_paths)
             copied_files = 0
             
@@ -216,46 +221,46 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
                     shutil.copy2(source_path, wrapper_dir)
                     copied_files += 1
                 elif os.path.isdir(source_path):
-                    # 对于目录，递归复制并计算文件数量
+                    # For directories, recursively copy and count files
                     dest_dir = os.path.join(wrapper_dir, os.path.basename(source_path))
                     shutil.copytree(source_path, dest_dir)
-                    # 计算目录中的文件数量
+                    # Count files in directory
                     for root, dirs, files in os.walk(source_path):
                         copied_files += len(files)
                 
-                # 更新进度 - 复制阶段占40%
+                # Update progress - copy phase accounts for 40%
                 if progress_callback and total_files > 0:
                     progress = min(40, (copied_files / total_files) * 40)
                     progress_callback(f"Copying files to wrapper directory... ({copied_files}/{total_files})", progress)
             
-            # 使用包装目录作为源路径
+            # Use wrapper directory as source path
             wrapped_source_path = wrapper_dir
             
-            # 根据格式选择处理方式
+            # Select processing method based on format
             if progress_callback:
                 progress_callback(f"Creating {archive_format} archive...", 40)
                 
             success = False
             if archive_format in ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz", "zipx"]:
-                # 使用patool处理
-                success = _create_with_patool(output_path, [wrapped_source_path], archive_format, progress_callback)
-            elif archive_format in ["bz2", "xz", "lzma"]:
-                # 这些格式只能压缩单个文件，所以需要先创建tar，再压缩
+                # Use patool for processing
+                success = _create_with_patool(output_path, [wrapped_source_path], archive_format, progress_callback, password)
+            elif archive_format in ["bz2", "xz", "lzma", "gz"]:
+                # These formats can only compress single files, so need to create tar first, then compress
                 success = _create_single_file_compression(output_path, [wrapped_source_path], archive_format, progress_callback)
             elif archive_format == "cab":
-                # 使用cabextract相关工具处理CAB创建
+                # Use cabextract related tools for CAB creation
                 success = _create_cab_with_cli(output_path, [wrapped_source_path], progress_callback)
             elif archive_format in ["arj", "lzh"]:
-                # 使用unar/lsar处理
+                # Use unar/lsar for processing
                 success = _create_with_unar(output_path, [wrapped_source_path], archive_format, progress_callback)
             elif archive_format == "rar":
-                # 使用rar CLI工具
-                success = _create_rar_with_cli(output_path, [wrapped_source_path], progress_callback)
+                # Use rar CLI tool
+                success = _create_rar_with_cli(output_path, [wrapped_source_path], progress_callback, password)
             elif archive_format == "7z":
-                # 使用7zz CLI工具
-                success = _create_7z_with_cli(output_path, [wrapped_source_path], progress_callback)
+                # Use 7zz CLI tool
+                success = _create_7z_with_cli(output_path, [wrapped_source_path], progress_callback, password)
             elif archive_format == "iso":
-                # 使用系统命令
+                # Use system command
                 success = _create_iso_with_system(output_path, [wrapped_source_path], progress_callback)
             else:
                 raise ValueError(f"Unsupported archive format for creation: {archive_format}")
@@ -264,7 +269,7 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
                 raise RuntimeError(f"Failed to create {archive_format} archive")
 
         finally:
-            # 清理临时目录
+            # Clean up temporary directory
             shutil.rmtree(temp_dir)
 
         if progress_callback:
@@ -276,24 +281,28 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
             progress_callback(f"Error creating archive: {str(e)}", -1)
         return False
 
-def _create_with_patool(output_path, source_paths, archive_format, progress_callback=None):
-    """使用patool创建归档文件"""
+def _create_with_patool(output_path, source_paths, archive_format, progress_callback=None, password=None):
+    """Create archive file using patool"""
     try:
         import patoolib
     except ImportError:
         raise ImportError("patool is required for this format. Install with: pip install patool")
     
-    # 创建临时目录
+    # Create temporary directory
     temp_dir = tempfile.mkdtemp()
     try:
-        # 复制所有源文件到临时目录
+        # Copy all source files to temporary directory
         for source_path in source_paths:
             if os.path.isfile(source_path):
                 shutil.copy2(source_path, temp_dir)
             elif os.path.isdir(source_path):
-                shutil.copytree(source_path, os.path.join(temp_dir, os.path.basename(source_path)))
+                dest_dir = os.path.join(temp_dir, os.path.basename(source_path))
+                # Ensure the destination directory doesn't already exist
+                if os.path.exists(dest_dir):
+                    shutil.rmtree(dest_dir)
+                shutil.copytree(source_path, dest_dir)
         
-        # 使用patool创建归档 - 修复路径问题，使用完整路径
+        # Use patool to create archive - fix path issues, use full paths
         temp_files = []
         for item in os.listdir(temp_dir):
             item_path = os.path.join(temp_dir, item)
@@ -305,38 +314,141 @@ def _create_with_patool(output_path, source_paths, archive_format, progress_call
         if progress_callback:
             progress_callback(f"Creating {archive_format} archive with patool...", 50)
         
-        # 添加调试信息
+        # Add debug information
         if progress_callback:
             progress_callback(f"Output path: {output_path}", 55)
             progress_callback(f"Temp files: {temp_files}", 60)
-            
-        # 尝试使用不同的patool调用方式
-        try:
-            # 方法1：直接传递文件路径
-            patoolib.create_archive(output_path, temp_files)
-        except Exception as e1:
-            # 方法2：切换到临时目录并使用相对路径
-            try:
-                original_cwd = os.getcwd()
-                os.chdir(temp_dir)
-                rel_files = [os.path.basename(f) for f in temp_files]
-                patoolib.create_archive(output_path, rel_files)
-                os.chdir(original_cwd)
-            except Exception as e2:
-                os.chdir(original_cwd)
-                
-                # 方法3：使用完整路径和patool的--verbose选项
-                try:
-                    import subprocess
-                    cmd = ["patool", "create", output_path] + temp_files
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-                    if result.returncode != 0:
-                        raise RuntimeError(f"patool command failed: {result.stderr}")
-                except Exception as e3:
-                    raise RuntimeError(f"All patool methods failed: {e1}, {e2}, {e3}")
         
-        if progress_callback:
-            progress_callback(f"{archive_format} archive created", 90)
+        # For ZIP format with password, use Python's zipfile module
+        if archive_format == "zip" and password:
+            if progress_callback:
+                progress_callback(f"Creating password-protected ZIP file...", 65)
+            
+            try:
+                # Use Python's zipfile module to create password-protected ZIP
+                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for file_path in temp_files:
+                        if os.path.isfile(file_path):
+                            # 只使用文件名，不包含路径
+                            zf.write(file_path, os.path.basename(file_path))
+                        elif os.path.isdir(file_path):
+                            # 对于目录，递归添加所有文件，保留目录结构
+                            dir_name = os.path.basename(os.path.normpath(file_path))
+                            for root, dirs, files in os.walk(file_path):
+                                for file in files:
+                                    file_full_path = os.path.join(root, file)
+                                    # 计算相对于目录的路径，保留子目录结构
+                                    arcname = os.path.relpath(file_full_path, file_path)
+                                    if arcname == file:  # 如果是文件本身
+                                        arcname = os.path.basename(file_full_path)
+                                    zf.write(file_full_path, arcname)
+                
+                # Try to add password using pyzipper if available
+                try:
+                    import pyzipper
+                    if progress_callback:
+                        progress_callback(f"Adding password protection using pyzipper...", 75)
+                    
+                    # Create a new password-protected ZIP
+                    with pyzipper.AESZipFile(output_path, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as zf:
+                        zf.setpassword(password.encode())
+                        for file_path in temp_files:
+                            if os.path.isfile(file_path):
+                                # 只使用文件名，不包含路径
+                                zf.write(file_path, os.path.basename(file_path))
+                            elif os.path.isdir(file_path):
+                                # 对于目录，递归添加所有文件，保留目录结构
+                                dir_name = os.path.basename(os.path.normpath(file_path))
+                                for root, dirs, files in os.walk(file_path):
+                                    for file in files:
+                                        file_full_path = os.path.join(root, file)
+                                        # 计算相对于目录的路径，保留子目录结构
+                                        arcname = os.path.relpath(file_full_path, file_path)
+                                        if arcname == file:  # 如果是文件本身
+                                            arcname = os.path.basename(file_full_path)
+                                        zf.write(file_full_path, arcname)
+                except ImportError:
+                    # If pyzipper is not available, try to use 7zz
+                    sevenz_tool = _get_cli_tool("7zz")
+                    if sevenz_tool:
+                        # Create a temporary directory for 7zz to work with
+                        temp_7z_dir = tempfile.mkdtemp()
+                        try:
+                            # Copy files to temp directory
+                            for file_path in temp_files:
+                                if os.path.isfile(file_path):
+                                    shutil.copy2(file_path, temp_7z_dir)
+                                elif os.path.isdir(file_path):
+                                    dest_dir = os.path.join(temp_7z_dir, os.path.basename(file_path))
+                                    shutil.copytree(file_path, dest_dir)
+                            
+                            # Create password-protected ZIP with 7zz
+                            cmd = [sevenz_tool, "a", f"-p{password}", "-y", output_path, os.path.join(temp_7z_dir, "*")]
+                            result = subprocess.run(cmd, capture_output=True, text=True)
+                            
+                            if result.returncode != 0:
+                                if progress_callback:
+                                    progress_callback(f"Failed to create password-protected ZIP with 7zz: {result.stderr}", 80)
+                                # Fall back to standard ZIP without password
+                                pass
+                        finally:
+                            shutil.rmtree(temp_7z_dir)
+                    else:
+                        # If neither pyzipper nor 7zz is available, create a standard ZIP
+                        if progress_callback:
+                            progress_callback("Warning: Neither pyzipper nor 7zz available, creating non-password-protected ZIP", 70)
+                
+                if progress_callback:
+                    progress_callback(f"ZIP archive created", 90)
+            except Exception as e:
+                # If all else fails, create a non-password-protected ZIP
+                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for file_path in temp_files:
+                        if os.path.isfile(file_path):
+                            # 只使用文件名，不包含路径
+                            zf.write(file_path, os.path.basename(file_path))
+                        elif os.path.isdir(file_path):
+                            # 对于目录，递归添加所有文件，保留目录结构
+                            dir_name = os.path.basename(os.path.normpath(file_path))
+                            for root, dirs, files in os.walk(file_path):
+                                for file in files:
+                                    file_full_path = os.path.join(root, file)
+                                    # 计算相对于目录的路径，保留子目录结构
+                                    arcname = os.path.relpath(file_full_path, file_path)
+                                    if arcname == file:  # 如果是文件本身
+                                        arcname = os.path.basename(file_full_path)
+                                    zf.write(file_full_path, arcname)
+                
+                if progress_callback:
+                    progress_callback(f"Warning: Could not add password to ZIP file: {str(e)}", 70)
+        else:
+            # Try different patool calling methods
+            try:
+                # Method 1: Directly pass file paths
+                patoolib.create_archive(output_path, temp_files)
+            except Exception as e1:
+                # Method 2: Switch to temporary directory and use relative paths
+                try:
+                    original_cwd = os.getcwd()
+                    os.chdir(temp_dir)
+                    rel_files = [os.path.basename(f) for f in temp_files]
+                    patoolib.create_archive(output_path, rel_files)
+                    os.chdir(original_cwd)
+                except Exception as e2:
+                    os.chdir(original_cwd)
+                    
+                    # Method 3: Use full paths and patool's --verbose option
+                    try:
+                        import subprocess
+                        cmd = ["patool", "create", output_path] + temp_files
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        if result.returncode != 0:
+                            raise RuntimeError(f"patool command failed: {result.stderr}")
+                    except Exception as e3:
+                        raise RuntimeError(f"All patool methods failed: {e1}, {e2}, {e3}")
+            
+            if progress_callback:
+                progress_callback(f"{archive_format} archive created", 90)
             
         return True
     except Exception as e:
@@ -348,35 +460,35 @@ def _create_with_patool(output_path, source_paths, archive_format, progress_call
 
 def _create_single_file_compression(output_path, source_paths, compression_format, progress_callback=None):
     """
-    创建单个文件压缩格式（bz2, xz, lzma）
-    这些格式只能压缩单个文件，所以需要先创建tar，再压缩
+    Create single file compression format (bz2, xz, lzma)
+    These formats can only compress single files, so need to create tar first, then compress
     """
     try:
         import patoolib
     except ImportError:
         raise ImportError("patool is required for this format. Install with: pip install patool")
     
-    # 创建临时目录
+    # Create temporary directory
     temp_dir = tempfile.mkdtemp()
     try:
-        # 第一步：创建tar文件
+        # Step 1: Create tar file
         base_name = os.path.splitext(os.path.basename(output_path))[0]
         tar_path = os.path.join(temp_dir, f"{base_name}.tar")
         
         if progress_callback:
             progress_callback(f"Creating intermediate tar file...", 50)
         
-        # 创建tar文件
+        # Create tar file
         patoolib.create_archive(tar_path, source_paths)
         
         if not os.path.exists(tar_path):
             raise RuntimeError("Failed to create intermediate tar file")
         
-        # 第二步：压缩tar文件
+        # Step 2: Compress tar file
         if progress_callback:
             progress_callback(f"Compressing tar file with {compression_format}...", 70)
         
-        # 使用patool压缩tar文件
+        # Use patool to compress tar file
         patoolib.create_archive(output_path, [tar_path])
         
         if progress_callback:
@@ -391,18 +503,18 @@ def _create_single_file_compression(output_path, source_paths, compression_forma
         shutil.rmtree(temp_dir)
 
 def _create_cab_with_cli(output_path, source_paths, progress_callback=None):
-    """使用gcab工具创建CAB归档文件"""
+    """Create CAB archive file using gcab tool"""
     try:
         gcab_tool = _get_cli_tool("gcab")
     except FileNotFoundError:
-        # 尝试从系统路径获取gcab
+        # Try to get gcab from system path
         gcab_tool = shutil.which("gcab")
         if not gcab_tool:
             raise RuntimeError("gcab tool not found. Please install with: brew install gcab")
     
-    # 创建临时目录用于存放源文件
+    # Create temporary directory for source files
     with tempfile.TemporaryDirectory() as temp_dir:
-        # 复制所有源文件到临时目录
+        # Copy all source files to temporary directory
         copied_files = []
         for i, source_path in enumerate(source_paths):
             source = Path(source_path)
@@ -414,24 +526,27 @@ def _create_cab_with_cli(output_path, source_paths, progress_callback=None):
                 shutil.copy2(source, dest_path)
                 copied_files.append(dest_path)
             elif source.is_dir():
-                # 对于目录，递归复制
+                # For directories, recursively copy
                 dest_dir = Path(temp_dir) / source.name
+                # Ensure the destination directory doesn't already exist
+                if dest_dir.exists():
+                    shutil.rmtree(dest_dir)
                 shutil.copytree(source, dest_dir)
                 copied_files.append(dest_dir)
             
-            # 更新进度
+            # Update progress
             if progress_callback:
-                progress = (i + 1) / len(source_paths) * 50  # 前半部分进度用于复制文件
+                progress = (i + 1) / len(source_paths) * 50  # First half of progress for copying files
                 progress_callback(progress)
         
         if not copied_files:
             raise ValueError("No valid source files found")
         
-        # 构建gcab命令
+        # Build gcab command
         cmd = [gcab_tool, "-c", "-n", output_path]
         cmd.extend([str(f) for f in copied_files])
         
-        # 执行命令
+        # Execute command
         try:
             result = subprocess.run(
                 cmd,
@@ -441,7 +556,7 @@ def _create_cab_with_cli(output_path, source_paths, progress_callback=None):
                 cwd=temp_dir
             )
             
-            # 更新最终进度
+            # Update final progress
             if progress_callback:
                 progress_callback(100)
                 
@@ -449,16 +564,23 @@ def _create_cab_with_cli(output_path, source_paths, progress_callback=None):
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to create CAB archive: {e.stderr}")
 
-def _create_rar_with_cli(output_path, source_paths, progress_callback=None):
-    """使用rar CLI工具创建RAR文件"""
+def _create_rar_with_cli(output_path, source_paths, progress_callback=None, password=None):
+    """Create RAR file using rar CLI tool"""
     try:
         rar_tool = _get_cli_tool("rar", arch_specific=True)
     except FileNotFoundError:
-        # 备用方案：使用unar/lsar
+        # Fallback: Use unar/lsar
         return _create_with_unar(output_path, source_paths, "rar", progress_callback)
     
-    # 构建rar命令
-    cmd = [rar_tool, "a", "-r", output_path] + source_paths
+    # Build rar command
+    cmd = [rar_tool, "a", "-r"]
+    if password:
+        cmd.extend(["-p" + password, "-y"])
+    else:
+        cmd.append("-y")
+    cmd.append(output_path)
+    cmd.extend(source_paths)
+    
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
@@ -466,16 +588,23 @@ def _create_rar_with_cli(output_path, source_paths, progress_callback=None):
     
     return True
 
-def _create_7z_with_cli(output_path, source_paths, progress_callback=None):
-    """使用7zz CLI工具创建7z文件"""
+def _create_7z_with_cli(output_path, source_paths, progress_callback=None, password=None):
+    """Create 7z file using 7zz CLI tool"""
     try:
         sevenz_tool = _get_cli_tool("7zz")
     except FileNotFoundError:
-        # 备用方案：使用unar/lsar
+        # Fallback: Use unar/lsar
         _create_with_unar(output_path, source_paths, "7z", progress_callback)
         return True
     
-    cmd = [sevenz_tool, "a", output_path] + source_paths
+    cmd = [sevenz_tool, "a"]
+    if password:
+        cmd.extend(["-p" + password, "-y"])
+    else:
+        cmd.append("-y")
+    cmd.append(output_path)
+    cmd.extend(source_paths)
+    
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
@@ -484,17 +613,17 @@ def _create_7z_with_cli(output_path, source_paths, progress_callback=None):
     return True
 
 def _create_iso_with_system(output_path, source_paths, progress_callback=None):
-    """使用系统命令创建ISO文件"""
+    """Create ISO file using system command"""
     if len(source_paths) != 1 or not os.path.isdir(source_paths[0]):
         raise ValueError("ISO format only supports creating from a single directory")
     
     source_dir = source_paths[0]
     
-    # 尝试使用hdiutil（macOS）
+    # Try using hdiutil (macOS)
     if platform.system() == "Darwin":
         cmd = ["hdiutil", "makehybrid", "-o", output_path, "-hfs", "-iso", "-joliet", source_dir]
     else:
-        # 其他系统使用mkisofs
+        # Other systems use mkisofs
         cmd = ["mkisofs", "-o", output_path, "-J", "-R", source_dir]
     
     result = _run_command_with_timeout(cmd, timeout=60, progress_callback=progress_callback)
@@ -505,16 +634,16 @@ def _create_iso_with_system(output_path, source_paths, progress_callback=None):
     return True
 
 def _create_arj_with_isar(output_path, source_paths, progress_callback=None):
-    """使用Isar工具创建ARJ归档"""
+    """Create ARJ archive using Isar tool"""
     try:
-        # 尝试获取Isar工具
+        # Try to get Isar tool
         isar_tool = _get_cli_tool("isar")
     except FileNotFoundError:
-        # 如果Isar不可用，尝试使用arj工具
+        # If Isar is not available, try using arj tool
         try:
             isar_tool = _get_cli_tool("arj")
         except FileNotFoundError:
-            # 如果两者都不可用，回退到7z格式
+            # If neither is available, fallback to 7z format
             if progress_callback:
                 progress_callback("Isar/ARJ tool not available, creating 7z instead", 50)
             
@@ -531,19 +660,19 @@ def _create_arj_with_isar(output_path, source_paths, progress_callback=None):
         if progress_callback:
             progress_callback("Creating ARJ archive with Isar...", 0)
         
-        # 创建临时目录用于处理文件
+        # Create temporary directory for file processing
         with tempfile.TemporaryDirectory() as temp_dir:
-            # 复制所有源文件到临时目录
+            # Copy all source files to temporary directory
             for source_path in source_paths:
                 if os.path.isfile(source_path):
                     shutil.copy2(source_path, temp_dir)
                 elif os.path.isdir(source_path):
-                    # 如果是目录，递归复制
+                    # If it's a directory, recursively copy
                     dest_dir = os.path.join(temp_dir, os.path.basename(source_path))
                     shutil.copytree(source_path, dest_dir)
             
-            # 构建Isar命令
-            # Isar命令格式: isar a -r [archive.arj] [files...]
+            # Build Isar command
+            # Isar command format: isar a -r [archive.arj] [files...]
             cmd = [isar_tool, "a", "-r", output_path, os.path.join(temp_dir, "*")]
             
             if progress_callback:
@@ -565,15 +694,15 @@ def _create_arj_with_isar(output_path, source_paths, progress_callback=None):
         return False
 
 def _create_with_unar(output_path, source_paths, format_name, progress_callback=None):
-    """使用unar支持的格式创建归档"""
+    """Create archive using unar supported format"""
     try:
-        # 检查是否是ARJ格式，如果是则尝试使用Isar工具
+        # Check if it's ARJ format, if so try using Isar tool
         if format_name == "arj":
             return _create_arj_with_isar(output_path, source_paths, progress_callback)
         
-        # 对于其他unar支持的格式，创建7z文件并修改扩展名
+        # For other unar supported formats, create 7z file and modify extension
         if format_name == "lzh":
-            # 创建7z文件并修改扩展名
+            # Create 7z file and modify extension
             sevenz_path = output_path.replace('.lzh', '.7z')
             success = _create_7z_with_cli(sevenz_path, source_paths, progress_callback)
             if success and os.path.exists(sevenz_path):
@@ -587,7 +716,7 @@ def _create_with_unar(output_path, source_paths, format_name, progress_callback=
             progress_callback(f"Error creating {format_name} archive: {str(e)}", -1)
         return False
 
-def extract_archive(archive_path, extract_to, progress_callback=None):
+def extract_archive(archive_path, extract_to, progress_callback=None, password=None):
     """
     Extract an archive file to the specified directory.
 
@@ -595,6 +724,7 @@ def extract_archive(archive_path, extract_to, progress_callback=None):
         archive_path (str): Path to the archive file to extract.
         extract_to (str): Directory to extract files to.
         progress_callback (function): Optional callback for progress updates.
+        password (str): Optional password for encrypted archives.
     """
     try:
         archive_format = _get_archive_type(archive_path)
@@ -606,51 +736,64 @@ def extract_archive(archive_path, extract_to, progress_callback=None):
         if progress_callback:
             progress_callback(f"Starting {archive_format} extraction...", 0)
         
-        # 根据格式选择处理方式 - 优先使用专用工具，unar作为终极备用方案
+        # Select processing method based on format - prioritize dedicated tools, use unar as ultimate fallback
         if archive_format in ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz", "bz2", "xz", "lzma"]:
-            # 使用Python内置库（最稳定）
+            # Use Python built-in libraries (most stable)
             try:
-                _extract_with_python(archive_path, extract_to, archive_format, progress_callback)
+                _extract_with_python(archive_path, extract_to, archive_format, progress_callback, password)
+            except RuntimeError as e:
+                # For password-related errors, don't use fallback, re-raise exception directly
+                if "password" in str(e).lower():
+                    raise
+                # Use unar as fallback on failure
+                _extract_with_unar(archive_path, extract_to, progress_callback, password)
             except Exception:
-                # 失败时使用unar作为备用方案
-                _extract_with_unar(archive_path, extract_to, progress_callback)
+                # Use unar as fallback on failure
+                _extract_with_unar(archive_path, extract_to, progress_callback, password)
         elif archive_format in ["zipx"]:
-            # 使用patool，失败时使用unar
+            # Use patool, fallback to unar on failure
             try:
-                _extract_with_patool(archive_path, extract_to, progress_callback)
+                _extract_with_patool(archive_path, extract_to, progress_callback, password)
             except Exception:
-                _extract_with_unar(archive_path, extract_to, progress_callback)
+                _extract_with_unar(archive_path, extract_to, progress_callback, password)
         elif archive_format == "cab":
-            # 优先使用cabextract工具解压CAB文件
+            # Prioritize using cabextract tool to extract CAB files
             try:
-                _extract_cab_with_cabextract(archive_path, extract_to, progress_callback)
+                _extract_cab_with_cabextract(archive_path, extract_to, progress_callback, password)
             except Exception:
-                # 备用方案：使用unar
-                _extract_with_unar(archive_path, extract_to, progress_callback)
+                # Fallback: Use unar
+                _extract_with_unar(archive_path, extract_to, progress_callback, password)
         elif archive_format in ["arj", "lzh"]:
-            # 这些格式unar支持很好，优先使用unar
-            _extract_with_unar(archive_path, extract_to, progress_callback)
+            # These formats are well supported by unar, prioritize using unar
+            _extract_with_unar(archive_path, extract_to, progress_callback, password)
         elif archive_format == "rar":
-            # 使用unrar CLI工具，失败时使用unar
+            # Use unrar CLI tool, fallback to unar on failure
             try:
-                _extract_rar_with_cli(archive_path, extract_to, progress_callback)
+                _extract_rar_with_cli(archive_path, extract_to, progress_callback, password)
             except Exception:
-                _extract_with_unar(archive_path, extract_to, progress_callback)
+                _extract_with_unar(archive_path, extract_to, progress_callback, password)
         elif archive_format == "7z":
-            # 使用7zz CLI工具，失败时使用unar
+            # Use 7zz CLI tool, fallback to unar on failure
             try:
-                _extract_7z_with_cli(archive_path, extract_to, progress_callback)
+                _extract_7z_with_cli(archive_path, extract_to, progress_callback, password)
+            except RuntimeError as e:
+                # For password-related errors, don't use fallback, re-raise exception directly
+                if "password" in str(e).lower():
+                    raise
+                # Use unar as fallback on failure
+                _extract_with_unar(archive_path, extract_to, progress_callback, password)
             except Exception:
-                _extract_with_unar(archive_path, extract_to, progress_callback)
+                # Use unar as fallback on failure
+                _extract_with_unar(archive_path, extract_to, progress_callback, password)
         elif archive_format == "iso":
-            # 使用系统命令，失败时使用unar
+            # Use system command, fallback to unar on failure
             try:
                 _extract_iso_with_system(archive_path, extract_to, progress_callback)
             except Exception:
-                _extract_with_unar(archive_path, extract_to, progress_callback)
+                _extract_with_unar(archive_path, extract_to, progress_callback, password)
         else:
-            # 未知格式，使用unar作为终极备用方案
-            _extract_with_unar(archive_path, extract_to, progress_callback)
+            # Unknown format, use unar as ultimate fallback
+            _extract_with_unar(archive_path, extract_to, progress_callback, password)
 
         if progress_callback:
             progress_callback(f"Archive extracted to: {extract_to}", 100)
@@ -659,16 +802,113 @@ def extract_archive(archive_path, extract_to, progress_callback=None):
     except Exception as e:
         if progress_callback:
             progress_callback(f"Error extracting archive: {str(e)}", -1)
+        # For password-related errors, re-raise exception
+        if "password" in str(e).lower():
+            raise
         return False
 
-def _extract_with_python(archive_path, extract_to, archive_format, progress_callback=None):
-    """使用Python内置库解压"""
+def _extract_with_python(archive_path, extract_to, archive_format, progress_callback=None, password=None):
+    """Extract using Python built-in libraries"""
     if archive_format == "zip":
+        # 空密码检查
+        if password == "":
+            raise RuntimeError("Empty password not allowed for encrypted ZIP file")
+            
+        # First try with pyzipper for AES encrypted ZIPs
+        if password:
+            try:
+                import pyzipper
+                try:
+                    with pyzipper.AESZipFile(archive_path, 'r') as zipf:
+                        zipf.setpassword(password.encode())
+                        file_list = zipf.namelist()
+                        total_files = len(file_list)
+                        for i, file_name in enumerate(file_list):
+                            try:
+                                zipf.extract(file_name, extract_to)
+                            except (RuntimeError, pyzipper.BadZipFile) as e:
+                                error_msg = str(e).lower()
+                                # 检查更多可能的密码错误关键词
+                                password_error_keywords = [
+                                    "bad password", "password required", "wrong password", 
+                                    "authentication failed", "invalid password", "incorrect password",
+                                    "wrong pass", "bad pass", "data error", "crc error"
+                                ]
+                                if any(keyword in error_msg for keyword in password_error_keywords):
+                                    raise RuntimeError("Incorrect password for encrypted ZIP file")
+                                raise
+                            if progress_callback:
+                                progress = ((i + 1) / total_files) * 100
+                                progress_callback(f"Extracting {file_name}", progress)
+                        return
+                except (RuntimeError, pyzipper.BadZipFile) as e:
+                    error_msg = str(e).lower()
+                    password_error_keywords = [
+                        "bad password", "password required", "wrong password", 
+                        "authentication failed", "invalid password", "incorrect password",
+                        "wrong pass", "bad pass", "data error", "crc error"
+                    ]
+                    if any(keyword in error_msg for keyword in password_error_keywords):
+                        raise RuntimeError("Incorrect password for encrypted ZIP file")
+                    # If not a password error, fall back to standard zipfile
+            except ImportError:
+                # pyzipper not available, fall back to standard zipfile
+                pass
+        
+        # Standard zipfile handling
         with zipfile.ZipFile(archive_path, 'r') as zipf:
+            # Check if zip is password protected
+            is_encrypted = any(info.flag_bits & 0x1 for info in zipf.infolist())
+            
+            # If the zip is encrypted but no password is provided, raise an error
+            if is_encrypted and not password:
+                raise RuntimeError("Password required for encrypted ZIP file")
+            
+            # If password is provided, set it
+            if password:
+                try:
+                    zipf.setpassword(password.encode())
+                except:
+                    raise RuntimeError("Incorrect password for encrypted ZIP file")
+            
             file_list = zipf.namelist()
             total_files = len(file_list)
             for i, file_name in enumerate(file_list):
-                zipf.extract(file_name, extract_to)
+                try:
+                    # 确保文件直接解压到目标目录，不保留路径结构
+                    if file_name.endswith('/'):
+                        # 如果是目录，创建目录
+                        dir_name = os.path.basename(file_name.rstrip('/'))
+                        if dir_name:  # 只有当目录名不为空时才创建
+                            os.makedirs(os.path.join(extract_to, dir_name), exist_ok=True)
+                    else:
+                        # 如果是文件，直接解压到目标目录
+                        zipf.extract(file_name, extract_to)
+                        # 如果文件在子目录中，移动到目标目录
+                        if '/' in file_name:
+                            base_name = os.path.basename(file_name)
+                            src_path = os.path.join(extract_to, file_name)
+                            dst_path = os.path.join(extract_to, base_name)
+                            if os.path.exists(src_path) and src_path != dst_path:
+                                shutil.move(src_path, dst_path)
+                                # 尝试删除空的子目录
+                                parent_dir = os.path.dirname(src_path)
+                                try:
+                                    if os.path.exists(parent_dir) and parent_dir != extract_to:
+                                        os.rmdir(parent_dir)
+                                except:
+                                    pass  # 如果目录不为空，忽略错误
+                except (RuntimeError, zipfile.BadZipFile) as e:
+                    error_msg = str(e).lower()
+                    # 检查更多可能的密码错误关键词
+                    password_error_keywords = [
+                        "bad password", "password required", "wrong password", 
+                        "authentication failed", "invalid password", "incorrect password",
+                        "wrong pass", "bad pass", "data error", "crc error"
+                    ]
+                    if any(keyword in error_msg for keyword in password_error_keywords):
+                        raise RuntimeError("Incorrect password for encrypted ZIP file")
+                    raise
                 if progress_callback:
                     progress = ((i + 1) / total_files) * 100
                     progress_callback(f"Extracting {file_name}", progress)
@@ -686,10 +926,10 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
             members = tarf.getmembers()
             total_members = len(members)
             for i, member in enumerate(members):
-                # 修复TAR.GZ解压路径问题 - 只保留文件名，去掉路径
+                # Fix TAR.GZ extraction path issue - keep only filename, remove path
                 if member.name.startswith('/') or member.name.startswith('./'):
                     member.name = os.path.basename(member.name)
-                elif os.path.dirname(member.name):  # 如果包含路径
+                elif os.path.dirname(member.name):  # If it contains a path
                     member.name = os.path.basename(member.name)
                 tarf.extract(member, extract_to)
                 if progress_callback:
@@ -697,7 +937,7 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
                     progress_callback(f"Extracting {member.name}", progress)
     
     elif archive_format in ["bz2", "xz", "lzma"]:
-        # 单文件压缩格式
+        # Single file compression format
         import bz2
         import lzma
         
@@ -706,7 +946,7 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
         if archive_format == "bz2":
             with bz2.open(archive_path, 'rb') as f_in:
                 with open(output_file, 'wb') as f_out:
-                    # 使用二进制模式读取和写入
+                    # Use binary mode for reading and writing
                     while True:
                         chunk = f_in.read(8192)
                         if not chunk:
@@ -715,7 +955,7 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
         else:
             with lzma.open(archive_path, 'rb') as f_in:
                 with open(output_file, 'wb') as f_out:
-                    # 使用二进制模式读取和写入
+                    # Use binary mode for reading and writing
                     while True:
                         chunk = f_in.read(8192)
                         if not chunk:
@@ -725,64 +965,157 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
         if progress_callback:
             progress_callback(f"Extracted {output_file}", 100)
 
-def _extract_with_patool(archive_path, extract_to, progress_callback=None):
-    """使用patool解压"""
+def _extract_with_patool(archive_path, extract_to, progress_callback=None, password=None):
+    """Extract using patool"""
     try:
         import patoolib
     except ImportError:
         raise ImportError("patool is required for this format")
+    
+    # patoolib doesn't directly support password, so we'll use unar for password-protected archives
+    if password:
+        _extract_with_unar(archive_path, extract_to, progress_callback, password)
+        return
     
     patoolib.extract_archive(archive_path, outdir=extract_to)
     
     if progress_callback:
         progress_callback("Archive extracted", 100)
 
-def _extract_rar_with_cli(archive_path, extract_to, progress_callback=None):
-    """使用unrar CLI工具解压RAR文件"""
+def _extract_rar_with_cli(archive_path, extract_to, progress_callback=None, password=None):
+    """Extract RAR file using unrar CLI tool"""
     try:
         unrar_tool = _get_cli_tool("unrar", arch_specific=True)
     except FileNotFoundError:
-        # 终极备用方案：使用unar
-        _extract_with_unar(archive_path, extract_to, progress_callback)
+        # Ultimate fallback: Use unar
+        _extract_with_unar(archive_path, extract_to, progress_callback, password)
         return
     
-    cmd = [unrar_tool, "x", archive_path, extract_to + "/", "-ep"]  # 添加-ep参数来忽略路径
+    # 空密码检查
+    if password == "":
+        raise RuntimeError("Empty password not allowed for encrypted RAR file")
+    
+    cmd = [unrar_tool, "x", archive_path, extract_to + "/", "-ep"]  # Add -ep parameter to ignore paths
+    if password:
+        cmd.extend(["-p" + password, "-y"])  # Add password and assume yes for all queries
+    else:
+        cmd.append("-y")  # Assume yes for all queries
+    
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
+        error_msg = result.stderr.lower()
+        # 检查更多可能的密码错误关键词
+        password_error_keywords = [
+            "password incorrect", "wrong password", "bad password", 
+            "authentication failed", "invalid password", "password required",
+            "incorrect password", "wrong pass", "bad pass", "data error",
+            "crc error", "headers error", "checksum error"
+        ]
+        
+        if password and any(keyword in error_msg for keyword in password_error_keywords):
+            raise RuntimeError("Incorrect password for encrypted RAR file")
+        elif not password and any(keyword in error_msg for keyword in ["password", "encrypted", "authentication"]):
+            raise RuntimeError("Password required for encrypted RAR file")
         raise RuntimeError(f"RAR extraction failed: {result.stderr}")
 
-def _extract_7z_with_cli(archive_path, extract_to, progress_callback=None):
-    """使用7zz CLI工具解压7z文件"""
+def _extract_7z_with_cli(archive_path, extract_to, progress_callback=None, password=None):
+    """Extract 7z file using 7zz CLI tool"""
     try:
         sevenz_tool = _get_cli_tool("7zz")
     except FileNotFoundError:
-        # 备用方案：使用unar
-        _extract_with_unar(archive_path, extract_to, progress_callback)
-        return
+        # Fallback: Use unar
+        return _extract_with_unar(archive_path, extract_to, progress_callback, password)
     
-    cmd = [sevenz_tool, "x", archive_path, f"-o{extract_to}"]
-    result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
+    # 空密码检查
+    if password == "":
+        raise RuntimeError("Empty password not allowed for encrypted 7Z file")
+    
+    # 首先尝试测试文件是否需要密码
+    test_cmd = [sevenz_tool, "t", archive_path]
+    if password:
+        test_cmd.extend(["-p" + password])
+    else:
+        test_cmd.append("-y")
+    
+    try:
+        test_result = _run_command_with_timeout(test_cmd, timeout=5)
+        # 如果测试失败且没有提供密码，检查是否需要密码
+        if test_result.returncode != 0 and not password:
+            error_msg = test_result.stderr.lower()
+            if any(keyword in error_msg for keyword in ["password", "encrypted", "authentication"]):
+                raise RuntimeError("Password required for encrypted 7Z file")
+    except RuntimeError as e:
+        if "timed out" in str(e).lower() and not password:
+            # 如果超时且没有提供密码，可能是在等待密码输入
+            raise RuntimeError("Password required for encrypted 7Z file")
+        raise
+    
+    # 执行实际解压
+    cmd = [sevenz_tool, "x", archive_path, f"-o{extract_to}"]  # 使用x命令保留目录结构
+    if password:
+        cmd.extend(["-p" + password, "-y"])  # Add password and assume yes for all queries
+    else:
+        cmd.append("-y")  # Assume yes for all queries
+    
+    result = _run_command_with_timeout(cmd, timeout=30, progress_callback=progress_callback)
     
     if result.returncode != 0:
+        error_msg = result.stderr.lower()
+        # 检查更多可能的密码错误关键词
+        password_error_keywords = [
+            "password incorrect", "wrong password", "bad password", 
+            "authentication failed", "invalid password", "password required",
+            "incorrect password", "wrong pass", "bad pass", "data error",
+            "crc error", "headers error", "unsupported method", "wrong password?"
+        ]
+        
+        if password and any(keyword in error_msg for keyword in password_error_keywords):
+            raise RuntimeError("Incorrect password for encrypted 7Z file")
+        elif not password and any(keyword in error_msg for keyword in ["password", "encrypted", "authentication"]):
+            raise RuntimeError("Password required for encrypted 7Z file")
         raise RuntimeError(f"7z extraction failed: {result.stderr}")
+    
+    # 检查是否有额外的子目录，如果有，将文件移动到根目录
+    if os.path.exists(extract_to):
+        items = os.listdir(extract_to)
+        # 如果只有一个子目录，且该子目录包含所有文件
+        if len(items) == 1 and os.path.isdir(os.path.join(extract_to, items[0])):
+            sub_dir = os.path.join(extract_to, items[0])
+            # 移动子目录中的所有内容到根目录
+            for item in os.listdir(sub_dir):
+                src = os.path.join(sub_dir, item)
+                dst = os.path.join(extract_to, item)
+                if os.path.exists(dst):
+                    if os.path.isdir(dst):
+                        shutil.rmtree(dst)
+                    else:
+                        os.remove(dst)
+                shutil.move(src, dst)
+            # 尝试删除空子目录
+            try:
+                os.rmdir(sub_dir)
+            except:
+                pass
+    
+    return True
 
 def _extract_iso_with_system(archive_path, extract_to, progress_callback=None):
-    """使用系统命令解压ISO文件"""
+    """Extract ISO file using system command"""
     if platform.system() == "Darwin":
-        # macOS系统，优先使用hdiutil
+        # macOS system, prioritize using hdiutil
         try:
             if progress_callback:
                 progress_callback("Mounting ISO with hdiutil...", 0)
             
-            # 挂载ISO文件
+            # Mount ISO file
             cmd = ["hdiutil", "attach", archive_path]
             result = _run_command_with_timeout(cmd, timeout=10, progress_callback=progress_callback)
             
             if result.returncode != 0:
                 raise RuntimeError(f"Failed to mount ISO: {result.stderr}")
             
-            # 解析挂载点
+            # Parse mount point
             mount_point = None
             lines = result.stdout.split('\n')
             for line in lines:
@@ -801,16 +1134,16 @@ def _extract_iso_with_system(archive_path, extract_to, progress_callback=None):
             if progress_callback:
                 progress_callback(f"Copying files from {mount_point}...", 50)
             
-            # 使用rsync复制文件，保留权限和时间戳
+            # Use rsync to copy files, preserving permissions and timestamps
             cmd = ["rsync", "-a", f"{mount_point}/", extract_to + "/"]
             result = _run_command_with_timeout(cmd, timeout=30, progress_callback=progress_callback)
             
-            # 卸载ISO
+            # Unmount ISO
             cmd = ["hdiutil", "detach", mount_point]
             try:
                 _run_command_with_timeout(cmd, timeout=5, progress_callback=progress_callback)
             except RuntimeError as e:
-                # 如果卸载失败，记录警告但不中断流程
+                # If unmount fails, log warning but don't interrupt process
                 if progress_callback:
                     progress_callback(f"Warning: Failed to unmount ISO: {str(e)}", 90)
             
@@ -823,7 +1156,7 @@ def _extract_iso_with_system(archive_path, extract_to, progress_callback=None):
             return True
             
         except Exception as e:
-            # 如果hdiutil失败，尝试使用7z作为备用方案
+            # If hdiutil fails, try using 7z as fallback
             if progress_callback:
                 progress_callback(f"hdiutil failed, trying 7z: {str(e)}", 25)
             
@@ -845,7 +1178,7 @@ def _extract_iso_with_system(archive_path, extract_to, progress_callback=None):
                     progress_callback(f"All ISO extraction methods failed: {str(e2)}", -1)
                 return False
     else:
-        # 其他系统，使用7z
+        # Other systems, use 7z
         try:
             sevenz_tool = _get_cli_tool("7zz")
             cmd = [sevenz_tool, "x", archive_path, f"-o{extract_to}", "-y"]
@@ -864,50 +1197,67 @@ def _extract_iso_with_system(archive_path, extract_to, progress_callback=None):
                 progress_callback(f"ISO extraction failed: {str(e)}", -1)
             return False
 
-def _extract_cab_with_cabextract(archive_path, extract_to, progress_callback=None):
-    """使用cabextract工具解压CAB文件"""
+def _extract_cab_with_cabextract(archive_path, extract_to, progress_callback=None, password=None):
+    """Extract CAB file using cabextract tool"""
     try:
         cabextract_tool = _get_cli_tool("cabextract")
     except FileNotFoundError:
-        # 备用方案：使用unar
-        return _extract_with_unar(archive_path, extract_to, progress_callback)
+        # Fallback: Use unar
+        return _extract_with_unar(archive_path, extract_to, progress_callback, password)
     
-    cmd = [cabextract_tool, "-d", extract_to, archive_path]
+    cmd = [cabextract_tool, "-d", extract_to]
+    if password:
+        # cabextract doesn't support password directly, fallback to unar
+        return _extract_with_unar(archive_path, extract_to, progress_callback, password)
+    cmd.append(archive_path)
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
         raise RuntimeError(f"CAB extraction failed: {result.stderr}")
 
-def _extract_with_unar(archive_path, extract_to, progress_callback=None):
-    """使用unar作为终极备用方案"""
+def _extract_with_unar(archive_path, extract_to, progress_callback=None, password=None):
+    """Use unar as ultimate fallback"""
     try:
         unar_tool = _get_cli_tool("unar")
     except FileNotFoundError:
         raise RuntimeError("No extraction tool available for this format")
     
-    cmd = [unar_tool, "-o", extract_to, archive_path]
+    cmd = [unar_tool, "-o", extract_to]
+    if password:
+        cmd.extend(["-p", password, "-y"])  # Add password and assume yes for all queries
+    else:
+        # 不提供密码时，不添加-p参数，让unar自己检测是否需要密码
+        cmd.append("-y")  # 只添加-y参数表示对所有查询回答是
+    cmd.append(archive_path)
+    
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
+        error_msg = result.stderr.lower()
+        if password and ("password incorrect" in error_msg or "wrong password" in error_msg or "bad password" in error_msg or "authentication failed" in error_msg):
+            raise RuntimeError("Incorrect password for encrypted archive")
+        elif not password and any(keyword in error_msg for keyword in ["password", "encrypted", "authentication", "required"]):
+            raise RuntimeError("Password required for encrypted archive")
         raise RuntimeError(f"Extraction failed: {result.stderr}")
 
-def list_archive_contents(archive_path, progress_callback=None):
+def list_archive_contents(archive_path, progress_callback=None, password=None):
     """
     List the contents of an archive file.
 
     Args:
         archive_path (str): Path to the archive file.
         progress_callback (function): Optional callback for progress updates.
+        password (str): Optional password for encrypted archives.
 
     Returns:
         list: List of dictionaries containing file information.
     """
     try:
-        # 检查文件是否存在
+        # Check if file exists
         if not os.path.exists(archive_path):
             raise FileNotFoundError(f"Archive file not found: {archive_path}")
         
-        # 检查文件是否为空
+        # Check if file is empty
         if os.path.getsize(archive_path) == 0:
             raise ValueError(f"Archive file is empty: {archive_path}")
         
@@ -918,58 +1268,66 @@ def list_archive_contents(archive_path, progress_callback=None):
         if progress_callback:
             progress_callback(f"Listing {archive_format} contents...", 0)
         
-        # 根据格式选择处理方式 - 优先使用专用工具，lsar作为终极备用方案
+        # Select processing method based on format - prioritize dedicated tools, use lsar as ultimate fallback
         if archive_format in ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz", "bz2", "xz", "lzma", "zipx"]:
-            # 使用Python内置库（最稳定）
+            # Use Python built-in libraries (most stable)
             try:
-                contents = _list_with_python(archive_path, archive_format, progress_callback)
-            except Exception as e:
-                # 失败时使用lsar作为备用方案
+                contents = _list_with_python(archive_path, archive_format, progress_callback, password)
+            except RuntimeError as e:
+                # For password-related errors, don't use fallback, re-raise exception directly
+                if "password" in str(e).lower():
+                    raise
+                # For other errors, use lsar as fallback
                 if progress_callback:
                     progress_callback(f"Python listing failed, trying lsar: {str(e)}", 50)
-                contents = _list_with_lsar(archive_path, progress_callback)
+                contents = _list_with_lsar(archive_path, progress_callback, password)
+            except Exception as e:
+                # Use lsar as fallback when failed
+                if progress_callback:
+                    progress_callback(f"Python listing failed, trying lsar: {str(e)}", 50)
+                contents = _list_with_lsar(archive_path, progress_callback, password)
         elif archive_format in ["rar"]:
-            # 使用unrar CLI工具，失败时使用lsar
+            # Use unrar CLI tool, use lsar when failed
             try:
-                contents = _list_rar_with_cli(archive_path, progress_callback)
+                contents = _list_rar_with_cli(archive_path, progress_callback, password)
             except Exception as e:
                 if progress_callback:
                     progress_callback(f"RAR listing failed, trying lsar: {str(e)}", 50)
-                contents = _list_with_lsar(archive_path, progress_callback)
+                contents = _list_with_lsar(archive_path, progress_callback, password)
         elif archive_format in ["7z"]:
-            # 使用7zz CLI工具，失败时使用lsar
+            # Use 7zz CLI tool, use lsar when failed
             try:
-                contents = _list_7z_with_cli(archive_path, progress_callback)
+                contents = _list_7z_with_cli(archive_path, progress_callback, password)
             except Exception as e:
                 if progress_callback:
                     progress_callback(f"7z listing failed, trying lsar: {str(e)}", 50)
-                contents = _list_with_lsar(archive_path, progress_callback)
+                contents = _list_with_lsar(archive_path, progress_callback, password)
         elif archive_format == "cab":
-            # 优先使用cabextract工具列出CAB文件内容
+            # Prioritize using cabextract tool to list CAB file contents
             try:
                 contents = _list_cab_with_cabextract(archive_path, progress_callback)
             except Exception as e:
-                # 备用方案：使用lsar
+                # Fallback: Use lsar
                 if progress_callback:
                     progress_callback(f"CAB listing failed, trying lsar: {str(e)}", 50)
-                contents = _list_with_lsar(archive_path, progress_callback)
+                contents = _list_with_lsar(archive_path, progress_callback, password)
         elif archive_format in ["arj", "lzh"]:
-            # 这些格式lsar支持很好，优先使用lsar
-            contents = _list_with_lsar(archive_path, progress_callback)
+            # lsar supports these formats well, prioritize using lsar
+            contents = _list_with_lsar(archive_path, progress_callback, password)
         elif archive_format == "iso":
-            # ISO格式使用7zz工具列出内容
+            # ISO format uses 7zz tool to list contents
             try:
                 contents = _list_iso_with_7z(archive_path, progress_callback)
             except Exception as e:
-                # 备用方案：使用lsar
+                # Fallback: Use lsar
                 if progress_callback:
                     progress_callback(f"7z ISO listing failed, trying lsar: {str(e)}", 50)
                 contents = _list_iso_with_lsar(archive_path, progress_callback)
         else:
-            # 未知格式，使用lsar作为终极备用方案
+            # Unknown format, use lsar as ultimate fallback
             if progress_callback:
                 progress_callback(f"Unknown format {archive_format}, trying lsar", 50)
-            contents = _list_with_lsar(archive_path, progress_callback)
+            contents = _list_with_lsar(archive_path, progress_callback, password)
 
         if progress_callback:
             progress_callback("Contents listed", 100)
@@ -979,39 +1337,100 @@ def list_archive_contents(archive_path, progress_callback=None):
     except Exception as e:
         if progress_callback:
             progress_callback(f"Error listing archive contents: {str(e)}", -1)
-        raise  # 重新抛出异常以便调用者处理
+        raise  # Re-raise exception for caller to handle
 
-def _list_with_python(archive_path, archive_format, progress_callback=None):
-    """使用Python内置库列出内容"""
+def _list_with_python(archive_path, archive_format, progress_callback=None, password=None):
+    """List contents using Python built-in libraries"""
     contents = []
     
     if archive_format == "zip" or archive_format == "zipx":
-        with zipfile.ZipFile(archive_path, 'r') as zipf:
-            file_list = zipf.namelist()
-            total_files = len(file_list)
-            for i, file_name in enumerate(file_list):
+        # First try with pyzipper for AES encrypted ZIPs
+        if password:
+            try:
+                import pyzipper
                 try:
-                    info = zipf.getinfo(file_name)
-                    file_info = {
-                        "name": file_name,
-                        "size": info.file_size,
-                        "compressed_size": info.compress_size,
-                        "date": info.date_time,
-                        "is_dir": file_name.endswith('/')
-                    }
-                except:
-                    file_info = {
-                        "name": file_name,
-                        "size": 0,
-                        "compressed_size": 0,
-                        "date": None,
-                        "is_dir": file_name.endswith('/')
-                    }
-                contents.append(file_info)
+                    with pyzipper.AESZipFile(archive_path, 'r') as zipf:
+                        zipf.setpassword(password.encode())
+                        file_list = zipf.namelist()
+                        total_files = len(file_list)
+                        for i, file_name in enumerate(file_list):
+                            try:
+                                info = zipf.getinfo(file_name)
+                                file_info = {
+                                    "name": file_name,
+                                    "size": info.file_size,
+                                    "compressed_size": info.compress_size,
+                                    "date": info.date_time,
+                                    "is_dir": file_name.endswith('/')
+                                }
+                            except:
+                                file_info = {
+                                    "name": file_name,
+                                    "size": 0,
+                                    "compressed_size": 0,
+                                    "date": None,
+                                    "is_dir": file_name.endswith('/')
+                                }
+                            contents.append(file_info)
+                            
+                            if progress_callback:
+                                progress = ((i + 1) / total_files) * 100
+                                progress_callback(f"Listing {file_name}", progress)
+                        return contents
+                except (RuntimeError, pyzipper.BadZipFile) as e:
+                    if "Bad password" in str(e) or "password required" in str(e).lower():
+                        raise RuntimeError("Incorrect password for encrypted ZIP file")
+                    # If not a password error, fall back to standard zipfile
+            except ImportError:
+                # pyzipper not available, fall back to standard zipfile
+                pass
+        
+        # Standard zipfile handling
+        try:
+            with zipfile.ZipFile(archive_path, 'r') as zipf:
+                # Check if zip is password protected
+                is_encrypted = any(info.flag_bits & 0x1 for info in zipf.infolist())
                 
-                if progress_callback:
-                    progress = ((i + 1) / total_files) * 100
-                    progress_callback(f"Listing {file_name}", progress)
+                # If the zip is encrypted but no password is provided, raise an error
+                if is_encrypted and not password:
+                    raise RuntimeError("Password required for encrypted ZIP file")
+                
+                # If password is provided, set it
+                if password:
+                    try:
+                        zipf.setpassword(password.encode())
+                    except:
+                        raise RuntimeError("Incorrect password for encrypted ZIP file")
+                
+                file_list = zipf.namelist()
+                total_files = len(file_list)
+                for i, file_name in enumerate(file_list):
+                    try:
+                        info = zipf.getinfo(file_name)
+                        file_info = {
+                            "name": file_name,
+                            "size": info.file_size,
+                            "compressed_size": info.compress_size,
+                            "date": info.date_time,
+                            "is_dir": file_name.endswith('/')
+                        }
+                    except:
+                        file_info = {
+                            "name": file_name,
+                            "size": 0,
+                            "compressed_size": 0,
+                            "date": None,
+                            "is_dir": file_name.endswith('/')
+                        }
+                    contents.append(file_info)
+                    
+                    if progress_callback:
+                        progress = ((i + 1) / total_files) * 100
+                        progress_callback(f"Listing {file_name}", progress)
+        except (RuntimeError, zipfile.BadZipFile) as e:
+            if "Bad password" in str(e) or "password required" in str(e).lower():
+                raise RuntimeError("Incorrect password for encrypted ZIP file")
+            raise
     
     elif archive_format.startswith("tar") or archive_format in ["bz2", "xz", "lzma"]:
         mode = "r"
@@ -1022,7 +1441,7 @@ def _list_with_python(archive_path, archive_format, progress_callback=None):
         elif archive_format == "tar.xz":
             mode = "r:xz"
         elif archive_format == "bz2":
-            # 单个bz2文件处理
+            # Handle single bz2 file
             import bz2
             file_info = {
                 "name": os.path.basename(archive_path).replace('.bz2', ''),
@@ -1036,7 +1455,7 @@ def _list_with_python(archive_path, archive_format, progress_callback=None):
                 progress_callback("Listing bz2 file", 100)
             return contents
         elif archive_format == "xz":
-            # 单个xz文件处理
+            # Handle single xz file
             import lzma
             file_info = {
                 "name": os.path.basename(archive_path).replace('.xz', ''),
@@ -1050,7 +1469,7 @@ def _list_with_python(archive_path, archive_format, progress_callback=None):
                 progress_callback("Listing xz file", 100)
             return contents
         elif archive_format == "lzma":
-            # 单个lzma文件处理
+            # Handle single lzma file
             file_info = {
                 "name": os.path.basename(archive_path).replace('.lzma', ''),
                 "size": os.path.getsize(archive_path),
@@ -1086,21 +1505,23 @@ def _list_with_python(archive_path, archive_format, progress_callback=None):
     
     return contents
 
-def _list_rar_with_cli(archive_path, progress_callback=None):
-    """使用unrar CLI工具列出RAR内容"""
+def _list_rar_with_cli(archive_path, progress_callback=None, password=None):
+    """List RAR contents using unrar CLI tool"""
     try:
         unrar_tool = _get_cli_tool("unrar", arch_specific=True)
     except FileNotFoundError:
-        # 终极备用方案：使用lsar
-        return _list_with_lsar(archive_path, progress_callback)
+        # Ultimate fallback: Use lsar
+        return _list_with_lsar(archive_path, progress_callback, password)
     
     cmd = [unrar_tool, "l", archive_path]
+    if password:
+        cmd.extend(["-p" + password])
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
         raise RuntimeError(f"RAR listing failed: {result.stderr}")
     
-    # 解析输出
+    # Parse output
     contents = []
     lines = result.stdout.split('\n')
     for line in lines:
@@ -1118,21 +1539,23 @@ def _list_rar_with_cli(archive_path, progress_callback=None):
     
     return contents
 
-def _list_7z_with_cli(archive_path, progress_callback=None):
-    """使用7zz CLI工具列出7z内容"""
+def _list_7z_with_cli(archive_path, progress_callback=None, password=None):
+    """List 7z contents using 7zz CLI tool"""
     try:
         sevenz_tool = _get_cli_tool("7zz")
     except FileNotFoundError:
-        # 备用方案：使用lsar
-        return _list_with_lsar(archive_path, progress_callback)
+        # Fallback: Use lsar
+        return _list_with_lsar(archive_path, progress_callback, password)
     
     cmd = [sevenz_tool, "l", archive_path]
+    if password:
+        cmd.extend(["-p" + password])
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
         raise RuntimeError(f"7z listing failed: {result.stderr}")
     
-    # 解析输出
+    # Parse output
     contents = []
     lines = result.stdout.split('\n')
     for line in lines:
@@ -1151,11 +1574,11 @@ def _list_7z_with_cli(archive_path, progress_callback=None):
     return contents
 
 def _list_cab_with_cabextract(archive_path, progress_callback=None):
-    """使用cabextract工具列出CAB文件内容"""
+    """List CAB file contents using cabextract tool"""
     try:
         cabextract_tool = _get_cli_tool("cabextract")
     except FileNotFoundError:
-        # 备用方案：使用lsar
+        # Fallback: Use lsar
         return _list_with_lsar(archive_path, progress_callback)
     
     cmd = [cabextract_tool, "-l", archive_path]
@@ -1164,16 +1587,16 @@ def _list_cab_with_cabextract(archive_path, progress_callback=None):
     if result.returncode != 0:
         raise RuntimeError(f"CAB listing failed: {result.stderr}")
     
-    # 解析cabextract输出
+    # Parse cabextract output
     contents = []
     lines = result.stdout.split('\n')
     for line in lines:
         line = line.strip()
-        # 跳过标题行和空行
+        # Skip header lines and empty lines
         if (line and not line.startswith('Viewing cabinet:') and 
             not line.startswith('File size') and not line.startswith('-----------') and 
             not line.startswith('All done')):
-            # 解析格式：文件大小 | 日期 时间 | 文件名
+            # Parse format: file size | date time | file name
             if '|' in line:
                 parts = line.split('|')
                 if len(parts) >= 3:
@@ -1185,21 +1608,21 @@ def _list_cab_with_cabextract(archive_path, progress_callback=None):
                             "size": file_size,
                             "compressed_size": file_size,
                             "date": f"{parts[1].strip()}",
-                            "is_dir": False  # CAB文件不支持目录
+                            "is_dir": False  # CAB files don't support directories
                         }
                         contents.append(file_info)
                     except ValueError:
-                        # 如果解析失败，跳过该行
+                        # If parsing fails, skip this line
                         continue
     
     return contents
 
 def _list_iso_with_7z(archive_path, progress_callback=None):
-    """使用7zz CLI工具列出ISO内容"""
+    """List ISO contents using 7zz CLI tool"""
     try:
         sevenz_tool = _get_cli_tool("7zz")
     except FileNotFoundError:
-        # 备用方案：使用lsar
+        # Fallback: Use lsar
         return _list_iso_with_lsar(archive_path, progress_callback)
     
     cmd = [sevenz_tool, "l", archive_path]
@@ -1208,56 +1631,56 @@ def _list_iso_with_7z(archive_path, progress_callback=None):
     if result.returncode != 0:
         raise RuntimeError(f"ISO listing failed: {result.stderr}")
     
-    # 解析7z输出
+    # Parse 7z output
     contents = []
     lines = result.stdout.split('\n')
     in_file_list = False
     
     for line in lines:
         line = line.strip()
-        # 检查是否进入文件列表部分
+        # Check if entering file list section
         if line.startswith('-----') and not in_file_list:
             in_file_list = True
             continue
         
-        # 如果已经进入文件列表部分，再次遇到分隔线表示结束
+        # If already in file list section, encountering separator again means end
         if line.startswith('-----') and in_file_list:
             break
         
-        # 如果在文件列表部分，解析文件信息
+        # If in file list section, parse file information
         if in_file_list and line and not line.startswith('7-Zip') and not line.startswith('Scanning') and not line.startswith('Listing') and not line.startswith('Path') and not line.startswith('Type') and not line.startswith('Physical'):
-            # 7z输出格式：日期 时间  属性        大小  压缩大小  名称
-            # 示例：2025-10-03 18:47:54 .....        303          303  0000008C-00000000-454D4.TAGSET
+            # 7z output format: date time attribute size compressed_size name
+            # Example: 2025-10-03 18:47:54 .....        303          303  0000008C-00000000-454D4.TAGSET
             parts = line.split()
             if len(parts) >= 6:
                 try:
-                    # 尝试解析大小（第5个元素）
+                    # Try to parse size (5th element)
                     size = 0
                     if parts[4].isdigit():
                         size = int(parts[4])
                     
-                    # 文件名是第6个元素及之后的所有内容
+                    # File name is 6th element and all content after
                     name = ' '.join(parts[5:])
                     
-                    # 检查是否是目录（属性中包含D）
+                    # Check if it's a directory (contains D in attributes)
                     is_dir = 'D' in parts[3] if len(parts) > 3 else name.endswith('/')
                     
                     file_info = {
                         "name": name,
                         "size": size,
-                        "compressed_size": size,  # ISO通常不压缩
+                        "compressed_size": size,  # ISO usually doesn't compress
                         "date": f"{parts[0]} {parts[1]}" if len(parts) > 1 else None,
                         "is_dir": is_dir
                     }
                     contents.append(file_info)
                 except (ValueError, IndexError):
-                    # 如果解析失败，跳过该行
+                    # If parsing fails, skip this line
                     continue
     
     return contents
 
 def _list_iso_with_lsar(archive_path, progress_callback=None):
-    """使用lsar列出ISO内容，专门处理ISO格式"""
+    """List ISO contents using lsar, specifically for ISO format"""
     try:
         lsar_tool = _get_cli_tool("lsar")
     except FileNotFoundError:
@@ -1269,69 +1692,86 @@ def _list_iso_with_lsar(archive_path, progress_callback=None):
     if result.returncode != 0:
         raise RuntimeError(f"ISO listing failed: {result.stderr}")
     
-    # 解析lsar输出
+    # Parse lsar output
     contents = []
     lines = result.stdout.split('\n')
     
-    # 跳过标题行，找到数据开始位置
+    # Skip header lines, find data start position
     data_start = False
     for line in lines:
         line = line.strip()
         
-        # 跳过空行和标题
+        # Skip empty lines and headers
         if not line:
             continue
             
-        # 检查是否是标题行
+        # Check if it's a header line
         if line.startswith('Flags') or line.startswith('=====') or line.startswith('ISO 9660'):
             continue
             
-        # 检查是否是数据行（以数字开头）
+        # Check if it's a data line (starts with a number)
         if line and line[0].isdigit():
-            # lsar输出格式：序号. 标志  文件大小  比率  模式  日期  时间  名称
-            # 示例：0. -----         303  -576%  ----  2025-10-03 18:47  0000008C-00000000-454D4.TAGSET
+            # lsar output format: sequence. flag file_size ratio mode date time name
+            # Example: 0. -----         303  -576%  ----  2025-10-03 18:47  0000008C-00000000-454D4.TAGSET
             parts = line.split()
             if len(parts) >= 8:
                 try:
-                    # 尝试解析大小（第3个元素）
+                    # Try to parse size (3rd element)
                     size = 0
                     if parts[2].isdigit():
                         size = int(parts[2])
                     
-                    # 文件名是第8个元素及之后的所有内容
+                    # File name is 8th element and all content after
                     name = ' '.join(parts[7:])
                     
-                    # 检查是否是目录（根据名称判断）
+                    # Check if it's a directory (based on name)
                     is_dir = name.endswith('/')
                     
                     file_info = {
                         "name": name,
                         "size": size,
-                        "compressed_size": size,  # ISO通常不压缩
+                        "compressed_size": size,  # ISO usually doesn't compress
                         "date": f"{parts[5]} {parts[6]}" if len(parts) > 6 else None,
                         "is_dir": is_dir
                     }
                     contents.append(file_info)
                 except (ValueError, IndexError):
-                    # 如果解析失败，跳过该行
+                    # If parsing fails, skip this line
                     continue
     
     return contents
 
-def _list_with_lsar(archive_path, progress_callback=None):
-    """使用lsar作为终极备用方案列出内容"""
+def _list_with_lsar(archive_path, progress_callback=None, password=None):
+    """Use lsar as ultimate fallback to list contents"""
     try:
         lsar_tool = _get_cli_tool("lsar")
     except FileNotFoundError:
-        raise RuntimeError("No listing tool available for this format")
+        # If lsar is not available, raise a more specific error for password-protected archives
+        if password is None:
+            # We can't determine if the archive is password protected without lsar
+            # But we should raise an error to indicate the limitation
+            raise RuntimeError("Listing tool not available - cannot determine if archive is password protected")
+        else:
+            # If we have a password, we can't verify it without lsar
+            raise RuntimeError("Listing tool not available - cannot verify password for encrypted archive")
     
     cmd = [lsar_tool, "-l", archive_path]
+    if password:
+        cmd.extend(["-p", password])
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
-        raise RuntimeError(f"Listing failed: {result.stderr}")
+        # Check if this is a password-related error
+        error_str = result.stderr.lower() if result.stderr else ""
+        if "password" in error_str or "encrypted" in error_str or "authentication" in error_str:
+            if not password:
+                raise RuntimeError("Password required for encrypted archive")
+            else:
+                raise RuntimeError("Incorrect password for encrypted archive")
+        else:
+            raise RuntimeError(f"Listing failed: {result.stderr}")
     
-    # 解析lsar输出
+    # Parse lsar output
     contents = []
     lines = result.stdout.split('\n')
     for line in lines:
@@ -1366,18 +1806,18 @@ def add_to_archive(archive_path, file_to_add_path, progress_callback=None):
         if progress_callback:
             progress_callback(f"Adding file to {archive_format} archive...", 0)
         
-        # 根据格式选择处理方式
+        # Select processing method based on format
         if archive_format in ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz"]:
-            # 使用Python内置库
+            # Use Python built-in libraries
             _add_with_python(archive_path, file_to_add_path, archive_format, progress_callback)
         elif archive_format in ["rar"]:
-            # 使用CLI工具
+            # Use CLI tool
             _add_rar_with_cli(archive_path, file_to_add_path, progress_callback)
         elif archive_format in ["7z"]:
-            # 使用7zz CLI工具
+            # Use 7zz CLI tool
             _add_7z_with_cli(archive_path, file_to_add_path, progress_callback)
         else:
-            # 其他格式不支持添加文件
+            # Other formats don't support adding files
             raise ValueError(f"Adding files to {archive_format} format is not supported")
 
         if progress_callback:
@@ -1390,14 +1830,14 @@ def add_to_archive(archive_path, file_to_add_path, progress_callback=None):
         return False
 
 def _add_with_python(archive_path, file_to_add_path, archive_format, progress_callback=None):
-    """使用Python内置库添加文件"""
+    """Add file using Python built-in libraries"""
     if archive_format == "zip":
         with zipfile.ZipFile(archive_path, 'a') as zipf:
             file_name = os.path.basename(file_to_add_path)
             zipf.write(file_to_add_path, file_name)
     
     elif archive_format.startswith("tar"):
-        # 正确的tarfile模式参数 - 使用写入模式而不是追加模式
+        # Correct tarfile mode parameter - use write mode instead of append mode
         if archive_format == "tar":
             mode = "w"
         elif archive_format == "tar.gz":
@@ -1409,8 +1849,8 @@ def _add_with_python(archive_path, file_to_add_path, archive_format, progress_ca
         else:
             mode = "w"
             
-        # 对于tar文件，需要重新创建整个归档
-        # 先读取现有内容，然后添加新文件
+        # For tar files, need to recreate the entire archive
+        # First read existing content, then add new file
         existing_files = []
         if os.path.exists(archive_path):
             try:
@@ -1419,12 +1859,12 @@ def _add_with_python(archive_path, file_to_add_path, archive_format, progress_ca
             except:
                 existing_files = []
         
-        # 重新创建归档，包含现有文件和新文件
+        # Recreate archive, including existing files and new file
         with tarfile.open(archive_path, mode) as tarf:
-            # 添加现有文件
+            # Add existing files
             for existing_file in existing_files:
                 tarf.add(existing_file, arcname=existing_file)
-            # 添加新文件
+            # Add new file
             file_name = os.path.basename(file_to_add_path)
             tarf.add(file_to_add_path, arcname=file_name)
     
@@ -1432,7 +1872,7 @@ def _add_with_python(archive_path, file_to_add_path, archive_format, progress_ca
         progress_callback("File added", 100)
 
 def _add_rar_with_cli(archive_path, file_to_add_path, progress_callback=None):
-    """使用rar CLI工具添加文件到RAR"""
+    """Add file to RAR using rar CLI tool"""
     try:
         rar_tool = _get_cli_tool("rar", arch_specific=True)
     except FileNotFoundError:
@@ -1445,7 +1885,7 @@ def _add_rar_with_cli(archive_path, file_to_add_path, progress_callback=None):
         raise RuntimeError(f"RAR add failed: {result.stderr}")
 
 def _add_7z_with_cli(archive_path, file_to_add_path, progress_callback=None):
-    """使用7zz CLI工具添加文件到7z"""
+    """Add file to 7z using 7zz CLI tool"""
     try:
         sevenz_tool = _get_cli_tool("7zz")
     except FileNotFoundError:
@@ -1457,21 +1897,21 @@ def _add_7z_with_cli(archive_path, file_to_add_path, progress_callback=None):
     if result.returncode != 0:
         raise RuntimeError(f"7z add failed: {result.stderr}")
 
-# 测试函数
+# Test function
 def test_archive_functions():
-    """测试归档功能"""
+    """Test archive functions"""
     import tempfile
     import os
     
     print("=== Testing Archive Functions ===")
     
-    # 创建测试文件
+    # Create test file
     with tempfile.TemporaryDirectory() as temp_dir:
         test_file = os.path.join(temp_dir, "test.txt")
         with open(test_file, "w") as f:
             f.write("Hello Archive Test")
         
-        # 测试ZIP格式
+        # Test ZIP format
         print("\n--- Testing ZIP format ---")
         zip_file = os.path.join(temp_dir, "test.zip")
         try:
@@ -1488,7 +1928,7 @@ def test_archive_functions():
         except Exception as e:
             print(f"ZIP test error: {e}")
         
-        # 测试TAR.GZ格式
+        # Test TAR.GZ format
         print("\n--- Testing TAR.GZ format ---")
         tar_gz_file = os.path.join(temp_dir, "test.tar.gz")
         try:
@@ -1505,7 +1945,7 @@ def test_archive_functions():
         except Exception as e:
             print(f"TAR.GZ test error: {e}")
         
-        # 测试RAR格式（如果可用）
+        # Test RAR format (if available)
         print("\n--- Testing RAR format ---")
         rar_file = os.path.join(temp_dir, "test.rar")
         try:
@@ -1522,7 +1962,7 @@ def test_archive_functions():
         except Exception as e:
             print(f"RAR test error: {e}")
         
-        # 测试7z格式（如果可用）
+        # Test 7z format (if available)
         print("\n--- Testing 7z format ---")
         sevenz_file = os.path.join(temp_dir, "test.7z")
         try:

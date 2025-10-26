@@ -11,6 +11,7 @@ nuitka-crash-report.xml
 build/
 develop-eggs/
 dist/
+test/
 downloads/
 eggs/
 .eggs/

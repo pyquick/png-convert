@@ -20,7 +20,7 @@ class GeneralSettingsWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.settings = QSettings("pyquick", "converter")
-        self.pat_input = None  # 初始化PAT输入框引用
+        self.pat_input = None  # Initialize PAT input field reference
         self.setup_ui()
         self.load_settings()
         self.connect_signals()

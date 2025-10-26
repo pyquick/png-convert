@@ -193,7 +193,7 @@ class SettingsDialog(QDialog):
         # Debug settings are now handled by the DebugSettingsWidget itself
         
         # Connect update dialog settings
-        # 更新设置相关信号连接已移除，由UpdateDialog内部处理
+        # Update settings related signal connections have been removed, handled internally by UpdateDialog
         
         # Image converter settings are now handled by the general widget
         # No separate image converter widget exists anymore

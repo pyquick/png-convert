@@ -57,8 +57,8 @@ class ConversionWorker(QObject):
                     self.input_path,
                     self.output_path,
                     self.output_format,
-                    int(self.min_size) if self.min_size is not None else 16, # 显式转换为 int
-                    int(self.max_size) if self.max_size is not None else None, # 显式转换为 int
+                    int(self.min_size) if self.min_size is not None else 16, # Explicit conversion to int
+                    int(self.max_size) if self.max_size is not None else None, # Explicit conversion to int
                     quality=self.quality,
                     progress_callback=self._update_progress_callback
                 )
@@ -125,13 +125,13 @@ class ICNSConverterGUI(QMainWindow):
         self.load_settings()
         
     def _onThemeChanged(self):
-        """主题变化处理"""
+        """Theme change handling"""
         
         setTheme(Theme.AUTO)
         
         
     def closeEvent(self, e):
-        # 停止监听器线程
+        # Stop listener thread
         self.listener.terminate()
         self.listener.deleteLater()
         super().closeEvent(e)
@@ -862,7 +862,25 @@ class ICNSConverterGUI(QMainWindow):
         self.options_tree.setItemWidget(overwrite_item, 0, overwrite_widget)
     
     def on_tab_changed(self, index):
-        """Handle tab change with slide animation effect"""
+        """Handle tab change with optional slide animation effect based on UI_FLUENT environment variable"""
+        import sys
+        import os
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'support'))
+        from support.check_flag import check_flag
+        
+        # Check if UI_FLUENT environment variable is set to YES using check_flag function
+        ui_fluent_enabled = check_flag("UI_FLUENT")
+        
+        # Update status bar with current tab
+        tab_text = self.tab_widget.tabText(index)
+        self.status_bar.showMessage(f"Switched to {tab_text} tab")
+        
+        # Skip animation if UI_FLUENT is not enabled
+        if not ui_fluent_enabled:
+            self._previous_tab_index = index
+            return
+            
+        # Proceed with animation if UI_FLUENT is enabled
         from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
         
         # Get current tab widget
@@ -911,10 +929,6 @@ class ICNSConverterGUI(QMainWindow):
         
         # Start the animation
         self.slide_animation.start()
-        
-        # Update status bar with current tab
-        tab_text = self.tab_widget.tabText(index)
-        self.status_bar.showMessage(f"Switched to {tab_text} tab")
     
     def _on_tree_item_expanded(self, item):
         """Handle tree item expansion"""
@@ -1005,7 +1019,7 @@ class ICNSConverterGUI(QMainWindow):
         self.success_widget.hide() # Initially hidden
 
     def _set_placeholder_preview(self):
-        placeholder_text = "拖放图像到此处\n或点击'Browse...'选择文件\n🖼️"
+        placeholder_text = "Drag and drop image here\nor click 'Browse...' to select file\n🖼️"
         font = QFont()
         font.setPointSize(16) # Larger font for placeholder
         self.preview_label.setFont(font)
@@ -1334,9 +1348,9 @@ class ICNSConverterGUI(QMainWindow):
         
         self._worker = ConversionWorker(
             self.input_path, self.output_path, self.output_format,
-            self.min_size, # 始终传递整数值
-            self.max_size,  # 始终传递整数值
-            self.quality  # 传递图像质量参数
+            self.min_size, # Always pass integer values
+            self.max_size,  # Always pass integer values
+            self.quality  # Pass image quality parameter
         )
         self._thread = QThread() 
         self._worker.moveToThread(self._thread)
