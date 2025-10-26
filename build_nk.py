@@ -28,11 +28,11 @@ def compile_gui():
     # Nuitka compilation command
     cmd = [
         sys.executable, "-m", "nuitka",
-        
+        "--standalone",
         "--assume-yes-for-downloads",   # Assume yes for downloads  
-        "--mode=app",
         "--clang",
         "--lto=no",
+        "--macos-create-app-bundle", # Create macOS app bundle
         #"--clang++-args=-headerpad_max_install_names",
         "--macos-app-icon=" + os.path.join(current_dir,"AppIcon.icns"), # App icon
         "--include-data-file=" + os.path.join(current_dir,"zip.png")+ f"=./zip.png",

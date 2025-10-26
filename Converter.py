@@ -4,11 +4,6 @@ from concurrent.futures import thread
 from importlib import reload
 import sys
 import os
-import threading
-import time
-target="com.pyquick.converter"
-from patch import enable
-enable(target)
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
