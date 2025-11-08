@@ -1,7 +1,105 @@
 class _CON:
     def __init__(self):
         self.theme_system=""
-        self.qss_seg="SegmentedWidget{ border-radius: 12px; }"   
+        self.qss_seg = """
+PivotItem { 
+    padding: 10px 12px; 
+    color: black; 
+    background-color: transparent; 
+    border: none; 
+    outline: none; 
+    margin: 0; 
+    border-radius: 12px;
+} 
+
+PivotItem[isSelected=true]:hover { 
+    color: rgba(0, 0, 0, 0.63); 
+    border-radius: 12px;
+} 
+
+PivotItem[isSelected=true]:pressed { 
+    color: rgba(0, 0, 0, 0.53); 
+    border-radius: 12px;
+} 
+
+PivotItem[isSelected=false]:pressed { 
+    color: rgba(0, 0, 0, 0.75); 
+    border-radius: 12px;
+} 
+
+PivotItem[hasIcon=false] { 
+    padding-left: 12px; 
+    padding-right: 12px; 
+    border-radius: 12px;
+} 
+
+PivotItem[hasIcon=true] { 
+    padding-left: 36px; 
+    padding-right: 12px; 
+    border-radius: 12px;
+} 
+
+Pivot { 
+    border: none; 
+    background-color: transparent; 
+    border-radius: 12px;
+} 
+
+#view { 
+    background-color: transparent; 
+    border-radius: 12px;
+} 
+
+SegmentedToolItem { 
+    padding: 5px 9px 6px 8px; 
+    border-radius: 12px;
+} 
+
+SegmentedWidget, SegmentedToolWidget { 
+    background-color: rgba(0, 0, 0, 0.0241); 
+    border: 1px solid rgba(0, 0, 0, 0.0578); 
+    border-radius: 12px;
+} 
+
+SegmentedItem[isSelected=false], 
+SegmentedToolItem[isSelected=false] { 
+    padding-top: 3px; 
+    padding-bottom: 3px; 
+    background-color: transparent; 
+    border: none; 
+    border-radius: 12px;
+    margin: 3px 0px; 
+} 
+
+SegmentedItem[isSelected=false]:hover, 
+SegmentedToolItem[isSelected=false]:hover { 
+    background-color: rgba(0, 0, 0, 9); 
+    border-radius: 12px;
+} 
+
+SegmentedItem[isSelected=false]:pressed, 
+SegmentedToolItem[isSelected=false]:pressed { 
+    background-color: rgba(0, 0, 0, 6); 
+    border-radius: 12px;
+} 
+
+SegmentedItem[isSelected=true], 
+SegmentedToolItem[isSelected=true] { 
+    padding-top: 6px; 
+    padding-bottom: 6px; 
+    margin: 0px; 
+    background-color: transparent; 
+    border-radius: 12px;
+} 
+
+SegmentedItem[isSelected=true]:hover, 
+SegmentedItem[isSelected=true]:pressed, 
+SegmentedToolItem[isSelected=true]:hover, 
+SegmentedToolItem[isSelected=true]:pressed { 
+    color: black; 
+    border-radius: 12px;
+} 
+"""   
         self.qss_combo="""ModelComboBox{ border-radius: 16px; }"""
         self.qss_combo_2="""ModelComboBox{ border-radius: 14px; }"""
         self.qss_spin="""SpinBox{ border-radius: 16px; }"""

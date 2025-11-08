@@ -221,7 +221,7 @@ class ZipGUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("Archive File Processing Tool")
         self.setGeometry(200, 200, 800, 600)
-        self.setMinimumSize(600, 650)
+        self.setMinimumSize(600, 780)
         
         # Enable drag and drop for the main window
         self.setAcceptDrops(True)
@@ -280,6 +280,10 @@ class ZipGUI(QMainWindow):
         self.main_widget = QWidget(self)
         self.setCentralWidget(self.main_widget)
         self.main_layout = QVBoxLayout(self.main_widget)
+        
+        # Initialize status bar
+        self.status_bar = self.statusBar()
+        self.status_bar.showMessage("Ready")
         
         self.notebook = QTabWidget(self.main_widget)
         self.main_layout.addWidget(self.notebook, 1) # Add notebook with stretch
@@ -365,7 +369,7 @@ class ZipGUI(QMainWindow):
         sources_box_sizer = QVBoxLayout(sources_box)
         
         self.sources_listbox = ListWidget()
-        self.sources_listbox.setMinimumHeight(250)  # Set minimum height
+        self.sources_listbox.setMinimumHeight(280)  # Set minimum height
         sources_box_sizer.addWidget(self.sources_listbox, 1)  # Increase stretch weight
         # Set right-click to immediately select
         self.sources_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -696,47 +700,40 @@ class ZipGUI(QMainWindow):
         return True
     
     def on_tab_changed(self, index):
-        """Handle tab change events with optional slide animation effect based on UI_FLUENT environment variable"""
+        """Handle tab change with optional slide animation effect based on UI_FLUENT environment variable"""
         import sys
         import os
         sys.path.append(os.path.join(os.path.dirname(__file__), 'support'))
-        try:
-            from support.check_flag import check_flag
-        except ImportError:
-            # Fallback function if check_flag is not available
-            def check_flag(flag: str) -> bool:
-                return os.environ.get(flag, "NO").upper() == "YES"
+        from support.check_flag import check_flag
         
         # Check if UI_FLUENT environment variable is set to YES using check_flag function
         ui_fluent_enabled = check_flag("UI_FLUENT")
+        
+        # Update status bar with current tab
+        tab_text = self.notebook.tabText(index)
+        self.status_bar.showMessage(f"Switched to {tab_text} tab")
+        
+        # Skip animation if UI_FLUENT is not enabled
+        if not ui_fluent_enabled:
+            self._previous_tab_index = index
+            # Force layout update when animation is disabled
+            self.notebook.currentWidget().updateGeometry()
+            if self.notebook.currentWidget().layout():
+                self.notebook.currentWidget().layout().update()
+                self.notebook.currentWidget().layout().activate()
+            return
+            
+        # Proceed with animation if UI_FLUENT is enabled
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
         
         # Get current tab widget
         current_widget = self.notebook.currentWidget()
         if not current_widget:
             return
             
-        # Adjust source files area size when switching tabs
-        if index == 0:  # Create Archive tab
-            # Make source files area larger when on Create Archive tab
-            self.sources_listbox.setMinimumHeight(300)
-        else:
-            # Make source files area smaller when on other tabs
-            self.sources_listbox.setMinimumHeight(200)
-        
-        # Skip animation if UI_FLUENT is not enabled
-        if not ui_fluent_enabled:
-            self._previous_tab_index = index
-            self.reset_widget_layout(current_widget)
-            return
-            
-        # Proceed with animation if UI_FLUENT is enabled
-        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
-            
         # Skip animation during initial startup to prevent layout issues
         if not hasattr(self, '_previous_tab_index') and not self.notebook.isVisible():
             self._previous_tab_index = index
-            # Update layout immediately for initial setup
-            self.reset_widget_layout(current_widget)
             return
             
         # Get tab widget dimensions
@@ -746,58 +743,49 @@ class ZipGUI(QMainWindow):
         # Skip animation if window is not yet properly sized
         if tab_width <= 0 or tab_height <= 0:
             self._previous_tab_index = index
-            # Update layout immediately if dimensions are not valid
-            self.reset_widget_layout(current_widget)
             return
         
         # Determine slide direction based on tab index
         if hasattr(self, '_previous_tab_index'):
             if index > self._previous_tab_index:
-                # Sliding from right to left - start from right side
-                start_pos = QRect(tab_width, 0, tab_width, tab_height)
+                # Sliding from right to left - start from 80% of width to prevent going out of bounds
+                start_pos = QRect(int(tab_width * 0.8), 0, tab_width, tab_height)
             else:
-                # Sliding from left to right - start from left side (negative position)
-                start_pos = QRect(-tab_width, 0, tab_width, tab_height)
+                # Sliding from left to right - start from -80% of width to prevent going out of bounds
+                start_pos = QRect(int(-tab_width * 0.8), 0, tab_width, tab_height)
         else:
-            # First time, slide from right
-            start_pos = QRect(tab_width, 0, tab_width, tab_height)
+            # First time, slide from right - start from 80% of width
+            start_pos = QRect(int(tab_width * 0.8), 0, tab_width, tab_height)
         
         # Set initial position
         current_widget.setGeometry(start_pos)
         
         # Create slide animation
         self.slide_animation = QPropertyAnimation(current_widget, b"geometry")
-        self.slide_animation.setDuration(500)  # 500ms animation for even smoother slide
+        self.slide_animation.setDuration(300)  # 300ms animation for smooth slide
         self.slide_animation.setStartValue(start_pos)
         self.slide_animation.setEndValue(QRect(0, 0, tab_width, tab_height))
-        self.slide_animation.setEasingCurve(QEasingCurve.Type.OutQuart)  # Smoother easing curve
-        
-        # Connect to a function to reset layout after animation
-        self.slide_animation.finished.connect(lambda: self.reset_widget_layout(current_widget))
+        self.slide_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         
         # Store current tab index for next animation
         self._previous_tab_index = index
         
+        # Connect animation finished signal to update layout
+        self.slide_animation.finished.connect(lambda: self._update_tab_layout(current_widget))
+        
         # Start the animation
         self.slide_animation.start()
-        
-        # Force update of the current widget's layout during animation
-        layout = current_widget.layout()
-        if layout:
-            layout.update()
-
-    def reset_widget_layout(self, widget):
-        """Reset widget layout after animation completes"""
-        # Reset the geometry to ensure proper layout
-        widget.setGeometry(0, 0, widget.width(), widget.height())
-        
-        # Force layout update
-        if widget.layout():
+    
+    def _update_tab_layout(self, widget):
+        """Update widget layout after animation completes"""
+        # Force layout update to prevent layout issues
+        if widget and widget.layout():
             widget.layout().update()
             widget.layout().activate()
-            
-        # Repaint the widget to ensure all elements are properly displayed
-        widget.repaint()
+            widget.updateGeometry()
+            # Repaint the widget to ensure all elements are properly displayed
+            widget.repaint()
+
     
     
 
@@ -985,9 +973,8 @@ class ZipGUI(QMainWindow):
         if self.create_zip_worker and hasattr(self.create_zip_worker, 'password') and self.create_zip_worker.password:
             archive_info += " (Password Protected)"
         
-        self._show_popup(
-            target=self.create_progress,
-            icon=InfoBarIcon.SUCCESS,
+        # Show success notification at the top
+        self._show_info_bar(
             title='Success',
             content=archive_info,
             duration=2000
@@ -1176,9 +1163,8 @@ class ZipGUI(QMainWindow):
         # Always set is_protected to False for successful extraction, regardless of initial state
         self.update_password_status_extract(False, "Extraction Successful")
         
-        self._show_popup(
-            target=self.extract_progress,
-            icon=InfoBarIcon.SUCCESS,
+        # Show success notification at the top
+        self._show_info_bar(
             title='Success',
             content='Archive extracted successfully!',
             duration=2000
@@ -1390,9 +1376,8 @@ class ZipGUI(QMainWindow):
                 file_count = len(self.add_to_zip_worker.files_to_add)
         file_text = "files" if file_count > 1 else "file"
         
-        self._show_popup(
-            target=self.add_progress,
-            icon=InfoBarIcon.SUCCESS,
+        # Show success notification at the top
+        self._show_info_bar(
             title='Success',
             content=f'{file_count} {file_text} added to archive successfully!',
             duration=2000

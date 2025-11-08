@@ -637,10 +637,44 @@ class ICNSConverterGUI(QMainWindow):
             self.history_list.addItem(list_item)
     
     def clear_conversion_history(self):
-        """Clear all conversion history"""
+        """Clear all conversion history with confirmation popup"""
+        # Show confirmation popup
+        self._show_clear_history_popup()
+    
+    def _show_clear_history_popup(self):
+        """Show popup to confirm clearing history"""
+        from qfluentwidgets import MessageBox, FluentIcon
+        
+        # Create confirmation dialog
+        box = MessageBox(
+            title='Clear History Confirmation',
+            content='Are you sure you want to clear all conversion history? This action cannot be undone.',
+            parent=self
+        )
+        box.yesButton.setText('Clear History')
+        box.cancelButton.setText('Cancel')
+        
+        if box.exec():
+            # User confirmed, clear history
+            self._confirm_clear_history()
+    
+    def _confirm_clear_history(self):
+        """Actually clear the history after confirmation"""
         self.conversion_history = []
         self.save_conversion_history()
         self.update_history_display()
+        
+        # Show success info bar
+        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        InfoBar.success(
+            title='History Cleared',
+            content='All conversion history has been successfully cleared.',
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=3000,
+            parent=self
+        )
 
     def _setup_options_tree(self):
         """Setup the TreeWidget with organized settings"""
@@ -765,7 +799,7 @@ class ICNSConverterGUI(QMainWindow):
         auto_widget.setMinimumSize(300, 40)
         
         self.auto_button = PrimaryPushButton("🔍 Auto-detect Max Size")
-        setCustomStyleSheet(self.auto_button, CON.qss, CON.qss)
+        setCustomStyleSheet(self.auto_button, CON.qss_debug, CON.qss_debug)
         self.auto_button.clicked.connect(self.on_auto_detect)
         auto_layout.addWidget(self.auto_button)
         
@@ -1033,7 +1067,7 @@ class ICNSConverterGUI(QMainWindow):
 
     def on_browse_input(self):
         file_dialog = QFileDialog(self)
-        file_dialog.setNameFilter("Image files (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.ico);;All files (*.*)")
+        file_dialog.setNameFilter("Image files (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.ico *.icns);;All files (*.*)")
         
         # Remember last path if setting is enabled
         if self.remember_path and hasattr(self, 'last_input_dir') and self.last_input_dir:
@@ -1248,7 +1282,7 @@ class ICNSConverterGUI(QMainWindow):
                     file_path = url.toLocalFile()
                     if os.path.isfile(file_path):
                         # Check if it's an image file
-                        image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.ico', '.webp']
+                        image_extensions = ['.icns','.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.ico', '.webp']
                         if any(file_path.lower().endswith(ext) for ext in image_extensions):
                             event.acceptProposedAction()
                             return
@@ -1268,7 +1302,7 @@ class ICNSConverterGUI(QMainWindow):
                     file_path = url.toLocalFile()
                     if os.path.isfile(file_path):
                         # Check if it's an image file
-                        image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.ico', '.webp']
+                        image_extensions = ['.icns','.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.ico', '.webp']
                         if any(file_path.lower().endswith(ext) for ext in image_extensions):
                             image_files.append(file_path)
             
@@ -1370,6 +1404,17 @@ class ICNSConverterGUI(QMainWindow):
         # Add to history if remember_path is enabled
         if self.remember_path:
             self.add_to_history(self.input_path, self.output_path, str(self.output_format))
+        
+        # Show top success notification
+        InfoBar.success(
+            title='Conversion Successful',
+            content=f"Your {str(self.output_format).upper()} file has been created successfully!",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=2000,
+            parent=self
+        )
         
         # Auto-open file if auto_preview is enabled
         if self.auto_preview:
