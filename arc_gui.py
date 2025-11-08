@@ -2,6 +2,7 @@ import os
 import sys
 # import threading # PySide6 will use QThread
 import subprocess
+import shutil
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl, QObject
@@ -220,7 +221,7 @@ class ZipGUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("Archive File Processing Tool")
         self.setGeometry(200, 200, 800, 600)
-        self.setMinimumSize(600, 800)
+        self.setMinimumSize(600, 650)
         
         # Enable drag and drop for the main window
         self.setAcceptDrops(True)
@@ -364,11 +365,12 @@ class ZipGUI(QMainWindow):
         sources_box_sizer = QVBoxLayout(sources_box)
         
         self.sources_listbox = ListWidget()
-        self.sources_listbox.setMinimumHeight(400)  # Set minimum height
-        sources_box_sizer.addWidget(self.sources_listbox, 2)  # Increase stretch weight
+        self.sources_listbox.setMinimumHeight(250)  # Set minimum height
+        sources_box_sizer.addWidget(self.sources_listbox, 1)  # Increase stretch weight
         # Set right-click to immediately select
         self.sources_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.sources_listbox.customContextMenuRequested.connect(self.show_sources_context_menu)
+        # Context menu functionality removed
+        # self.sources_listbox.customContextMenuRequested.connect(self.show_sources_context_menu)
         
         # Buttons to add/remove sources
         button_sizer = QHBoxLayout()
@@ -557,7 +559,8 @@ class ZipGUI(QMainWindow):
         contents_box_sizer.addWidget(self.contents_listbox, 3)  # Increase stretch weight
         # Set right-click menu
         self.contents_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.contents_listbox.customContextMenuRequested.connect(self.show_contents_context_menu)
+        # Context menu functionality removed
+        # self.contents_listbox.customContextMenuRequested.connect(self.show_contents_context_menu)
         tab_sizer.addWidget(contents_box, 2) # Give contents box more stretch
 
         # List button
@@ -919,7 +922,7 @@ class ZipGUI(QMainWindow):
                     from password_dialog import get_password
                     
                     prompt_text = f"Enter password for the {self.create_archive_format.upper()} archive:"
-                    if password_attempt > 1:
+                    if password_attempt >=2:
                         prompt_text = f"Password verification failed. Please try again ({password_attempt}/{max_password_attempts}):"
                     
                     password = get_password(self, "Set Password", prompt_text)
@@ -1118,15 +1121,19 @@ class ZipGUI(QMainWindow):
             # If listing succeeds without password, proceed without password
             password = None
             # Update password status to indicate no password protection
+            self.is_password_protected = False
             self.update_password_status_extract(False, "No Password Protection")
         except RuntimeError as e:
             if "password" in str(e).lower() or "encrypted" in str(e).lower():
                 # Archive is password protected, prompt for password
                 # Update password status to indicate password protection
+                self.is_password_protected = True
                 self.update_password_status_extract(True, "Password Required")
                 from password_dialog import get_password
                 password = get_password(self, "Enter Password", 
-                                      f"The archive '{os.path.basename(self.extract_zip_path)}' is password protected.\nPlease enter the password:")
+                                      f"The archive '{os.path.basename(self.extract_zip_path)}' is password protected.\nPlease enter the password:",
+                                      "")  # Explicitly pass empty error message for first attempt
+
                 if not password:
                     # User cancelled password entry
                     self._show_popup(
@@ -1141,11 +1148,13 @@ class ZipGUI(QMainWindow):
                 # Different error, proceed without password
                 password = None
                 # Update password status to indicate no password protection
+                self.is_password_protected = False
                 self.update_password_status_extract(False, "No Password Protection")
         except Exception:
             # Unexpected error, proceed without password
             password = None
             # Update password status to indicate unknown status
+            self.is_password_protected = False
             self.update_password_status_extract(False, "Archive Status Unknown")
 
         self.extract_zip_worker = ExtractZipWorker(self.extract_zip_path, self.extract_dest_path, password)
@@ -1164,7 +1173,8 @@ class ZipGUI(QMainWindow):
         self._force_cleanup_thread()
         
         # Update password status to indicate successful extraction
-        self.update_password_status_extract(self.is_password_protected if hasattr(self, 'is_password_protected') else False, "Extraction Successful")
+        # Always set is_protected to False for successful extraction, regardless of initial state
+        self.update_password_status_extract(False, "Extraction Successful")
         
         self._show_popup(
             target=self.extract_progress,
@@ -1192,16 +1202,16 @@ class ZipGUI(QMainWindow):
         )
         
         if is_password_error:
-            # Update password status to indicate incorrect password
-            self.update_password_status_extract(True, "Incorrect Password")
+            # Update password status to indicate password required (not incorrect)
+            self.update_password_status_extract(True, "Password Required")
             
             # 循环提示用户输入密码，直到输入正确的密码或取消
             while True:
-                # Prompt for password again with error message
+                # Prompt for password again with neutral title and message
                 from password_dialog import get_password
-                password = get_password(self, "Incorrect Password", 
-                                      f"The password you entered for '{os.path.basename(self.extract_zip_path)}' is incorrect.\nPlease try again:",
-                                      "Incorrect password. Please try again.")
+                password = get_password(self, "Enter Password", 
+                                      f"Please enter the password for '{os.path.basename(self.extract_zip_path)}':",
+                                      "")  # Always use empty error message
                 if password:
                     # 强制终止之前的线程
                     self._force_cleanup_thread()
@@ -1463,80 +1473,13 @@ class ZipGUI(QMainWindow):
                 delattr(self, '_current_password')
             self.start_list_archive_contents() # Automatically list contents after selecting file
 
-    def show_sources_context_menu(self, position):
-        """Show right-click menu for source files list"""
-        item = self.sources_listbox.itemAt(position)
-        if not item:
-            return
-        
-        menu = QMenu()
-        copy_action = menu.addAction("Copy File")
-        
-        action = menu.exec(self.sources_listbox.mapToGlobal(position))
-        if action == copy_action:
-            self.copy_source_file(item)
-    
-    def copy_source_file(self, item):
-        """Copy source file to clipboard"""
-        file_path = item.text()
-        if file_path.startswith("[FOLDER] "):
-            file_path = file_path[len("[FOLDER] "):]
-        
-        if os.path.exists(file_path):
-            clipboard = QApplication.clipboard()
-            clipboard.setText(file_path)
-            
-            self._show_popup(
-                target=self.sources_listbox,
-                icon=InfoBarIcon.SUCCESS,
-                title='Success',
-                content=f'File path copied: {os.path.basename(file_path)}',
-                duration=2000
-            )
-        else:
-            self._show_popup(
-                target=self.sources_listbox,
-                icon=InfoBarIcon.ERROR,
-                title='Error',
-                content='File does not exist',
-                duration=2000
-            )
-    
+    def show_source_context_menu(self, position):
+        """Show right-click menu for source files list - functionality removed"""
+        pass
+
     def show_contents_context_menu(self, position):
-        """Show right-click menu for archive contents list"""
-        item = self.contents_listbox.itemAt(position)
-        if not item:
-            return
-        
-        menu = QMenu()
-        copy_action = menu.addAction("Copy File")
-        
-        # Check if file is password protected
-        if self.is_password_protected:
-            copy_action.setEnabled(False)
-            copy_action.setText("Copy File (Disabled - Password Protected)")
-        
-        action = menu.exec(self.contents_listbox.mapToGlobal(position))
-        if action == copy_action and copy_action.isEnabled():
-            self.copy_archive_content(item)
-    
-    def copy_archive_content(self, item):
-        """Copy archive content file path to clipboard"""
-        content_text = item.text()
-        
-        # Extract file name (remove size information)
-        filename = content_text.split()[0] if content_text else content_text
-        
-        clipboard = QApplication.clipboard()
-        clipboard.setText(filename)
-        
-        self._show_popup(
-            target=self.contents_listbox,
-            icon=InfoBarIcon.SUCCESS,
-            title='Success',
-            content=f'Content path copied: {filename}',
-            duration=2000
-        )
+        """Show right-click menu for archive contents list - functionality removed"""
+        pass
 
     def start_list_archive_contents(self):
         if not self.list_zip_path:
@@ -1555,8 +1498,9 @@ class ZipGUI(QMainWindow):
         # Reset password protection status
         self.is_password_protected = False
         
-        # Check if we have a stored password for this archive
-        password = getattr(self, '_current_password', None)
+        # First try to list contents without password
+        # This will work for password-protected archives after our modifications
+        password = None
         
         self.list_zip_worker = ListZipContentsWorker(self.list_zip_path, password=password)
         self.list_zip_worker_thread = QThread()
@@ -1659,7 +1603,8 @@ class ZipGUI(QMainWindow):
             password = get_password(
                 parent=self,
                 title="Password Required",
-                content="This archive is password protected. Please enter the password:"
+                content="This archive is password protected. Please enter the password:",
+                error_message=""  # Explicitly pass empty error message for first attempt
             )
             
             if password:

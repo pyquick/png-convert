@@ -35,8 +35,9 @@ class PasswordDialog(MessageBoxBase):
         self.contentLabel = BodyLabel(content)
         self.viewLayout.addWidget(self.contentLabel)
         
-        # Add error message if provided
-        if self.error_message:
+        # Add error message only if it's not empty
+        self.errorLabel = None
+        if self.error_message and self.error_message.strip():
             self.errorLabel = BodyLabel(self.error_message)
             self.errorLabel.setStyleSheet("color: red; font-weight: bold;")
             self.viewLayout.addWidget(self.errorLabel)
@@ -145,8 +146,9 @@ class SimplePasswordDialog(QDialog):
         self.content_label.setWordWrap(True)
         layout.addWidget(self.content_label)
         
-        # Add error message if provided
-        if self.error_message:
+        # Add error message only if it's not empty
+        self.error_label = None
+        if self.error_message and self.error_message.strip():
             self.error_label = QLabel(self.error_message)
             self.error_label.setWordWrap(True)
             self.error_label.setStyleSheet("color: red; font-weight: bold;")
@@ -247,9 +249,9 @@ def get_password(parent=None, title="Password Required", content="Please enter t
     
     Args:
         parent: Parent widget
-        title: Dialog title
+        title: Dialog title - always set to "Enter Password"
         content: Dialog content message
-        error_message: Error message to display (for retry attempts)
+        error_message: Error message to display (ignored, always shows neutral message)
         max_attempts: Maximum number of password attempts
     
     Returns:
@@ -257,69 +259,46 @@ def get_password(parent=None, title="Password Required", content="Please enter t
     """
     attempts = 0
     
-    # Create dialog once and reuse it
-    dialog = None
-    simple_dialog = None
+    # Always use "Enter Password" as title, regardless of what's passed
+    title = "Enter Password"
     
     while attempts < max_attempts:
         try:
-            if dialog is None and simple_dialog is None:
-                # Try to use MessageBoxBase based dialog
-                dialog = PasswordDialog(parent, title, content, error_message)
-            elif dialog:
-                # Update existing dialog with error message
-                dialog.titleLabel.setText(title)
-                dialog.contentLabel.setText(content)
-                dialog.set_error_message(error_message)
-                dialog.password_line_edit.clear()
-                dialog.password_line_edit.setFocus()
-            
-            if dialog:
-                result = dialog.exec()
-            else:
-                result = simple_dialog.exec() if simple_dialog else 0
+            # Always create a new dialog with neutral message, ignoring error_message
+            dialog = PasswordDialog(parent, title, content, "")
+            result = dialog.exec()
                 
             if result == 1:  # Accepted
-                password = dialog.get_password() if dialog else (simple_dialog.get_password() if simple_dialog else "")
+                password = dialog.get_password()
                 if password:  # Only return if password is not empty
                     return password
                 else:
                     # Empty password, treat as retry
                     attempts += 1
                     if attempts < max_attempts:
-                        error_message = "Password cannot be empty. Please try again."
+                        # Use neutral message instead of error message
+                        content = "Please enter the password:"
                     else:
-                        error_message = "Maximum password attempts reached."
+                        content = "Maximum password attempts reached."
             else:  # Cancelled
                 return None
         except:
             # Fallback to simple dialog
-            if dialog is None and simple_dialog is None:
-                simple_dialog = SimplePasswordDialog(parent, title, content, error_message)
-            elif simple_dialog:
-                # Update existing dialog with error message
-                simple_dialog.setWindowTitle(title)
-                simple_dialog.content_label.setText(content)
-                simple_dialog.set_error_message(error_message)
-                simple_dialog.password_line_edit.clear()
-                simple_dialog.password_line_edit.setFocus()
-            
-            if simple_dialog:
-                result = simple_dialog.exec()
-            else:
-                result = dialog.exec() if dialog else 0
+            simple_dialog = SimplePasswordDialog(parent, title, content, "")
+            result = simple_dialog.exec()
                 
             if result == 1:  # Accepted
-                password = simple_dialog.get_password() if simple_dialog else (dialog.get_password() if dialog else "")
+                password = simple_dialog.get_password()
                 if password:  # Only return if password is not empty
                     return password
                 else:
                     # Empty password, treat as retry
                     attempts += 1
                     if attempts < max_attempts:
-                        error_message = "Password cannot be empty. Please try again."
+                        # Use neutral message instead of error message
+                        content = "Please enter the password:"
                     else:
-                        error_message = "Maximum password attempts reached."
+                        content = "Maximum password attempts reached."
             else:  # Cancelled
                 return None
     

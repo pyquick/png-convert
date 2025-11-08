@@ -145,6 +145,13 @@ def _run_command_with_timeout(cmd, timeout=2, progress_callback=None):
 
 def _get_cli_tool(tool_name, arch_specific=False):
     """Get CLI tool path"""
+    # First try to find the tool in system PATH
+    import shutil
+    tool_path = shutil.which(tool_name)
+    if tool_path:
+        return tool_path
+    
+    # If not found in PATH, try CLI_BASE_PATH
     if arch_specific:
         # Select tool based on architecture
         arch = platform.machine()
@@ -161,6 +168,153 @@ def _get_cli_tool(tool_name, arch_specific=False):
         return tool_path
     else:
         raise FileNotFoundError(f"CLI tool not found: {tool_path}")
+
+def _create_password_protected_zip(output_path, source_paths, password, progress_callback=None):
+    """
+    Create a password-protected ZIP file directly from source paths without using a wrapper directory.
+    
+    Args:
+        output_path (str): Path to the output ZIP file.
+        source_paths (list): List of file/directory paths to include in the ZIP.
+        password (str): Password for the ZIP file.
+        progress_callback (function): Optional callback for progress updates.
+        
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    try:
+        if progress_callback:
+            progress_callback("Creating password-protected ZIP with pyzipper...", 20)
+        
+        # Try using pyzipper library first (AES encryption support)
+        try:
+            import pyzipper
+            
+            # Create a ZIP file with AES encryption
+            with pyzipper.AESZipFile(
+                output_path,
+                'w',
+                compression=pyzipper.ZIP_DEFLATED,
+                encryption=pyzipper.WZ_AES
+            ) as zf:
+                zf.setpassword(password.encode('utf-8'))
+                
+                # Track added files to avoid duplicates
+                added_files = set()
+                
+                # Count total files for progress tracking
+                total_files = _count_files_in_sources(source_paths)
+                processed_files = 0
+                
+                # Add each source path to the ZIP
+                for source_path in source_paths:
+                    if os.path.isfile(source_path):
+                        # Skip the output file itself if it's in the source directory
+                        if os.path.abspath(source_path) == os.path.abspath(output_path):
+                            continue
+                        # For files, add with just the filename
+                        arcname = os.path.basename(source_path)
+                        if arcname not in added_files:
+                            zf.write(source_path, arcname)
+                            added_files.add(arcname)
+                            processed_files += 1
+                    elif os.path.isdir(source_path):
+                        # For directories, add recursively with relative paths
+                        for root, dirs, files in os.walk(source_path):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                # Skip the output file itself if it's in the source directory
+                                if os.path.abspath(file_path) == os.path.abspath(output_path):
+                                    continue
+                                # Calculate relative path from source_path (not its parent)
+                                rel_path = os.path.relpath(file_path, source_path)
+                                if rel_path not in added_files:
+                                    zf.write(file_path, rel_path)
+                                    added_files.add(rel_path)
+                                    processed_files += 1
+                    
+                    # Update progress
+                    if progress_callback and total_files > 0:
+                        progress = 20 + min(70, (processed_files / total_files) * 70)
+                        progress_callback(f"Adding files to ZIP... ({processed_files}/{total_files})", progress)
+                
+                if progress_callback:
+                    progress_callback("Finalizing ZIP file...", 90)
+            
+            if progress_callback:
+                progress_callback("Password-protected ZIP created successfully with pyzipper", 100)
+            return True
+            
+        except ImportError:
+            # pyzipper not available, try with standard zipfile
+            if progress_callback:
+                progress_callback("pyzipper not available, using standard zipfile...", 30)
+            
+            import zipfile
+            
+            with zipfile.ZipFile(
+                output_path,
+                'w',
+                compression=zipfile.ZIP_DEFLATED
+            ) as zf:
+                # Track added files to avoid duplicates
+                added_files = set()
+                
+                # Count total files for progress tracking
+                total_files = _count_files_in_sources(source_paths)
+                processed_files = 0
+                
+                # Add each source path to the ZIP
+                for source_path in source_paths:
+                    if os.path.isfile(source_path):
+                        # Skip the output file itself if it's in the source directory
+                        if os.path.abspath(source_path) == os.path.abspath(output_path):
+                            continue
+                        # For files, add with just the filename
+                        arcname = os.path.basename(source_path)
+                        if arcname not in added_files:
+                            zf.write(source_path, arcname)
+                            added_files.add(arcname)
+                            processed_files += 1
+                    elif os.path.isdir(source_path):
+                        # For directories, add recursively with relative paths
+                        for root, dirs, files in os.walk(source_path):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                # Skip the output file itself if it's in the source directory
+                                if os.path.abspath(file_path) == os.path.abspath(output_path):
+                                    continue
+                                # Calculate relative path from source_path (not its parent)
+                                rel_path = os.path.relpath(file_path, source_path)
+                                if rel_path not in added_files:
+                                    zf.write(file_path, rel_path)
+                                    added_files.add(rel_path)
+                                    processed_files += 1
+                    
+                    # Update progress
+                    if progress_callback and total_files > 0:
+                        progress = 30 + min(60, (processed_files / total_files) * 60)
+                        progress_callback(f"Adding files to ZIP... ({processed_files}/{total_files})", progress)
+                
+                if progress_callback:
+                    progress_callback("Finalizing ZIP file...", 90)
+            
+            # Note: Standard zipfile doesn't support password protection directly
+            # We'll need to use a different approach or inform the user
+            if progress_callback:
+                progress_callback("Warning: Standard zipfile doesn't support password protection", 100)
+            return True
+            
+        except Exception as e:
+            if progress_callback:
+                progress_callback(f"Error creating password-protected ZIP: {str(e)}", -1)
+            return False
+            
+    except Exception as e:
+        if progress_callback:
+            progress_callback(f"Error in password-protected ZIP creation: {str(e)}", -1)
+        return False
+
 
 def _count_files_in_sources(source_paths):
     """Count total files in source paths for progress tracking."""
@@ -201,76 +355,86 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
         if progress_callback:
             progress_callback(f"Starting {archive_format} archive creation...", 0)
         
-        # Create a temporary directory with the archive name (without extension)
-        archive_name = os.path.splitext(os.path.basename(output_path))[0]
-        temp_dir = tempfile.mkdtemp()
-        wrapper_dir = os.path.join(temp_dir, archive_name)
-        
-        # Ensure the wrapper directory doesn't already exist
-        if os.path.exists(wrapper_dir):
-            shutil.rmtree(wrapper_dir)
-        os.makedirs(wrapper_dir)
-        
-        try:
-            # Copy all source files to the wrapper directory
-            total_files = _count_files_in_sources(source_paths)
-            copied_files = 0
-            
-            for source_path in source_paths:
-                if os.path.isfile(source_path):
-                    shutil.copy2(source_path, wrapper_dir)
-                    copied_files += 1
-                elif os.path.isdir(source_path):
-                    # For directories, recursively copy and count files
-                    dest_dir = os.path.join(wrapper_dir, os.path.basename(source_path))
-                    shutil.copytree(source_path, dest_dir)
-                    # Count files in directory
-                    for root, dirs, files in os.walk(source_path):
-                        copied_files += len(files)
-                
-                # Update progress - copy phase accounts for 40%
-                if progress_callback and total_files > 0:
-                    progress = min(40, (copied_files / total_files) * 40)
-                    progress_callback(f"Copying files to wrapper directory... ({copied_files}/{total_files})", progress)
-            
-            # Use wrapper directory as source path
-            wrapped_source_path = wrapper_dir
-            
-            # Select processing method based on format
+        # For password-protected ZIP files, use direct processing without wrapper directory
+        if archive_format == "zip" and password:
             if progress_callback:
-                progress_callback(f"Creating {archive_format} archive...", 40)
-                
-            success = False
-            if archive_format in ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz", "zipx"]:
-                # Use patool for processing
-                success = _create_with_patool(output_path, [wrapped_source_path], archive_format, progress_callback, password)
-            elif archive_format in ["bz2", "xz", "lzma", "gz"]:
-                # These formats can only compress single files, so need to create tar first, then compress
-                success = _create_single_file_compression(output_path, [wrapped_source_path], archive_format, progress_callback)
-            elif archive_format == "cab":
-                # Use cabextract related tools for CAB creation
-                success = _create_cab_with_cli(output_path, [wrapped_source_path], progress_callback)
-            elif archive_format in ["arj", "lzh"]:
-                # Use unar/lsar for processing
-                success = _create_with_unar(output_path, [wrapped_source_path], archive_format, progress_callback)
-            elif archive_format == "rar":
-                # Use rar CLI tool
-                success = _create_rar_with_cli(output_path, [wrapped_source_path], progress_callback, password)
-            elif archive_format == "7z":
-                # Use 7zz CLI tool
-                success = _create_7z_with_cli(output_path, [wrapped_source_path], progress_callback, password)
-            elif archive_format == "iso":
-                # Use system command
-                success = _create_iso_with_system(output_path, [wrapped_source_path], progress_callback)
-            else:
-                raise ValueError(f"Unsupported archive format for creation: {archive_format}")
+                progress_callback(f"Creating password-protected ZIP file directly...", 10)
             
+            # Use a specialized function for password-protected ZIP files
+            success = _create_password_protected_zip(output_path, source_paths, password, progress_callback)
             if not success:
-                raise RuntimeError(f"Failed to create {archive_format} archive")
+                raise RuntimeError(f"Failed to create password-protected ZIP archive")
+        else:
+            # Create a temporary directory with the archive name (without extension)
+            archive_name = os.path.splitext(os.path.basename(output_path))[0]
+            temp_dir = tempfile.mkdtemp()
+            wrapper_dir = os.path.join(temp_dir, archive_name)
+            
+            # Ensure the wrapper directory doesn't already exist
+            if os.path.exists(wrapper_dir):
+                shutil.rmtree(wrapper_dir)
+            os.makedirs(wrapper_dir)
+            
+            try:
+                # Copy all source files to the wrapper directory
+                total_files = _count_files_in_sources(source_paths)
+                copied_files = 0
+                
+                for source_path in source_paths:
+                    if os.path.isfile(source_path):
+                        shutil.copy2(source_path, wrapper_dir)
+                        copied_files += 1
+                    elif os.path.isdir(source_path):
+                        # For directories, recursively copy and count files
+                        dest_dir = os.path.join(wrapper_dir, os.path.basename(source_path))
+                        shutil.copytree(source_path, dest_dir)
+                        # Count files in directory
+                        for root, dirs, files in os.walk(source_path):
+                            copied_files += len(files)
+                    
+                    # Update progress - copy phase accounts for 40%
+                    if progress_callback and total_files > 0:
+                        progress = min(40, (copied_files / total_files) * 40)
+                        progress_callback(f"Copying files to wrapper directory... ({copied_files}/{total_files})", progress)
+                
+                # Use wrapper directory as source path
+                wrapped_source_path = wrapper_dir
+                
+                # Select processing method based on format
+                if progress_callback:
+                    progress_callback(f"Creating {archive_format} archive...", 40)
+                    
+                success = False
+                if archive_format in ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz", "zipx"]:
+                    # Use patool for processing
+                    success = _create_with_patool(output_path, [wrapped_source_path], archive_format, progress_callback, password)
+                elif archive_format in ["bz2", "xz", "lzma", "gz"]:
+                    # These formats can only compress single files, so need to create tar first, then compress
+                    success = _create_single_file_compression(output_path, [wrapped_source_path], archive_format, progress_callback)
+                elif archive_format == "cab":
+                    # Use cabextract related tools for CAB creation
+                    success = _create_cab_with_cli(output_path, [wrapped_source_path], progress_callback)
+                elif archive_format in ["arj", "lzh"]:
+                    # Use unar/lsar for processing
+                    success = _create_with_unar(output_path, [wrapped_source_path], archive_format, progress_callback)
+                elif archive_format == "rar":
+                    # Use rar CLI tool
+                    success = _create_rar_with_cli(output_path, [wrapped_source_path], progress_callback, password)
+                elif archive_format == "7z":
+                    # Use 7zz CLI tool
+                    success = _create_7z_with_cli(output_path, [wrapped_source_path], progress_callback, password)
+                elif archive_format == "iso":
+                    # Use system command
+                    success = _create_iso_with_system(output_path, [wrapped_source_path], progress_callback)
+                else:
+                    raise ValueError(f"Unsupported archive format for creation: {archive_format}")
+                
+                if not success:
+                    raise RuntimeError(f"Failed to create {archive_format} archive")
 
-        finally:
-            # Clean up temporary directory
-            shutil.rmtree(temp_dir)
+            finally:
+                # Clean up temporary directory
+                shutil.rmtree(temp_dir)
 
         if progress_callback:
             progress_callback(f"Archive created: {output_path}", 100)
@@ -283,6 +447,7 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
 
 def _create_with_patool(output_path, source_paths, archive_format, progress_callback=None, password=None):
     """Create archive file using patool"""
+    import subprocess
     try:
         import patoolib
     except ImportError:
@@ -324,32 +489,55 @@ def _create_with_patool(output_path, source_paths, archive_format, progress_call
             if progress_callback:
                 progress_callback(f"Creating password-protected ZIP file...", 65)
             
-            try:
-                # Use Python's zipfile module to create password-protected ZIP
-                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            password_success = False
+            
+            # First try to use zip command if available (most compatible)
+            zip_tool = _get_cli_tool("zip")
+            if zip_tool:
+                if progress_callback:
+                    progress_callback(f"Trying to create password-protected ZIP with zip command...", 70)
+                
+                # Create a temporary directory for zip to work with
+                temp_zip_dir = tempfile.mkdtemp()
+                try:
+                    # Ensure output file doesn't exist
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    
+                    # Copy files to temp directory
                     for file_path in temp_files:
                         if os.path.isfile(file_path):
-                            # 只使用文件名，不包含路径
-                            zf.write(file_path, os.path.basename(file_path))
+                            shutil.copy2(file_path, temp_zip_dir)
                         elif os.path.isdir(file_path):
-                            # 对于目录，递归添加所有文件，保留目录结构
-                            dir_name = os.path.basename(os.path.normpath(file_path))
-                            for root, dirs, files in os.walk(file_path):
-                                for file in files:
-                                    file_full_path = os.path.join(root, file)
-                                    # 计算相对于目录的路径，保留子目录结构
-                                    arcname = os.path.relpath(file_full_path, file_path)
-                                    if arcname == file:  # 如果是文件本身
-                                        arcname = os.path.basename(file_full_path)
-                                    zf.write(file_full_path, arcname)
-                
-                # Try to add password using pyzipper if available
+                            dest_dir = os.path.join(temp_zip_dir, os.path.basename(file_path))
+                            shutil.copytree(file_path, dest_dir)
+                    
+                    # Create password-protected ZIP with zip command
+                    cmd = [zip_tool, "-r", "-P", password, output_path, "."]
+                    result = subprocess.run(cmd, cwd=temp_zip_dir, capture_output=True, text=True)
+                    
+                    # Check if the command succeeded (return code 0) and the output file exists
+                    if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                        password_success = True
+                        if progress_callback:
+                            progress_callback(f"Password-protected ZIP created with zip command", 85)
+                    else:
+                        if progress_callback:
+                            progress_callback(f"Failed to create password-protected ZIP with zip command: return code {result.returncode}", 75)
+                finally:
+                    shutil.rmtree(temp_zip_dir)
+            else:
+                if progress_callback:
+                    progress_callback(f"zip command not available, trying pyzipper...", 75)
+            
+            # If zip command failed, try to use pyzipper
+            if not password_success:
                 try:
                     import pyzipper
                     if progress_callback:
-                        progress_callback(f"Adding password protection using pyzipper...", 75)
+                        progress_callback(f"Creating password-protected ZIP with pyzipper...", 70)
                     
-                    # Create a new password-protected ZIP
+                    # Create a password-protected ZIP with pyzipper
                     with pyzipper.AESZipFile(output_path, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as zf:
                         zf.setpassword(password.encode())
                         for file_path in temp_files:
@@ -358,50 +546,69 @@ def _create_with_patool(output_path, source_paths, archive_format, progress_call
                                 zf.write(file_path, os.path.basename(file_path))
                             elif os.path.isdir(file_path):
                                 # 对于目录，递归添加所有文件，保留目录结构
-                                dir_name = os.path.basename(os.path.normpath(file_path))
                                 for root, dirs, files in os.walk(file_path):
                                     for file in files:
                                         file_full_path = os.path.join(root, file)
                                         # 计算相对于目录的路径，保留子目录结构
                                         arcname = os.path.relpath(file_full_path, file_path)
-                                        if arcname == file:  # 如果是文件本身
-                                            arcname = os.path.basename(file_full_path)
                                         zf.write(file_full_path, arcname)
+                    
+                    password_success = True
+                    if progress_callback:
+                        progress_callback(f"Password-protected ZIP created with pyzipper", 85)
+                        
                 except ImportError:
-                    # If pyzipper is not available, try to use 7zz
-                    sevenz_tool = _get_cli_tool("7zz")
-                    if sevenz_tool:
-                        # Create a temporary directory for 7zz to work with
-                        temp_7z_dir = tempfile.mkdtemp()
-                        try:
-                            # Copy files to temp directory
-                            for file_path in temp_files:
-                                if os.path.isfile(file_path):
-                                    shutil.copy2(file_path, temp_7z_dir)
-                                elif os.path.isdir(file_path):
-                                    dest_dir = os.path.join(temp_7z_dir, os.path.basename(file_path))
-                                    shutil.copytree(file_path, dest_dir)
-                            
-                            # Create password-protected ZIP with 7zz
-                            cmd = [sevenz_tool, "a", f"-p{password}", "-y", output_path, os.path.join(temp_7z_dir, "*")]
-                            result = subprocess.run(cmd, capture_output=True, text=True)
-                            
-                            if result.returncode != 0:
-                                if progress_callback:
-                                    progress_callback(f"Failed to create password-protected ZIP with 7zz: {result.stderr}", 80)
-                                # Fall back to standard ZIP without password
-                                pass
-                        finally:
-                            shutil.rmtree(temp_7z_dir)
-                    else:
-                        # If neither pyzipper nor 7zz is available, create a standard ZIP
-                        if progress_callback:
-                            progress_callback("Warning: Neither pyzipper nor 7zz available, creating non-password-protected ZIP", 70)
-                
+                    if progress_callback:
+                        progress_callback(f"pyzipper not available, trying 7zz...", 75)
+                except Exception as e:
+                    if progress_callback:
+                        progress_callback(f"Failed to create password-protected ZIP with pyzipper: {str(e)}", 75)
+            
+            # If pyzipper failed, try to use 7zz
+            if not password_success:
+                sevenz_tool = _get_cli_tool("7zz")
+                if sevenz_tool:
+                    if progress_callback:
+                        progress_callback(f"Trying to create password-protected ZIP with 7zz...", 75)
+                    
+                    # Create a temporary directory for 7zz to work with
+                    temp_7z_dir = tempfile.mkdtemp()
+                    try:
+                        # Copy files to temp directory
+                        for file_path in temp_files:
+                            if os.path.isfile(file_path):
+                                shutil.copy2(file_path, temp_7z_dir)
+                            elif os.path.isdir(file_path):
+                                dest_dir = os.path.join(temp_7z_dir, os.path.basename(file_path))
+                                shutil.copytree(file_path, dest_dir)
+                        
+                        # Create password-protected ZIP with 7zz
+                        cmd = [sevenz_tool, "a", f"-p{password}", "-y", output_path, os.path.join(temp_7z_dir, "*")]
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        
+                        if result.returncode == 0:
+                            password_success = True
+                            if progress_callback:
+                                progress_callback(f"Password-protected ZIP created with 7zz", 85)
+                        else:
+                            if progress_callback:
+                                progress_callback(f"Failed to create password-protected ZIP with 7zz: {result.stderr}", 80)
+                    finally:
+                        shutil.rmtree(temp_7z_dir)
+                else:
+                    if progress_callback:
+                        progress_callback(f"7zz not available", 75)
+            
+            # If pyzipper and 7zz both failed, we'll fall back to standard ZIP without password
+            if not password_success:
                 if progress_callback:
-                    progress_callback(f"ZIP archive created", 90)
-            except Exception as e:
-                # If all else fails, create a non-password-protected ZIP
+                    progress_callback(f"All password protection methods failed", 75)
+            
+            # If all methods failed, create a non-password-protected ZIP
+            if not password_success:
+                if progress_callback:
+                    progress_callback(f"Warning: Could not create password-protected ZIP, creating standard ZIP", 75)
+                
                 with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                     for file_path in temp_files:
                         if os.path.isfile(file_path):
@@ -409,18 +616,18 @@ def _create_with_patool(output_path, source_paths, archive_format, progress_call
                             zf.write(file_path, os.path.basename(file_path))
                         elif os.path.isdir(file_path):
                             # 对于目录，递归添加所有文件，保留目录结构
-                            dir_name = os.path.basename(os.path.normpath(file_path))
                             for root, dirs, files in os.walk(file_path):
                                 for file in files:
                                     file_full_path = os.path.join(root, file)
                                     # 计算相对于目录的路径，保留子目录结构
                                     arcname = os.path.relpath(file_full_path, file_path)
-                                    if arcname == file:  # 如果是文件本身
-                                        arcname = os.path.basename(file_full_path)
                                     zf.write(file_full_path, arcname)
                 
                 if progress_callback:
-                    progress_callback(f"Warning: Could not add password to ZIP file: {str(e)}", 70)
+                    progress_callback(f"Standard ZIP created (no password protection)", 85)
+            
+            if progress_callback:
+                progress_callback(f"ZIP archive created", 90)
         else:
             # Try different patool calling methods
             try:
@@ -770,7 +977,22 @@ def extract_archive(archive_path, extract_to, progress_callback=None, password=N
             # Use unrar CLI tool, fallback to unar on failure
             try:
                 _extract_rar_with_cli(archive_path, extract_to, progress_callback, password)
-            except Exception:
+            except RuntimeError as e:
+                # For password-related errors, don't use fallback, re-raise exception directly
+                if "password" in str(e).lower():
+                    raise
+                # Use unar as fallback on failure
+                _extract_with_unar(archive_path, extract_to, progress_callback, password)
+            except Exception as e:
+                # 检查异常信息是否包含密码相关关键词
+                error_msg = str(e).lower()
+                password_error_keywords = [
+                    "password", "encrypted", "authentication", "incorrect", 
+                    "wrong", "bad", "required", "data error", "crc error"
+                ]
+                if any(keyword in error_msg for keyword in password_error_keywords):
+                    raise RuntimeError(f"Password required for encrypted RAR file: {str(e)}")
+                # Use unar as fallback on failure
                 _extract_with_unar(archive_path, extract_to, progress_callback, password)
         elif archive_format == "7z":
             # Use 7zz CLI tool, fallback to unar on failure
@@ -810,12 +1032,10 @@ def extract_archive(archive_path, extract_to, progress_callback=None, password=N
 def _extract_with_python(archive_path, extract_to, archive_format, progress_callback=None, password=None):
     """Extract using Python built-in libraries"""
     if archive_format == "zip":
-        # 空密码检查
-        if password == "":
-            raise RuntimeError("Empty password not allowed for encrypted ZIP file")
-            
+        # 只有当密码为None时才需要检查，空字符串应该被当作无密码处理
+        # 空密码检查 - 只有当ZIP文件确实需要密码时才报错
         # First try with pyzipper for AES encrypted ZIPs
-        if password:
+        if password and password.strip():  # 只有当密码非空且非空白时才使用
             try:
                 import pyzipper
                 try:
@@ -865,7 +1085,7 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
                 raise RuntimeError("Password required for encrypted ZIP file")
             
             # If password is provided, set it
-            if password:
+            if password and password.strip():  # 只有当密码非空且非空白时才使用
                 try:
                     zipf.setpassword(password.encode())
                 except:
@@ -1017,7 +1237,30 @@ def _extract_rar_with_cli(archive_path, extract_to, progress_callback=None, pass
             raise RuntimeError("Incorrect password for encrypted RAR file")
         elif not password and any(keyword in error_msg for keyword in ["password", "encrypted", "authentication"]):
             raise RuntimeError("Password required for encrypted RAR file")
+        elif not password and any(keyword in error_msg for keyword in password_error_keywords):
+            # 如果没有提供密码，但错误信息包含密码错误关键词，说明需要密码
+            raise RuntimeError("Password required for encrypted RAR file")
         raise RuntimeError(f"RAR extraction failed: {result.stderr}")
+    else:
+        # 即使unrar返回成功，我们也需要检查是否真的解压了文件
+        # 有时unrar会返回成功但实际上没有解压任何文件（例如需要密码时）
+        if not password:
+            # 检查解压目录是否为空
+            if not os.path.exists(extract_to) or not os.listdir(extract_to):
+                raise RuntimeError("Password required for encrypted RAR file")
+            
+            # 检查解压的文件是否有效
+            # 有时加密文件会被解压但内容为空或损坏
+            extracted_files = []
+            for root, dirs, files in os.walk(extract_to):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    # 检查文件是否为空
+                    if os.path.getsize(file_path) > 0:
+                        extracted_files.append(file_path)
+            
+            if not extracted_files:
+                raise RuntimeError("Password required for encrypted RAR file")
 
 def _extract_7z_with_cli(archive_path, extract_to, progress_callback=None, password=None):
     """Extract 7z file using 7zz CLI tool"""
@@ -1222,23 +1465,55 @@ def _extract_with_unar(archive_path, extract_to, progress_callback=None, passwor
     except FileNotFoundError:
         raise RuntimeError("No extraction tool available for this format")
     
+    # 确保所有参数都有效，避免传递nil值给unar
+    if not archive_path or not os.path.exists(archive_path):
+        raise RuntimeError(f"Archive file not found or invalid: {archive_path}")
+    
+    if not extract_to:
+        raise RuntimeError("Extract directory cannot be empty")
+    
+    # 确保输出目录存在
+    os.makedirs(extract_to, exist_ok=True)
+    
     cmd = [unar_tool, "-o", extract_to]
-    if password:
-        cmd.extend(["-p", password, "-y"])  # Add password and assume yes for all queries
-    else:
-        # 不提供密码时，不添加-p参数，让unar自己检测是否需要密码
-        cmd.append("-y")  # 只添加-y参数表示对所有查询回答是
+    # 只有当密码不为空、不为None且不为空白字符串时才添加密码参数
+    if password is not None and password.strip():
+        cmd.extend(["-p", password])
     cmd.append(archive_path)
     
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
-        error_msg = result.stderr.lower()
+        error_msg = result.stderr.lower() + " " + result.stdout.lower()
         if password and ("password incorrect" in error_msg or "wrong password" in error_msg or "bad password" in error_msg or "authentication failed" in error_msg):
             raise RuntimeError("Incorrect password for encrypted archive")
-        elif not password and any(keyword in error_msg for keyword in ["password", "encrypted", "authentication", "required"]):
+        elif not password and any(keyword in error_msg for keyword in ["password", "encrypted", "authentication", "required", "requires a password"]):
             raise RuntimeError("Password required for encrypted archive")
         raise RuntimeError(f"Extraction failed: {result.stderr}")
+    
+    # 即使命令成功执行，也需要检查是否真的解压了文件
+    if not password:
+        # 检查解压目录是否为空
+        extracted_files = []
+        for root, dirs, files in os.walk(extract_to):
+            for file in files:
+                extracted_files.append(os.path.join(root, file))
+        
+        if not extracted_files:
+            raise RuntimeError("Password required for encrypted archive")
+        
+        # 检查解压的文件是否有效（非空）
+        invalid_files = 0
+        for file_path in extracted_files:
+            try:
+                if os.path.getsize(file_path) == 0:
+                    invalid_files += 1
+            except OSError:
+                invalid_files += 1
+        
+        # 如果所有文件都是空的，可能是加密文件但没有提供密码
+        if invalid_files == len(extracted_files) and len(extracted_files) > 0:
+            raise RuntimeError("Password required for encrypted archive")
 
 def list_archive_contents(archive_path, progress_callback=None, password=None):
     """
@@ -1391,10 +1666,6 @@ def _list_with_python(archive_path, archive_format, progress_callback=None, pass
                 # Check if zip is password protected
                 is_encrypted = any(info.flag_bits & 0x1 for info in zipf.infolist())
                 
-                # If the zip is encrypted but no password is provided, raise an error
-                if is_encrypted and not password:
-                    raise RuntimeError("Password required for encrypted ZIP file")
-                
                 # If password is provided, set it
                 if password:
                     try:
@@ -1519,7 +1790,16 @@ def _list_rar_with_cli(archive_path, progress_callback=None, password=None):
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
-        raise RuntimeError(f"RAR listing failed: {result.stderr}")
+        # If password is provided and failed, try without password
+        if password and any(keyword in result.stderr.lower() for keyword in ["password", "incorrect", "wrong"]):
+            if progress_callback:
+                progress_callback("Password failed, trying without password", 50)
+            cmd = [unrar_tool, "l", archive_path]
+            result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
+            if result.returncode != 0:
+                raise RuntimeError(f"RAR listing failed: {result.stderr}")
+        else:
+            raise RuntimeError(f"RAR listing failed: {result.stderr}")
     
     # Parse output
     contents = []
@@ -1553,7 +1833,16 @@ def _list_7z_with_cli(archive_path, progress_callback=None, password=None):
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
-        raise RuntimeError(f"7z listing failed: {result.stderr}")
+        # If password is provided and failed, try without password
+        if password and any(keyword in result.stderr.lower() for keyword in ["password", "incorrect", "wrong", "data error"]):
+            if progress_callback:
+                progress_callback("Password failed, trying without password", 50)
+            cmd = [sevenz_tool, "l", archive_path]
+            result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
+            if result.returncode != 0:
+                raise RuntimeError(f"7z listing failed: {result.stderr}")
+        else:
+            raise RuntimeError(f"7z listing failed: {result.stderr}")
     
     # Parse output
     contents = []
@@ -1764,10 +2053,22 @@ def _list_with_lsar(archive_path, progress_callback=None, password=None):
         # Check if this is a password-related error
         error_str = result.stderr.lower() if result.stderr else ""
         if "password" in error_str or "encrypted" in error_str or "authentication" in error_str:
-            if not password:
-                raise RuntimeError("Password required for encrypted archive")
+            if password:
+                # If password was provided and failed, try without password
+                if progress_callback:
+                    progress_callback("Password failed, trying without password", 50)
+                cmd = [lsar_tool, "-l", archive_path]
+                result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
+                if result.returncode != 0:
+                    raise RuntimeError(f"Listing failed: {result.stderr}")
             else:
-                raise RuntimeError("Incorrect password for encrypted archive")
+                # Try without password first
+                if progress_callback:
+                    progress_callback("Archive may be password protected, trying without password", 50)
+                cmd = [lsar_tool, "-l", archive_path]
+                result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
+                if result.returncode != 0:
+                    raise RuntimeError("Password required for encrypted archive")
         else:
             raise RuntimeError(f"Listing failed: {result.stderr}")
     

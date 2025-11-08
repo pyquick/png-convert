@@ -1,31 +1,31 @@
 #!/bin/bash
 
-# 完整的更新脚本 - 终止进程、下载并应用更新
+# Complete update script - Terminate processes, download and apply updates
 
-echo "🔄 开始完整更新流程..."
+echo "🔄 Starting complete update process..."
 
-# 1. 终止相关进程
-echo "🛑 终止相关进程..."
+# 1. Terminate related processes
+echo "🛑 Terminating related processes..."
 pkill -f "python3.*arc_gui.py" || true
 pkill -f "Converter.app" || true
 pkill -f "python.*Converter" || true
 
-# 等待进程结束
-echo "⏳ 等待进程结束..."
+# Wait for processes to end
+echo "⏳ Waiting for processes to end..."
 sleep 3
 
-# 强制终止仍在运行的进程
-echo "🔨 强制终止仍在运行的进程..."
+# Force terminate still running processes
+echo "🔨 Force terminating still running processes..."
 pkill -9 -f "python3.*arc_gui.py" || true
 pkill -9 -f "Converter.app" || true
 pkill -9 -f "python.*Converter" || true
 
-# 再次等待
-echo "⏳ 再次等待..."
+# Wait again
+echo "⏳ Waiting again..."
 sleep 2
 
-# 2. 执行Python更新脚本
-echo "🚀 开始下载并应用更新..."
+# 2. Execute Python update script
+echo "🚀 Starting to download and apply updates..."
 cd /Users/li/Documents/GitHub/Converter
 python3 -c "
 import sys
@@ -36,60 +36,60 @@ try:
     from update.update_manager import UpdateManager
     from update.download_update import download_and_apply_update
     
-    print('🔄 开始检查更新...')
+    print('🔄 Starting to check for updates...')
     
-    # 获取当前版本
-    current_version = '2.0.0B7'
-    print(f'📍 当前版本: {current_version}')
+    # Get current version
+    current_version = '2.0.0B8'
+    print(f'📍 Current version: {current_version}')
     
-    # 创建更新管理器
+    # Create update manager
     update_manager = UpdateManager(current_version)
     
-    # 检查更新
+    # Check for updates
     update_info = update_manager.check_for_updates(include_prerelease=True)
     
     if not update_info:
-        print('❌ 无法获取更新信息')
+        print('❌ Unable to get update information')
         sys.exit(1)
     
     if update_info.get('status') != 'update_available':
-        print(f'✅ 已是最新版本: {update_info.get(\"message\", \"Unknown\")}')
+        print(f'✅ Already up to date: {update_info.get(\"message\", \"Unknown\")}')
         sys.exit(0)
     
-    print(f'📦 发现新版本: {update_info.get(\"latest_version\", \"Unknown\")}')
+    print(f'📦 New version found: {update_info.get(\"latest_version\", \"Unknown\")}')
     
-    # 定义进度回调函数
+    # Define progress callback function
     def progress_callback(progress, downloaded, total):
         if total > 0:
             percent = progress
-            print(f'⏳ 下载进度: {percent}% ({downloaded}/{total} bytes)')
+            print(f'⏳ Download progress: {percent}% ({downloaded}/{total} bytes)')
         else:
-            print(f'⏳ 已下载: {downloaded} bytes')
+            print(f'⏳ Downloaded: {downloaded} bytes')
     
-    print('🚀 开始下载更新...')
+    print('🚀 Starting to download update...')
     result = download_and_apply_update(update_info, progress_callback)
     
     if result['status'] == 'success':
-        print('✅ 更新下载成功，准备应用...')
-        print('🔄 应用程序将退出并应用更新')
+        print('✅ Update downloaded successfully, preparing to apply...')
+        print('🔄 Application will exit and apply update')
         sys.exit(0)
     else:
-        print(f'❌ 更新失败: {result.get(\"message\", \"Unknown error\")}')
+        print(f'❌ Update failed: {result.get(\"message\", \"Unknown error\")}')
         sys.exit(1)
         
 except Exception as e:
-    print(f'❌ 更新流程失败: {e}')
+    print(f'❌ Update process failed: {e}')
     import traceback
     traceback.print_exc()
     sys.exit(1)
 "
 
-# 检查Python脚本执行结果
+# Check Python script execution result
 if [ $? -eq 0 ]; then
-    echo "✅ 更新流程成功完成"
+    echo "✅ Update process completed successfully"
 else
-    echo "❌ 更新流程失败"
+    echo "❌ Update process failed"
     exit 1
 fi
 
-echo "🎉 所有更新操作已完成！"
+echo "🎉 All update operations completed!"
