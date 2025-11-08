@@ -1,5 +1,5 @@
 Pillow>=8.0.0
-Nuitka>=2.7.0
+Pyinstaller
 PySide6
 rarfile
 py7zr
