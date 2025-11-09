@@ -168,6 +168,51 @@ a = Analysis(
         # AxContainer modules (not used)
         'QtAxContainer',
         'PySide6.QtAxContainer',
+        
+        # DBus modules (not used)
+        'QtDBus',
+        'PySide6.QtDBus',
+        
+        # Network modules (already excluded, but explicitly listed)
+        'QtNetwork',
+        'PySide6.QtNetwork',
+        
+        # OpenGL modules (already excluded, but explicitly listed)
+        'QtOpenGL',
+        'QtOpenGLWidgets',
+        'PySide6.QtOpenGL',
+        'PySide6.QtOpenGLWidgets',
+        
+        # PDF modules (not used)
+        'QtPdf',
+        'PySide6.QtPdf',
+        
+        # QML modules (not used)
+        'QtQml',
+        'QtQmlModels',
+        'QtQmlMeta',
+        'QtQmlWorkerScript',
+        'PySide6.QtQml',
+        'PySide6.QtQmlModels',
+        'PySide6.QtQmlMeta',
+        'PySide6.QtQmlWorkerScript',
+        
+        # Quick modules (already excluded, but explicitly listed)
+        'QtQuick',
+        'QtQuickWidgets',
+        'QtQuickControls2',
+        'PySide6.QtQuick',
+        'PySide6.QtQuickWidgets',
+        'PySide6.QtQuickControls2',
+        
+        
+        
+        # VirtualKeyboard modules (not used)
+        'QtVirtualKeyboard',
+        'QtVirtualKeyboardQml',
+        'PySide6.QtVirtualKeyboard',
+        'PySide6.QtVirtualKeyboardQml',
+        
     ],
     noarchive=False,
 )
