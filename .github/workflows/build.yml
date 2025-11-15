@@ -30,8 +30,8 @@ jobs:
               if: github.event_name == 'push'
               uses: softprops/action-gh-release@v2
               with:
-                tag_name: 2.0.0RC2
-                name: 2.0.0 Release Candidate 2
+                tag_name: 2.0.0
+                name: 2.0.0 Stable
                 body: ${{ github.event.head_commit.message }}
                 prerelease: false
                 files: |
@@ -58,8 +58,8 @@ jobs:
               if: github.event_name == 'push'
               uses: softprops/action-gh-release@v2
               with:
-                tag_name: 2.0.0RC2
-                name: 2.0.0 Release Candidate 2
+                tag_name: 2.0.0
+                name: 2.0.0 Stable
                 body: ${{ github.event.head_commit.message }}
                 prerelease: false
                 files: |

@@ -905,10 +905,6 @@ class ICNSConverterGUI(QMainWindow):
         # Check if UI_FLUENT environment variable is set to YES using check_flag function
         ui_fluent_enabled = check_flag("UI_FLUENT")
         
-        # Update status bar with current tab
-        tab_text = self.tab_widget.tabText(index)
-        self.status_bar.showMessage(f"Switched to {tab_text} tab")
-        
         # Skip animation if UI_FLUENT is not enabled
         if not ui_fluent_enabled:
             self._previous_tab_index = index
