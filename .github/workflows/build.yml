@@ -15,22 +15,23 @@ jobs:
             contents: write
         steps:
             - uses: actions/checkout@v4
-            - name: Set up Python 3.13
+            - name: Set up Python 3.14
               uses: actions/setup-python@v5
               with:
-                python-version: '3.13'
+                python-version: '3.14.0'
             - name: Install Dependencies
               run: |
-                /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 -m pip install -r requirements.txt
+                brew install upx
+                /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m pip install --ignore-requires-python  -r requirements.txt
             - name: Build Apps
               run: |
-                /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 build_project_arm64.py
+                /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 build_project_arm64.py
             - name: Create (Pre-)Release on Push
               if: github.event_name == 'push'
               uses: softprops/action-gh-release@v2
               with:
-                tag_name: 2.0.0RC1
-                name: 2.0.0 Release Candidate 1
+                tag_name: 2.0.0RC2
+                name: 2.0.0 Release Candidate 2
                 body: ${{ github.event.head_commit.message }}
                 prerelease: false
                 files: |
@@ -43,18 +44,22 @@ jobs:
             contents: write
         steps:
             - uses: actions/checkout@v4
+            - name: Set up Python 3.14
+              uses: actions/setup-python@v5
+              with:
+                python-version: '3.14.0'
             - name: Install Dependencies
               run: |
-                /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 -m pip install -r requirements.txt
+                /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m pip install --ignore-requires-python  -r requirements.txt
             - name: Build Apps
               run: |
-                /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 build_project_intel.py
+                /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 build_project_intel.py
             - name: Create (Pre-)Release on Push
               if: github.event_name == 'push'
               uses: softprops/action-gh-release@v2
               with:
-                tag_name: 2.0.0RC1
-                name: 2.0.0 Release Candidate 1
+                tag_name: 2.0.0RC2
+                name: 2.0.0 Release Candidate 2
                 body: ${{ github.event.head_commit.message }}
                 prerelease: false
                 files: |

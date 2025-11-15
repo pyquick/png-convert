@@ -37,6 +37,17 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        'PyQt5',
+        'PyQt5.QtCore',
+        'PyQt5.QtGui',
+        'PyQt5.QtWidgets',
+        'PyQt5.QtSvg',
+        'PyQt5.QtPrintSupport',
+        'PyQt5.QtWebEngineWidgets',
+        'PyQt5.QtWebChannel',
+        'PyQt5.QtWebSockets',
+        'PyQt5.QtMultimedia',
+        'tkinter',
         # WebEngine modules (not used)
         'QtWebEngineCore',
         'QtWebEngineWidgets',
@@ -196,7 +207,6 @@ a = Analysis(
         'PySide6.QtQmlModels',
         'PySide6.QtQmlMeta',
         'PySide6.QtQmlWorkerScript',
-        
         # Quick modules (already excluded, but explicitly listed)
         'QtQuick',
         'QtQuickWidgets',
@@ -204,15 +214,11 @@ a = Analysis(
         'PySide6.QtQuick',
         'PySide6.QtQuickWidgets',
         'PySide6.QtQuickControls2',
-        
-        
-        
         # VirtualKeyboard modules (not used)
         'QtVirtualKeyboard',
         'QtVirtualKeyboardQml',
         'PySide6.QtVirtualKeyboard',
         'PySide6.QtVirtualKeyboardQml',
-        
     ],
     noarchive=False,
 )
@@ -229,7 +235,7 @@ exe = EXE(
     name='Converter',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,
     upx=True,
     console=False,
     disable_windowed_traceback=False,
@@ -269,5 +275,5 @@ app = BUNDLE(
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '11.7',
     },
-    version='2.0',
+    version='2.0.0',
 )

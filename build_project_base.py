@@ -305,7 +305,7 @@ def main_py():
     print("=" * 50)
     
     # Create dist directory if it doesn't exist
-    dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist_pyinstaller")
+    dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
     if not os.path.exists(dist_dir):
         os.makedirs(dist_dir)
     
