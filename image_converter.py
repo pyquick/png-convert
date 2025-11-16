@@ -40,6 +40,9 @@ class DropZoneWidget(QFrame):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setMinimumHeight(100)
+        self.setFixedHeight(100)   # 设置固定高度防止缩小
+        self.setMinimumWidth(200)  # 设置最小宽度
+        self.is_dark_mode = False  # Track current theme mode
         
         # Define supported image formats
         self.supported_formats = {
@@ -53,6 +56,52 @@ class DropZoneWidget(QFrame):
             '.pdf', '.eps', '.dds', '.exr'
         }
         
+        # 设置初始状态变量
+        self.is_dark_mode = False  # 初始化为浅色主题
+        
+        # 创建布局
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setContentsMargins(10, 10, 10, 10)  # 设置内边距防止内容紧贴边框
+        
+        self.icon_label = QLabel("📁")
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setStyleSheet("font-size: 24px;")
+        
+        self.text_label = QLabel("Drag files or folders here\n(Supports: PNG, JPG, JPEG, BMP, GIF, TIFF, ICO, ICNS, WebP, SVG, HEIC, HEIF, AVIF, JXL, PDF, EPS, DDS, EXR)")
+        self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.text_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.text_label.setWordWrap(True)
+        
+        # 应用初始浅色主题样式（在组件创建之后）
+        self._apply_light_theme_style()
+        
+        layout.addWidget(self.icon_label)
+        layout.addWidget(self.text_label)
+        
+        self.drag_over = False
+        
+        # Click to browse
+        self.mousePressEvent = self.browse_files
+        
+    def sizeHint(self):
+        """Return fixed size hint to prevent resizing"""
+        return super().sizeHint()
+        
+    def minimumSizeHint(self):
+        """Return minimum size hint to prevent shrinking"""
+        return QSize(200, 100)
+        
+    def set_theme(self, is_dark_mode):
+        """Update the theme of the drag and drop area"""
+        self.is_dark_mode = is_dark_mode
+        if self.is_dark_mode:
+            self._apply_dark_theme_style()
+        else:
+            self._apply_light_theme_style()
+            
+    def _apply_light_theme_style(self):
+        """Apply light theme styles"""
         self.setStyleSheet("""
             QFrame {
                 border: 2px dashed #aaa;
@@ -68,23 +117,39 @@ class DropZoneWidget(QFrame):
                 background-color: #f0fff0;
             }
         """)
-        
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        self.icon_label = QLabel("📁")
-        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_label.setStyleSheet("font-size: 24px;")
-        
-        self.text_label = QLabel("Drag files or folders here\n(Supports: PNG, JPG, JPEG, BMP, GIF, TIFF, ICO, ICNS, WebP, SVG, HEIC, HEIF, AVIF, JXL, PDF, EPS, DDS, EXR)")
-        self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.text_label.setStyleSheet("color: #666; font-size: 12px;")
-        self.text_label.setWordWrap(True)
         
-        layout.addWidget(self.icon_label)
-        layout.addWidget(self.text_label)
+    def _apply_dark_theme_style(self):
+        """Apply dark theme styles"""
+        self.setStyleSheet("""
+            QFrame {
+                border: 2px dashed #555;
+                border-radius: 10px;
+                background-color: #2d2d2d;
+            }
+            QFrame:hover {
+                border-color: #007acc;
+                background-color: #1e3a5f;
+            }
+            QFrame:drop {
+                border-color: #28a745;
+                background-color: #1a2f1a;
+            }
+        """)
+        self.text_label.setStyleSheet("color: #aaa; font-size: 12px;")
         
-        self.drag_over = False
+    def browse_files(self, event):
+        """Open file browser when clicked"""
+        from PySide6.QtWidgets import QFileDialog
+        file_dialog = QFileDialog()
+        file_paths, _ = file_dialog.getOpenFileNames(
+            self,
+            "Select Image Files",
+            "",
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.ico *.webp);;All Files (*)"
+        )
+        if file_paths:
+            self.filesDropped.emit(file_paths)
         
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -167,43 +232,92 @@ class DropZoneWidget(QFrame):
         
     def _set_drag_over_style(self, has_supported=True):
         """Set style for drag over state"""
+        # Ensure fixed size is maintained during style changes
+        current_width = self.width()
+        
         if has_supported:
-            self.setStyleSheet("""
-                QFrame {
-                    border: 2px solid #28a745;
-                    border-radius: 10px;
-                    background-color: #f0fff0;
-                }
-            """)
+            if self.is_dark_mode:
+                self.setStyleSheet("""
+                    QFrame {
+                        border: 2px solid #28a745;
+                        border-radius: 10px;
+                        background-color: #1a2f1a;
+                    }
+                """)
+            else:
+                self.setStyleSheet("""
+                    QFrame {
+                        border: 2px solid #28a745;
+                        border-radius: 10px;
+                        background-color: #f0fff0;
+                    }
+                """)
             self.drag_over = True
         else:
-            self.setStyleSheet("""
-                QFrame {
-                    border: 2px solid #007acc;
-                    border-radius: 10px;
-                    background-color: #e6f3ff;
-                }
-            """)
+            if self.is_dark_mode:
+                self.setStyleSheet("""
+                    QFrame {
+                        border: 2px solid #007acc;
+                        border-radius: 10px;
+                        background-color: #1e3a5f;
+                    }
+                """)
+            else:
+                self.setStyleSheet("""
+                    QFrame {
+                        border: 2px solid #007acc;
+                        border-radius: 10px;
+                        background-color: #e6f3ff;
+                    }
+                """)
+        
+        # Restore fixed size after style change
+        self.setFixedHeight(100)
+        if current_width > 0:
+            self.setMinimumWidth(current_width)
             
     def _set_reject_style(self):
         """Set style for rejected drag items"""
-        self.setStyleSheet("""
-            QFrame {
-                border: 2px solid #dc3545;
-                border-radius: 10px;
-                background-color: #fff5f5;
-            }
-        """)
+        # Ensure fixed size is maintained during style changes
+        current_width = self.width()
+        
+        if self.is_dark_mode:
+            self.setStyleSheet("""
+                QFrame {
+                    border: 2px solid #dc3545;
+                    border-radius: 10px;
+                    background-color: #2a1a1a;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame {
+                    border: 2px solid #dc3545;
+                    border-radius: 10px;
+                    background-color: #fff5f5;
+                }
+            """)
+        
+        # Restore fixed size after style change
+        self.setFixedHeight(100)
+        if current_width > 0:
+            self.setMinimumWidth(current_width)
         
     def _reset_style(self):
         """Reset to default style"""
-        self.setStyleSheet("""
-            QFrame {
-                border: 2px dashed #aaa;
-                border-radius: 10px;
-                background-color: #f9f9f9;
-            }
-        """)
+        # Ensure fixed size is maintained during style changes
+        current_width = self.width()
+        
+        if self.is_dark_mode:
+            self._apply_dark_theme_style()
+        else:
+            self._apply_light_theme_style()
+        
+        # Restore fixed size after style change
+        self.setFixedHeight(100)
+        if current_width > 0:
+            self.setMinimumWidth(current_width)
+            
         self.drag_over = False
         
     def _update_text_label(self, total_files, supported_files, has_supported):
@@ -1017,12 +1131,13 @@ class ICNSConverterGUI(QMainWindow):
     def _apply_theme(self, is_dark_mode):
         if is_dark_mode:
             self.setStyleSheet(self.DARK_QSS)
-           
-           
         else:
             self.setStyleSheet(self.LIGHT_QSS)
             
-        
+        # Update DropZoneWidget theme if it exists
+        if hasattr(self, 'drop_zone') and self.drop_zone:
+            self.drop_zone.set_theme(is_dark_mode)
+            
         # Update success view theme if it exists and is visible
         if hasattr(self, 'success_widget') and self.success_widget and self.success_widget.isVisible():
             self._apply_success_theme()

@@ -1019,6 +1019,17 @@ def extract_archive(archive_path, extract_to, progress_callback=None, password=N
 
         if progress_callback:
             progress_callback(f"Archive extracted to: {extract_to}", 100)
+        
+        # 为解压出的可执行文件添加执行权限
+        try:
+            _set_executable_permissions(extract_to, progress_callback)
+            if progress_callback:
+                progress_callback("Executable permissions set", 100)
+        except Exception as e:
+            # 权限设置失败不应该影响解压结果，只是记录警告
+            if progress_callback:
+                progress_callback(f"Warning: Failed to set executable permissions: {str(e)}", 90)
+        
         return True
 
     except Exception as e:
@@ -1095,29 +1106,15 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
             total_files = len(file_list)
             for i, file_name in enumerate(file_list):
                 try:
-                    # 确保文件直接解压到目标目录，不保留路径结构
+                    # 保留压缩包的目录结构
                     if file_name.endswith('/'):
-                        # 如果是目录，创建目录
-                        dir_name = os.path.basename(file_name.rstrip('/'))
-                        if dir_name:  # 只有当目录名不为空时才创建
-                            os.makedirs(os.path.join(extract_to, dir_name), exist_ok=True)
+                        # 如果是目录，创建完整路径
+                        dir_path = os.path.join(extract_to, file_name.rstrip('/'))
+                        if dir_path and dir_path != extract_to:  # 确保不是空路径或根目录
+                            os.makedirs(dir_path, exist_ok=True)
                     else:
-                        # 如果是文件，直接解压到目标目录
+                        # 如果是文件，直接解压，保留路径结构
                         zipf.extract(file_name, extract_to)
-                        # 如果文件在子目录中，移动到目标目录
-                        if '/' in file_name:
-                            base_name = os.path.basename(file_name)
-                            src_path = os.path.join(extract_to, file_name)
-                            dst_path = os.path.join(extract_to, base_name)
-                            if os.path.exists(src_path) and src_path != dst_path:
-                                shutil.move(src_path, dst_path)
-                                # 尝试删除空的子目录
-                                parent_dir = os.path.dirname(src_path)
-                                try:
-                                    if os.path.exists(parent_dir) and parent_dir != extract_to:
-                                        os.rmdir(parent_dir)
-                                except:
-                                    pass  # 如果目录不为空，忽略错误
                 except (RuntimeError, zipfile.BadZipFile) as e:
                     error_msg = str(e).lower()
                     # 检查更多可能的密码错误关键词
@@ -1146,11 +1143,12 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
             members = tarf.getmembers()
             total_members = len(members)
             for i, member in enumerate(members):
-                # Fix TAR.GZ extraction path issue - keep only filename, remove path
+                # 保留TAR文件的目录结构，但清理绝对路径
                 if member.name.startswith('/') or member.name.startswith('./'):
-                    member.name = os.path.basename(member.name)
-                elif os.path.dirname(member.name):  # If it contains a path
-                    member.name = os.path.basename(member.name)
+                    # 将绝对路径转换为相对路径，但保留目录结构
+                    member.name = os.path.relpath(member.name, '/')
+                    if member.name == '.':
+                        member.name = os.path.basename(member.name)
                 tarf.extract(member, extract_to)
                 if progress_callback:
                     progress = ((i + 1) / total_members) * 100
@@ -1215,7 +1213,7 @@ def _extract_rar_with_cli(archive_path, extract_to, progress_callback=None, pass
     if password == "":
         raise RuntimeError("Empty password not allowed for encrypted RAR file")
     
-    cmd = [unrar_tool, "x", archive_path, extract_to + "/", "-ep"]  # Add -ep parameter to ignore paths
+    cmd = [unrar_tool, "x", archive_path, extract_to + "/"]  # 保留目录结构
     if password:
         cmd.extend(["-p" + password, "-y"])  # Add password and assume yes for all queries
     else:
@@ -1318,28 +1316,6 @@ def _extract_7z_with_cli(archive_path, extract_to, progress_callback=None, passw
         elif not password and any(keyword in error_msg for keyword in ["password", "encrypted", "authentication"]):
             raise RuntimeError("Password required for encrypted 7Z file")
         raise RuntimeError(f"7z extraction failed: {result.stderr}")
-    
-    # 检查是否有额外的子目录，如果有，将文件移动到根目录
-    if os.path.exists(extract_to):
-        items = os.listdir(extract_to)
-        # 如果只有一个子目录，且该子目录包含所有文件
-        if len(items) == 1 and os.path.isdir(os.path.join(extract_to, items[0])):
-            sub_dir = os.path.join(extract_to, items[0])
-            # 移动子目录中的所有内容到根目录
-            for item in os.listdir(sub_dir):
-                src = os.path.join(sub_dir, item)
-                dst = os.path.join(extract_to, item)
-                if os.path.exists(dst):
-                    if os.path.isdir(dst):
-                        shutil.rmtree(dst)
-                    else:
-                        os.remove(dst)
-                shutil.move(src, dst)
-            # 尝试删除空子目录
-            try:
-                os.rmdir(sub_dir)
-            except:
-                pass
     
     return True
 
@@ -2199,6 +2175,98 @@ def _add_7z_with_cli(archive_path, file_to_add_path, progress_callback=None):
         raise RuntimeError(f"7z add failed: {result.stderr}")
 
 # Test function
+def batch_extract_archives(archive_paths, extract_to_base, progress_callback=None, password=None, 
+                           overwrite_existing=False, create_subfolders=True, error_callback=None):
+    """
+    Extract multiple archive files in batch.
+    
+    Args:
+        archive_paths (list): List of paths to archive files to extract.
+        extract_to_base (str): Base directory to extract all archives to.
+        progress_callback (function): Optional callback for overall progress updates (filename, progress).
+        password (str): Optional password for encrypted archives.
+        overwrite_existing (bool): Whether to overwrite existing files.
+        create_subfolders (bool): Whether to create subfolders for each archive.
+        error_callback (function): Optional callback for individual file error updates (filename, error).
+        
+    Returns:
+        dict: Results dictionary with 'success_count', 'error_count', 'results' list.
+    """
+    results = {
+        'success_count': 0,
+        'error_count': 0,
+        'results': []
+    }
+    
+    total_archives = len(archive_paths)
+    
+    for i, archive_path in enumerate(archive_paths):
+        try:
+            # Calculate overall progress
+            if progress_callback:
+                overall_progress = (i / total_archives) * 100
+                progress_callback(f"Processing {i+1}/{total_archives}: {os.path.basename(archive_path)}", overall_progress)
+            
+            # Determine extraction directory for this archive
+            if create_subfolders:
+                # Create subfolder named after archive (without extension)
+                archive_name = os.path.splitext(os.path.basename(archive_path))[0]
+                archive_extract_to = os.path.join(extract_to_base, archive_name)
+            else:
+                # Extract directly to base directory
+                archive_extract_to = extract_to_base
+            
+            os.makedirs(archive_extract_to, exist_ok=True)
+            
+            # Create individual progress callback for this archive
+            def archive_progress(message, percent):
+                if progress_callback:
+                    # Combine overall progress with archive-specific progress
+                    archive_progress_value = (i + percent/100) / total_archives * 100
+                    progress_callback(f"{os.path.basename(archive_path)}: {message}", archive_progress_value)
+            
+            # Extract the archive
+            success = extract_archive(archive_path, archive_extract_to, 
+                                    progress_callback=archive_progress, password=password)
+            
+            if success:
+                results['success_count'] += 1
+                results['results'].append({
+                    'archive_path': archive_path,
+                    'extract_to': archive_extract_to,
+                    'status': 'success',
+                    'error': None
+                })
+            else:
+                results['error_count'] += 1
+                error_msg = f"Extraction failed"
+                if error_callback:
+                    error_callback(archive_path, error_msg)
+                results['results'].append({
+                    'archive_path': archive_path,
+                    'extract_to': archive_extract_to,
+                    'status': 'error',
+                    'error': error_msg
+                })
+                
+        except Exception as e:
+            results['error_count'] += 1
+            error_msg = str(e)
+            if error_callback:
+                error_callback(archive_path, error_msg)
+            results['results'].append({
+                'archive_path': archive_path,
+                'extract_to': archive_extract_to if 'archive_extract_to' in locals() else extract_to_base,
+                'status': 'error',
+                'error': error_msg
+            })
+    
+    # Final progress update
+    if progress_callback:
+        progress_callback(f"Batch extraction complete: {results['success_count']}/{total_archives} successful", 100)
+    
+    return results
+
 def test_archive_functions():
     """Test archive functions"""
     import tempfile
@@ -2281,6 +2349,81 @@ def test_archive_functions():
             print(f"7z test error: {e}")
         
         print("\n=== Archive Functions Test Complete ===")
+
+def _set_executable_permissions(extract_to, progress_callback=None):
+    """
+    为解压出的可执行文件添加执行权限
+    
+    Args:
+        extract_to (str): 解压目标目录
+        progress_callback (function): 可选的进度回调函数
+    """
+    import stat
+    import re
+    
+    # 定义可执行文件的常见扩展名
+    executable_extensions = {
+        '.sh', '.bash', '.zsh', '.fish', '.cmd', '.bat',  # Shell脚本
+        '.py', '.pl', '.rb', '.php', '.js', '.ts',        # 脚本语言
+        '.exe', '.app', '.bin', '.com',                   # 可执行文件
+        '.run', '.install', '.setup'                      # 安装程序
+    }
+    
+    # 需要检查shebang的文件扩展名
+    script_extensions = {'.sh', '.bash', '.zsh', '.fish', '.py', '.pl', '.rb', '.php', '.js', '.ts'}
+    
+    executable_files = []
+    
+    def check_file_executable(file_path):
+        """检查文件是否可能是可执行文件"""
+        # 检查文件扩展名
+        _, ext = os.path.splitext(file_path.lower())
+        if ext in executable_extensions:
+            return True
+        
+        # 对于没有后缀名的文件，直接返回True
+        if not ext:
+            return True
+        
+        # 检查shebang行（对于脚本文件）
+        if ext in script_extensions:
+            try:
+                with open(file_path, 'rb') as f:
+                    first_line = f.readline(100)  # 读取前100字节
+                    if first_line.startswith(b'#!'):
+                        return True
+            except (IOError, UnicodeDecodeError):
+                # 如果无法读取文件，跳过
+                pass
+        
+        return False
+    
+    # 遍历解压目录中的所有文件
+    for root, dirs, files in os.walk(extract_to):
+        for file_name in files:
+            file_path = os.path.join(root, file_name)
+            
+            # 跳过隐藏文件和系统文件
+            if file_name.startswith('.') or file_name in ['.DS_Store', 'Thumbs.db']:
+                continue
+                
+            try:
+                if check_file_executable(file_path):
+                    # 添加执行权限 (755: rwxr-xr-x)
+                    current_stat = os.stat(file_path)
+                    os.chmod(file_path, current_stat.st_mode | stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+                    executable_files.append(file_path)
+                    
+                    if progress_callback:
+                        progress_callback(f"Set executable permission: {file_name}", -1)  # -1表示不更新总体进度
+                    
+            except (OSError, IOError) as e:
+                # 权限设置失败，记录但不影响解压
+                if progress_callback:
+                    progress_callback(f"Warning: Failed to set permission for {file_name}: {str(e)}", -1)
+    
+    if progress_callback and executable_files:
+        progress_callback(f"Set executable permissions for {len(executable_files)} files", -1)
 
 if __name__ == "__main__":
     test_archive_functions()

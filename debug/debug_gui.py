@@ -149,6 +149,9 @@ class DebugSettingsWidget(QWidget):
         self.debug_enabled_checkbox.setChecked(debug_enabled)
         self.enhanced_logging_checkbox.setChecked(enhanced_logging)
         
+        # Disable enhanced logging checkbox if debug mode is not enabled
+        self.enhanced_logging_checkbox.setEnabled(debug_enabled)
+        
         self.update_status_label()
 
     def update_status_label(self):
@@ -258,6 +261,15 @@ class DebugSettingsWidget(QWidget):
         debug_enabled = self.debug_enabled_checkbox.isChecked()
         self.settings.setValue("debug_enabled", debug_enabled)
         self.settings.sync()
+        
+        # Enable/disable enhanced logging checkbox based on debug mode
+        self.enhanced_logging_checkbox.setEnabled(debug_enabled)
+        
+        # If debug mode is disabled, also disable enhanced logging
+        if not debug_enabled:
+            self.enhanced_logging_checkbox.setChecked(False)
+            self.settings.setValue("enhanced_logging", False)
+            self.settings.sync()
         
         # Reinitialize debug logger with new settings
         self.debug_logger = DebugLogger()

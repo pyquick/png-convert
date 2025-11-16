@@ -5,7 +5,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl, QObject
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl, QObject, QSize
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
                                QPushButton, QLabel, QLineEdit, QTextEdit, QProgressBar, 
                                QTabWidget, QWidget, QGroupBox, QListWidget, QListWidgetItem,
@@ -17,8 +17,257 @@ from con import CON
 from support.toggle import ThemeManager
 # Add the current directory to Python path to import convertzip module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from support.archive_manager import create_archive, extract_archive, add_to_archive, list_archive_contents, SUPPORTED_ARCHIVE_FORMATS
+from support.archive_manager import create_archive, extract_archive, add_to_archive, list_archive_contents, SUPPORTED_ARCHIVE_FORMATS, batch_extract_archives
 from support.password_detector import PasswordDetector, detect_password_protection
+
+# Batch Drop Zone Widget for archive files
+class BatchDropZoneWidget(QFrame):
+    """Custom widget for drag and drop archive file selection"""
+    files_dropped = Signal(list)  # Signal for multiple archive files dropped
+    
+    def __init__(self, placeholder_text="Drag archive files here or click to browse", parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setMinimumHeight(100)  # 增加到100确保足够空间
+        self.setFixedHeight(100)   # 设置固定高度防止缩小
+        self.setMinimumWidth(200)  # 设置最小宽度
+        self.is_dark_mode = False  # Track current theme mode
+        
+        # Define supported archive formats
+        self.supported_formats = {
+            '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.cab', '.iso', '.arj', '.ace', '.lzh', '.lha'
+        }
+        
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setContentsMargins(10, 10, 10, 10)  # 设置内边距防止内容紧贴边框
+        
+        self.icon_label = QLabel("📁")
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setStyleSheet("font-size: 20px;")
+        
+        self.text_label = QLabel(placeholder_text)
+        self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.text_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.text_label.setWordWrap(True)
+        
+        layout.addWidget(self.icon_label)
+        layout.addWidget(self.text_label)
+        
+        self.drag_over = False
+        
+        # Click to browse
+        self.mousePressEvent = self.browse_files
+        
+        # Apply initial light theme style after all widgets are created
+        self._apply_light_theme_style()
+        
+    def sizeHint(self):
+        """Return fixed size hint to prevent resizing"""
+        return super().sizeHint()
+        
+    def minimumSizeHint(self):
+        """Return minimum size hint to prevent shrinking"""
+        return QSize(200, 100)
+        
+    def set_theme(self, is_dark_mode):
+        """Update the theme of the drag and drop area"""
+        self.is_dark_mode = is_dark_mode
+        if self.is_dark_mode:
+            self._apply_dark_theme_style()
+        else:
+            self._apply_light_theme_style()
+            
+    def _apply_light_theme_style(self):
+        """Apply light theme styles"""
+        self.setStyleSheet("""
+            QFrame {
+                border: 2px dashed #aaa;
+                border-radius: 10px;
+                background-color: #f9f9f9;
+            }
+            QFrame:hover {
+                border-color: #007acc;
+                background-color: #f0f8ff;
+            }
+            QFrame:drop {
+                border-color: #28a745;
+                background-color: #f0fff0;
+            }
+        """)
+        self.text_label.setStyleSheet("color: #666; font-size: 12px;")
+        
+    def _apply_dark_theme_style(self):
+        """Apply dark theme styles"""
+        self.setStyleSheet("""
+            QFrame {
+                border: 2px dashed #555;
+                border-radius: 10px;
+                background-color: #2d2d2d;
+            }
+            QFrame:hover {
+                border-color: #007acc;
+                background-color: #1e3a5f;
+            }
+            QFrame:drop {
+                border-color: #28a745;
+                background-color: #1a2f1a;
+            }
+        """)
+        self.text_label.setStyleSheet("color: #aaa; font-size: 12px;")
+        
+    def browse_files(self, event):
+        """Open file browser when clicked"""
+        file_dialog = QFileDialog()
+        file_paths, _ = file_dialog.getOpenFileNames(
+            self,
+            "Select Archive Files",
+            "",
+            "Archive Files (*.zip *.rar *.7z *.tar *.gz *.bz2 *.xz *.cab *.iso *.arj *.ace *.lzh *.lha);;All Files (*)"
+        )
+        if file_paths:
+            self.files_dropped.emit(file_paths)
+        
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            # Check if any of the dragged items are supported archive formats
+            has_supported_files = False
+            total_files = 0
+            supported_files = 0
+            
+            for url in event.mimeData().urls():
+                if hasattr(url, 'toLocalFile'):
+                    path = url.toLocalFile()
+                else:
+                    path = url.path() if hasattr(url, 'path') else ""
+                
+                if path and os.path.isfile(path):
+                    total_files += 1
+                    if self._is_supported_archive_file(path):
+                        supported_files += 1
+            
+            # Accept if there are supported archive files
+            if supported_files > 0:
+                self._set_drag_over_style(True)
+                event.acceptProposedAction()
+                self._update_text_label(total_files, supported_files, True)
+            else:
+                self._set_reject_style()
+        else:
+            event.ignore()
+            
+    def dragLeaveEvent(self, event):
+        self._reset_style()
+        
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            self._set_drag_over_style(True)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+        
+    def dropEvent(self, event):
+        self._reset_style()
+        
+        files = []
+        
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if os.path.isfile(path) and self._is_supported_archive_file(path):
+                files.append(path)
+                    
+        # Emit signal for valid archive files
+        if files:
+            self.files_dropped.emit(files)
+            
+    def _is_supported_archive_file(self, file_path):
+        """Check if the file has a supported archive format extension"""
+        if not file_path:
+            return False
+        _, ext = os.path.splitext(file_path.lower())
+        return ext in self.supported_formats
+        
+    def _set_drag_over_style(self, has_supported=True):
+        """Set style for drag over state"""
+        # Ensure fixed size is maintained during style changes
+        current_width = self.width()
+        current_height = self.height()
+        
+        if self.is_dark_mode:
+            self.setStyleSheet("""
+                QFrame {
+                    border: 2px solid #28a745;
+                    border-radius: 10px;
+                    background-color: #1a2f1a;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame {
+                    border: 2px solid #28a745;
+                    border-radius: 10px;
+                    background-color: #f0fff0;
+                }
+            """)
+        
+        # Restore fixed size after style change
+        self.setFixedHeight(100)
+        if current_width > 0:
+            self.setMinimumWidth(current_width)
+            
+        self.drag_over = True
+            
+    def _set_reject_style(self):
+        """Set style for rejected drag items"""
+        # Ensure fixed size is maintained during style changes
+        current_width = self.width()
+        
+        if self.is_dark_mode:
+            self.setStyleSheet("""
+                QFrame {
+                    border: 2px solid #dc3545;
+                    border-radius: 10px;
+                    background-color: #2a1a1a;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame {
+                    border: 2px solid #dc3545;
+                    border-radius: 10px;
+                    background-color: #fff5f5;
+                }
+            """)
+        
+        # Restore fixed size after style change
+        self.setFixedHeight(100)
+        if current_width > 0:
+            self.setMinimumWidth(current_width)
+        
+    def _reset_style(self):
+        """Reset to default style"""
+        # Ensure fixed size is maintained during style changes
+        current_width = self.width()
+        
+        if self.is_dark_mode:
+            self._apply_dark_theme_style()
+        else:
+            self._apply_light_theme_style()
+        
+        # Restore fixed size after style change
+        self.setFixedHeight(100)
+        if current_width > 0:
+            self.setMinimumWidth(current_width)
+            
+        self.drag_over = False
+        
+    def _update_text_label(self, total_files, supported_files, has_supported):
+        """Update the text label during drag operations"""
+        if has_supported:
+            if total_files == supported_files:
+                self.text_label.setText(f"Release to add {supported_files} archive file(s)")
+            else:
+                self.text_label.setText(f"Release to add {supported_files} archive file(s)\n({total_files - supported_files} unsupported file(s) will be ignored)")
 
 # Remove the problematic reconfigure calls
 # sys.stdout.reconfigure(encoding='utf-8')
@@ -164,6 +413,76 @@ class ListZipContentsWorker(QObject):
             traceback.print_exc()
             self.conversion_error.emit(str(e))
 
+class BatchExtractWorker(QObject):
+    """Worker for batch archive extraction"""
+    finished = Signal(dict)  # Emits result dictionary with success/failure counts
+    progress_updated = Signal(str, int)  # Emits current progress message and percentage
+    conversion_error = Signal(str)  # Emits error messages
+    individual_progress = Signal(str, str, int)  # Emits archive name, message, percentage
+
+    def __init__(self, archive_paths, dest_folder, create_subfolders=True, overwrite_files=False):
+        super().__init__()
+        self.archive_paths = archive_paths
+        self.dest_folder = dest_folder
+        self.create_subfolders = create_subfolders
+        self.overwrite_files = overwrite_files
+        self.is_stopped = False
+
+    def stop(self):
+        """Stop the batch extraction process"""
+        self.is_stopped = True
+
+    def run(self):
+        """Execute batch extraction"""
+        try:
+            if not self.archive_paths:
+                raise ValueError("No archive files to extract")
+            
+            if not self.dest_folder:
+                raise ValueError("Destination folder is not specified")
+            
+            if not os.path.exists(self.dest_folder):
+                os.makedirs(self.dest_folder)
+            
+            def progress_callback(current, total, message=""):
+                if self.is_stopped:
+                    return  # Stop processing if requested
+                    
+                overall_percentage = int((current / total) * 100)
+                progress_msg = f"Processing {current}/{total} archives"
+                if message:
+                    progress_msg += f" - {message}"
+                self.progress_updated.emit(progress_msg, overall_percentage)
+            
+            # Prepare options for batch extraction
+            options = {
+                'create_subfolders': self.create_subfolders,
+                'overwrite': self.overwrite_files,
+                'progress_callback': progress_callback if not self.is_stopped else None
+            }
+            
+            if self.is_stopped:
+                return
+                
+            # Call batch extraction function
+            result = batch_extract_archives(
+                self.archive_paths,
+                self.dest_folder,
+                **options
+            )
+            
+            if not self.is_stopped:
+                self.finished.emit(result)
+                
+        except ValueError as e:
+            self.conversion_error.emit(f"Input error: {str(e)}")
+        except RuntimeError as e:
+            self.conversion_error.emit(str(e))
+        except Exception as e:
+            import traceback
+            error_msg = f"Unexpected error during batch extraction: {str(e)}\n{traceback.format_exc()}"
+            self.conversion_error.emit(error_msg)
+
 
 class ZipGUI(QMainWindow):
 
@@ -221,7 +540,7 @@ class ZipGUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("Archive File Processing Tool")
         self.setGeometry(200, 200, 800, 600)
-        self.setMinimumSize(600, 780)
+        self.setMinimumSize(600, 1000)
         
         # Enable drag and drop for the main window
         self.setAcceptDrops(True)
@@ -245,6 +564,12 @@ class ZipGUI(QMainWindow):
     def _onThemeChanged(self, theme: Theme):
         """Theme change handling"""
         # Update interface to respond to theme changes
+        is_dark_mode = theme == Theme.DARK
+        
+        # Update drag and drop area theme
+        if hasattr(self, 'batch_drop_area'):
+            self.batch_drop_area.set_theme(is_dark_mode)
+        
         self.update()
         setTheme(Theme.AUTO)
     def init_variables(self):
@@ -260,6 +585,16 @@ class ZipGUI(QMainWindow):
         self.extract_dest_path = ""
         self.extract_zip_worker_thread = None # Renamed to generic for clarity
         self.extract_zip_worker = None # Renamed to generic for clarity
+        
+        # Variables for Batch Extract tab
+        self.batch_extract_files = []
+        self.batch_extract_dest_path = ""
+        self.batch_extract_worker = None
+        self.batch_extract_worker_thread = None
+        self.batch_extract_running = False
+        self.batch_extract_success_count = 0
+        self.batch_extract_failed_count = 0
+        self.batch_extract_password = None
         
         # Variables for Add to ZIP tab
         self.add_zip_path = ""
@@ -307,6 +642,10 @@ class ZipGUI(QMainWindow):
             self.setStyleSheet(self.DARK_QSS)
         else:
             self.setStyleSheet(self.LIGHT_QSS)
+            
+        # Update drag and drop area theme
+        if hasattr(self, 'batch_drop_area'):
+            self.batch_drop_area.set_theme(is_dark_mode)
 
     def _apply_system_theme(self, is_dark_mode):
         self._apply_theme(is_dark_mode)
@@ -416,6 +755,23 @@ class ZipGUI(QMainWindow):
         tab_sizer = QVBoxLayout(tab_panel)
         self.notebook.addTab(tab_panel, "Extract Archive") # Changed tab title
 
+        # Tab selector for single/batch extract
+        self.extract_tab_widget = QTabWidget()
+        tab_sizer.addWidget(self.extract_tab_widget)
+
+        # Single Extract Tab
+        self.create_single_extract_tab()
+        
+        # Batch Extract Tab  
+        self.create_batch_extract_tab()
+        
+        tab_sizer.addStretch(1) # Push content to top
+
+    def create_single_extract_tab(self):
+        """Create single archive extraction tab"""
+        single_panel = QWidget()
+        single_sizer = QVBoxLayout(single_panel)
+
         # Archive file selection (changed title)
         zip_box = QGroupBox("Archive File to Extract")
         zip_box_sizer = QHBoxLayout(zip_box)
@@ -428,7 +784,7 @@ class ZipGUI(QMainWindow):
 
         zip_button.clicked.connect(self.browse_extract_archive) # Changed signal
         zip_box_sizer.addWidget(zip_button)
-        tab_sizer.addWidget(zip_box)
+        single_sizer.addWidget(zip_box)
 
         # Destination folder selection
         dest_box = QGroupBox("Destination Folder")
@@ -442,7 +798,7 @@ class ZipGUI(QMainWindow):
 
         dest_button.clicked.connect(self.browse_extract_dest)
         dest_box_sizer.addWidget(dest_button)
-        tab_sizer.addWidget(dest_box)
+        single_sizer.addWidget(dest_box)
 
         # Password status indicator
         password_status_box = QHBoxLayout()
@@ -452,24 +808,133 @@ class ZipGUI(QMainWindow):
         password_status_box.addWidget(self.extract_password_status_label)
         password_status_box.addWidget(self.extract_password_status_icon)
         password_status_box.addStretch()
-        tab_sizer.addLayout(password_status_box)
+        single_sizer.addLayout(password_status_box)
         
         # Progress bar
         self.extract_progress_label = QLabel("")
-        tab_sizer.addWidget(self.extract_progress_label)
+        single_sizer.addWidget(self.extract_progress_label)
         
         self.extract_progress = ProgressBar()
         self.extract_progress.setRange(0, 100)
         self.extract_progress.setValue(0)
-        tab_sizer.addWidget(self.extract_progress)
+        single_sizer.addWidget(self.extract_progress)
 
         # Extract button
         self.extract_button = PrimaryPushButton("Extract Archive") # Changed button text
 
         self.extract_button.clicked.connect(self.start_extract_archive) # Changed signal
-        tab_sizer.addWidget(self.extract_button, 0, Qt.AlignmentFlag.AlignCenter)
+        single_sizer.addWidget(self.extract_button, 0, Qt.AlignmentFlag.AlignCenter)
         
-        tab_sizer.addStretch(1) # Push content to top
+        self.extract_tab_widget.addTab(single_panel, "Single Extract")
+
+    def create_batch_extract_tab(self):
+        """Create batch archive extraction tab"""
+        batch_panel = QWidget()
+        batch_sizer = QVBoxLayout(batch_panel)
+
+        # Batch files drop zone
+        drop_box = QGroupBox("Batch Archive Files")
+        drop_box_sizer = QVBoxLayout(drop_box)
+
+        # Drag and drop area
+        self.batch_drop_area = BatchDropZoneWidget("Drag archive files here\nor click to browse")
+        drop_box_sizer.addWidget(self.batch_drop_area)
+        
+        # File list
+        self.batch_files_listbox = ListWidget()
+        self.batch_files_listbox.setMinimumHeight(120)
+        drop_box_sizer.addWidget(self.batch_files_listbox)
+        
+        # File management buttons
+        file_buttons_layout = QHBoxLayout()
+        
+        self.batch_add_files_btn = PushButton("Add Files")
+        self.batch_add_files_btn.clicked.connect(self.browse_batch_archive_files)
+        file_buttons_layout.addWidget(self.batch_add_files_btn)
+        
+        self.batch_remove_files_btn = PushButton("Remove Selected")
+        self.batch_remove_files_btn.clicked.connect(self.remove_selected_batch_files)
+        file_buttons_layout.addWidget(self.batch_remove_files_btn)
+        
+        self.batch_clear_files_btn = PushButton("Clear All")
+        self.batch_clear_files_btn.clicked.connect(self.clear_batch_files)
+        file_buttons_layout.addWidget(self.batch_clear_files_btn)
+        
+        file_buttons_layout.addStretch()
+        drop_box_sizer.addLayout(file_buttons_layout)
+        
+        batch_sizer.addWidget(drop_box)
+
+        # Destination folder selection for batch
+        batch_dest_box = QGroupBox("Destination Folder for Batch Extract")
+        batch_dest_box_sizer = QHBoxLayout(batch_dest_box)
+
+        self.batch_extract_dest_text = LineEdit()
+        setCustomStyleSheet(self.batch_extract_dest_text, CON.qss_line, CON.qss_line)
+        batch_dest_box_sizer.addWidget(self.batch_extract_dest_text, 1)
+        batch_dest_button = PushButton("Browse...")
+
+        batch_dest_button.clicked.connect(self.browse_batch_extract_dest)
+        batch_dest_box_sizer.addWidget(batch_dest_button)
+        batch_sizer.addWidget(batch_dest_box)
+
+        # Batch options
+        batch_options_box = QGroupBox("Batch Extract Options")
+        batch_options_sizer = QVBoxLayout(batch_options_box)
+        
+        # Create subfolder for each archive
+        self.batch_create_subfolders_check = CheckBox("Create subfolder for each archive")
+        self.batch_create_subfolders_check.setChecked(True)
+        batch_options_sizer.addWidget(self.batch_create_subfolders_check)
+        
+        # Overwrite existing files
+        self.batch_overwrite_files_check = CheckBox("Overwrite existing files")
+        self.batch_overwrite_files_check.setChecked(False)
+        batch_options_sizer.addWidget(self.batch_overwrite_files_check)
+        
+        batch_sizer.addWidget(batch_options_box)
+
+        # Progress and statistics
+        self.batch_progress_label = QLabel("Ready to extract archives")
+        batch_sizer.addWidget(self.batch_progress_label)
+        
+        self.batch_progress = ProgressBar()
+        self.batch_progress.setRange(0, 100)
+        self.batch_progress.setValue(0)
+        batch_sizer.addWidget(self.batch_progress)
+        
+        # Statistics
+        stats_layout = QHBoxLayout()
+        
+        self.batch_total_count_label = QLabel("Total: 0")
+        stats_layout.addWidget(self.batch_total_count_label)
+        
+        self.batch_success_count_label = QLabel("Success: 0")
+        stats_layout.addWidget(self.batch_success_count_label)
+        
+        self.batch_failed_count_label = QLabel("Failed: 0")
+        stats_layout.addWidget(self.batch_failed_count_label)
+        
+        batch_sizer.addLayout(stats_layout)
+
+        # Control buttons
+        button_layout = QHBoxLayout()
+        
+        self.batch_start_btn = PrimaryPushButton("Start Batch Extract")
+        self.batch_start_btn.clicked.connect(self.start_batch_extract)
+        button_layout.addWidget(self.batch_start_btn)
+        
+        self.batch_stop_btn = PushButton("Stop")
+        self.batch_stop_btn.clicked.connect(self.stop_batch_extract)
+        self.batch_stop_btn.setEnabled(False)
+        button_layout.addWidget(self.batch_stop_btn)
+        
+        batch_sizer.addLayout(button_layout)
+        
+        self.extract_tab_widget.addTab(batch_panel, "Batch Extract")
+
+        # Connect drop area signals
+        self.batch_drop_area.files_dropped.connect(self.on_batch_files_dropped)
 
     def create_add_tab(self):
         tab_panel = QWidget()
@@ -1055,6 +1520,241 @@ class ZipGUI(QMainWindow):
         if dir_dialog.exec():
             self.extract_dest_path = dir_dialog.selectedFiles()[0]
             self.extract_dest_text.setText(self.extract_dest_path)
+
+    def browse_batch_extract_dest(self):
+        """Browse for batch extraction destination folder"""
+        dir_dialog = QFileDialog(self)
+        dir_dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dir_dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        if dir_dialog.exec():
+            self.batch_extract_dest_path = dir_dialog.selectedFiles()[0]
+            self.batch_extract_dest_text.setText(self.batch_extract_dest_path)
+
+    def browse_batch_archive_files(self):
+        """Browse for archive files to batch extract"""
+        file_dialog = QFileDialog(self)
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        file_dialog.setNameFilters([
+            "Archive files (*.zip *.rar *.7z *.tar *.gz *.bz2 *.xz *.tar.gz *.tar.bz2 *.tar.xz *.tgz *.tbz2)",
+            "All files (*)"
+        ])
+        if file_dialog.exec():
+            file_paths = file_dialog.selectedFiles()
+            self.add_batch_files(file_paths)
+
+    def add_batch_files(self, file_paths):
+        """Add files to batch list"""
+        supported_formats = ('.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.tar.gz', '.tar.bz2', '.tar.xz', '.tgz', '.tbz2')
+        
+        for file_path in file_paths:
+            # Check if file is a supported archive format
+            if os.path.splitext(file_path.lower())[1] in supported_formats:
+                # Avoid duplicates
+                if file_path not in [self.batch_files_listbox.item(i).toolTip() for i in range(self.batch_files_listbox.count())]:
+                    item = QListWidgetItem(os.path.basename(file_path))
+                    item.setToolTip(file_path)
+                    self.batch_files_listbox.addItem(item)
+        
+        self.update_batch_stats()
+
+    def remove_selected_batch_files(self):
+        """Remove selected files from batch list"""
+        selected_items = self.batch_files_listbox.selectedItems()
+        if not selected_items:
+            return
+            
+        # Remove items in reverse order to maintain correct indices
+        indices = []
+        for item in selected_items:
+            indices.append(self.batch_files_listbox.row(item))
+        
+        indices.sort(reverse=True)
+        
+        for index in indices:
+            self.batch_files_listbox.takeItem(index)
+        
+        self.update_batch_stats()
+
+    def clear_batch_files(self):
+        """Clear all files from batch list"""
+        self.batch_files_listbox.clear()
+        self.update_batch_stats()
+
+    def get_batch_archive_files(self):
+        """Get list of all archive files in batch list"""
+        file_paths = []
+        for i in range(self.batch_files_listbox.count()):
+            item = self.batch_files_listbox.item(i)
+            file_paths.append(item.toolTip())
+        return file_paths
+
+    def on_batch_files_dropped(self, file_paths):
+        """Handle files dropped in batch area"""
+        self.add_batch_files(file_paths)
+
+    def update_batch_stats(self):
+        """Update batch statistics display"""
+        total_count = self.batch_files_listbox.count()
+        self.batch_total_count_label.setText(f"Total: {total_count}")
+        self.batch_success_count_label.setText("Success: 0")
+        self.batch_failed_count_label.setText("Failed: 0")
+
+    def start_batch_extract(self):
+        """Start batch extraction process"""
+        file_paths = self.get_batch_archive_files()
+        
+        if not file_paths:
+            self._show_popup(
+                target=self.batch_start_btn,
+                icon=InfoBarIcon.ERROR,
+                title='Error',
+                content='Please add archive files to extract',
+                duration=2000
+            )
+            return
+
+        if not self.batch_extract_dest_path:
+            self._show_popup(
+                target=self.batch_extract_dest_text,
+                icon=InfoBarIcon.ERROR,
+                title='Error',
+                content='Please specify the extraction destination folder',
+                duration=2000
+            )
+            return
+
+        # Create batch extract options
+        create_subfolders = self.batch_create_subfolders_check.isChecked()
+        overwrite_files = self.batch_overwrite_files_check.isChecked()
+        
+        # Reset progress and statistics
+        self.batch_progress.setValue(0)
+        self.update_batch_stats()
+        
+        # Disable start button and enable stop button
+        self.batch_start_btn.setEnabled(False)
+        self.batch_stop_btn.setEnabled(True)
+        
+        # Create and start batch worker
+        self.batch_extract_worker = BatchExtractWorker(
+            file_paths, 
+            self.batch_extract_dest_path, 
+            create_subfolders, 
+            overwrite_files
+        )
+        self.batch_extract_worker_thread = QThread()
+        self.batch_extract_worker.moveToThread(self.batch_extract_worker_thread)
+        
+        # Connect signals
+        self.batch_extract_worker.finished.connect(self.on_batch_extract_finished)
+        self.batch_extract_worker.progress_updated.connect(self.on_batch_extract_progress)
+        self.batch_extract_worker.conversion_error.connect(self.on_batch_extract_error)
+        self.batch_extract_worker_thread.started.connect(self.batch_extract_worker.run)
+        self.batch_extract_worker_thread.start()
+
+    def stop_batch_extract(self):
+        """Stop batch extraction process"""
+        if hasattr(self, 'batch_extract_worker'):
+            self.batch_extract_worker.stop()
+            self.on_batch_extract_stopped()
+
+    def on_batch_extract_progress(self, processed_count, total_count, current_file, success_count, failed_count):
+        """Handle batch extraction progress update"""
+        progress_percentage = int((processed_count / total_count) * 100)
+        self.batch_progress.setValue(progress_percentage)
+        
+        # Update statistics
+        self.batch_total_count_label.setText(f"Total: {total_count}")
+        self.batch_success_count_label.setText(f"Success: {success_count}")
+        self.batch_failed_count_label.setText(f"Failed: {failed_count}")
+        
+        # Update progress label
+        self.batch_progress_label.setText(f"Processing: {os.path.basename(current_file)} ({processed_count}/{total_count})")
+
+    def on_batch_extract_finished(self, success_count, failed_count):
+        """Handle batch extraction finished"""
+        # Clean up thread
+        self._force_cleanup_batch_thread()
+        
+        # Re-enable start button and disable stop button
+        self.batch_start_btn.setEnabled(True)
+        self.batch_stop_btn.setEnabled(False)
+        
+        # Show completion message
+        total_count = success_count + failed_count
+        if failed_count == 0:
+            self._show_info_bar(
+                title='Success',
+                content=f'All {total_count} archives extracted successfully!',
+                duration=3000
+            )
+        elif success_count == 0:
+            self._show_popup(
+                target=self.batch_progress,
+                icon=InfoBarIcon.ERROR,
+                title='Error',
+                content=f'Failed to extract all {total_count} archives.',
+                duration=3000
+            )
+        else:
+            self._show_info_bar(
+                title='Partially Complete',
+                content=f'Extracted {success_count} out of {total_count} archives successfully.',
+                duration=3000
+            )
+
+    def on_batch_extract_error(self, error_message):
+        """Handle batch extraction error"""
+        # Clean up thread
+        self._force_cleanup_batch_thread()
+        
+        # Re-enable start button and disable stop button
+        self.batch_start_btn.setEnabled(True)
+        self.batch_stop_btn.setEnabled(False)
+        
+        self._show_popup(
+            target=self.batch_progress,
+            icon=InfoBarIcon.ERROR,
+            title='Error',
+            content=f'Batch extraction error: {str(error_message)}',
+            duration=3000
+        )
+
+    def on_batch_extract_stopped(self):
+        """Handle batch extraction stopped by user"""
+        # Clean up thread
+        self._force_cleanup_batch_thread()
+        
+        # Re-enable start button and disable stop button
+        self.batch_start_btn.setEnabled(True)
+        self.batch_stop_btn.setEnabled(False)
+        
+        self.batch_progress_label.setText("Stopped")
+        
+        self._show_popup(
+            target=self.batch_progress,
+            icon=InfoBarIcon.WARNING,
+            title='Stopped',
+            content='Batch extraction stopped by user.',
+            duration=2000
+        )
+
+    def _force_cleanup_batch_thread(self):
+        """Force cleanup batch extraction thread"""
+        if hasattr(self, 'batch_extract_worker_thread') and self.batch_extract_worker_thread.isRunning():
+            self.batch_extract_worker_thread.quit()
+            self.batch_extract_worker_thread.wait()
+
+    def reset_batch_ui(self):
+        """Reset batch extraction UI to initial state"""
+        self.batch_files_listbox.clear()
+        self.batch_extract_dest_path = ""
+        self.batch_extract_dest_text.setText("Select destination folder...")
+        self.batch_create_subfolders_check.setChecked(True)
+        self.batch_overwrite_files_check.setChecked(False)
+        self.batch_progress.setValue(0)
+        self.update_batch_stats()
+        self.batch_progress_label.setText("Ready")
 
     def auto_set_extract_dest_from_file(self, file_path):
         """Automatically set the extract destination to the file's parent directory"""
