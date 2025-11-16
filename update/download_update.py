@@ -47,7 +47,7 @@ class UpdateDownloader:
         Get the actual download URL from GitHub API
         
         Args:
-            tag_name: Version tag name (e.g., v2.0.0)
+            tag_name: Version tag name (e.g., v2.1.0A1)
             
         Returns:
             str: Actual zip file download URL, returns None if extraction fails
@@ -121,7 +121,7 @@ class UpdateDownloader:
         Download and extract update files
         
         Args:
-            tag_name: Version tag name (e.g., v2.0.0)
+            tag_name: Version tag name (e.g., v2.1.0A1)
             progress_callback: Progress callback function
             
         Returns:
@@ -734,8 +734,8 @@ def download_and_apply_update(update_info: Dict[str, Any], progress_callback=Non
 if __name__ == "__main__":
     # Test code
     test_info = {
-        "download_url": "https://github.com/pyquick/converter/releases/tag/v2.0.0",
-        "latest_version": "2.0.0"
+        "download_url": "https://github.com/pyquick/converter/releases/tag/v2.1.0A1",
+        "latest_version": "2.1.0A1"
     }
     
     result = download_and_apply_update(test_info, "./test_update")

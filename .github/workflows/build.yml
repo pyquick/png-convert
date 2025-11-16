@@ -30,10 +30,10 @@ jobs:
               if: github.event_name == 'push'
               uses: softprops/action-gh-release@v2
               with:
-                tag_name: 2.0.0
-                name: 2.0.0 Stable
+                tag_name: 2.1.0A1
+                name: 2.1.0 Alpha 1
                 body: ${{ github.event.head_commit.message }}
-                prerelease: false
+                prerelease: true
                 files: |
                     ./dist/Converter_arm64_darwin.zip
     build_intel:
@@ -58,10 +58,10 @@ jobs:
               if: github.event_name == 'push'
               uses: softprops/action-gh-release@v2
               with:
-                tag_name: 2.0.0
-                name: 2.0.0 Stable
+                tag_name: 2.1.0A1
+                name: 2.1.0 Alpha 1
                 body: ${{ github.event.head_commit.message }}
-                prerelease: false
+                prerelease: true
                 files: |
                     ./dist/Converter_intel_darwin.zip
                     

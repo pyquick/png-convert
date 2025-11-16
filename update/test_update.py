@@ -19,7 +19,7 @@ def main():
         print("✅ 成功导入UpdateManager")
         
         # 获取当前版本
-        current_version = "2.0.0RC1"
+        current_version = "2.1.0A1"
         print(f"📍 当前版本: {current_version}")
         
         # 创建更新管理器
