@@ -46,13 +46,13 @@ class UpdateManager:
     def check_for_updates(self, include_prerelease: bool, prerelease_type: Optional[str] = None) -> dict:
         try:
             from con import CON
-            repo_owner = "pyquick"
+            repo_owner = "intsant"
             repo_name = "converter"
             url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases"
             headers = CON.headers.copy()
             
             # 读取PAT设置
-            settings = QSettings("pyquick", "converter")
+            settings = QSettings("intsant", "converter")
             encrypted_pat = settings.value("general/github_pat", "", type=str)
             
             # 如果有PAT，添加到headers
@@ -227,7 +227,7 @@ class UpdateManager:
             str: 解密后的PAT，如果没有设置则返回空字符串
         """
         try:
-            settings = QSettings("pyquick", "converter")
+            settings = QSettings("intsant", "converter")
             encrypted_pat = settings.value("general/github_pat", "", type=str)
             if encrypted_pat:
                 import os, sys

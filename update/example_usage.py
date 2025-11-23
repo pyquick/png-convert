@@ -82,7 +82,7 @@ def quick_download_example():
     test_update_info = {
         "status": "update_available",
         "message": "测试更新",
-        "download_url": "https://github.com/pyquick/converter/releases/tag/v2.1.0A3",
+        "download_url": "https://github.com/intsant/converter/releases/tag/v2.1.0A3",
         "latest_version": "v2.1.0A3"  # 注意：这里需要完整的tag名称
     }
     

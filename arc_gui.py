@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl, QObject, QSize
-from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QGridLayout,
                                QPushButton, QLabel, QLineEdit, QTextEdit, QProgressBar, 
                                QTabWidget, QWidget, QGroupBox, QListWidget, QListWidgetItem,
                                QFileDialog, QCheckBox, QComboBox, QFrame, QMessageBox, QMenu)
@@ -587,7 +587,7 @@ class ZipGUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("Archive File Processing Tool")
         self.setGeometry(200, 200, 800, 600)
-        self.setMinimumSize(600, 1000)
+        self.setMinimumSize(1000, 750)
         
         # Enable drag and drop for the main window
         self.setAcceptDrops(True)
@@ -906,106 +906,154 @@ class ZipGUI(QMainWindow):
     def create_batch_extract_tab(self):
         """Create batch archive extraction tab"""
         batch_panel = QWidget()
-        batch_sizer = QVBoxLayout(batch_panel)
-
-        # Batch files drop zone
-        drop_box = QGroupBox("Batch Archive Files")
-        drop_box_sizer = QVBoxLayout(drop_box)
-
+        main_layout = QHBoxLayout(batch_panel)
+        
+        # Left side - File management and selection
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        
+        # File selection group
+        file_group = QGroupBox("Batch Archive Files")
+        file_group_layout = QVBoxLayout(file_group)
+        
         # Drag and drop area
         self.batch_drop_area = BatchDropZoneWidget("Drag archive files here\nor click to browse")
-        drop_box_sizer.addWidget(self.batch_drop_area)
+        file_group_layout.addWidget(self.batch_drop_area)
         
         # File list
         self.batch_files_listbox = ListWidget()
-        self.batch_files_listbox.setMinimumHeight(120)
-        drop_box_sizer.addWidget(self.batch_files_listbox)
+        self.batch_files_listbox.setMinimumHeight(200)
+        self.batch_files_listbox.setMinimumWidth(300)
+        file_group_layout.addWidget(self.batch_files_listbox)
         
         # File management buttons
         file_buttons_layout = QHBoxLayout()
         
         self.batch_add_files_btn = PushButton("Add Files")
+        self.batch_add_files_btn.setMinimumWidth(80)
         self.batch_add_files_btn.clicked.connect(self.browse_batch_archive_files)
         file_buttons_layout.addWidget(self.batch_add_files_btn)
         
         self.batch_remove_files_btn = PushButton("Remove Selected")
+        self.batch_remove_files_btn.setMinimumWidth(100)
         self.batch_remove_files_btn.clicked.connect(self.remove_selected_batch_files)
         file_buttons_layout.addWidget(self.batch_remove_files_btn)
         
         self.batch_clear_files_btn = PushButton("Clear All")
+        self.batch_clear_files_btn.setMinimumWidth(80)
         self.batch_clear_files_btn.clicked.connect(self.clear_batch_files)
         file_buttons_layout.addWidget(self.batch_clear_files_btn)
         
         file_buttons_layout.addStretch()
-        drop_box_sizer.addLayout(file_buttons_layout)
+        file_group_layout.addLayout(file_buttons_layout)
         
-        batch_sizer.addWidget(drop_box)
-
-        # Destination folder selection for batch
-        batch_dest_box = QGroupBox("Destination Folder for Batch Extract")
-        batch_dest_box_sizer = QHBoxLayout(batch_dest_box)
-
+        left_layout.addWidget(file_group)
+        left_layout.addStretch(1)
+        
+        # Right side - Configuration and progress
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        
+        # Destination folder group
+        dest_group = QGroupBox("Destination Folder")
+        dest_group_layout = QVBoxLayout(dest_group)
+        
+        dest_layout = QHBoxLayout()
         self.batch_extract_dest_text = LineEdit()
         setCustomStyleSheet(self.batch_extract_dest_text, CON.qss_line, CON.qss_line)
-        batch_dest_box_sizer.addWidget(self.batch_extract_dest_text, 1)
-        batch_dest_button = PushButton("Browse...")
-
-        batch_dest_button.clicked.connect(self.browse_batch_extract_dest)
-        batch_dest_box_sizer.addWidget(batch_dest_button)
-        batch_sizer.addWidget(batch_dest_box)
-
-        # Batch options
-        batch_options_box = QGroupBox("Batch Extract Options")
-        batch_options_sizer = QVBoxLayout(batch_options_box)
+        dest_layout.addWidget(self.batch_extract_dest_text, 1)
         
-        # Create subfolder for each archive
+        batch_dest_button = PushButton("Browse...")
+        batch_dest_button.setMinimumWidth(70)
+        batch_dest_button.clicked.connect(self.browse_batch_extract_dest)
+        dest_layout.addWidget(batch_dest_button)
+        
+        dest_group_layout.addLayout(dest_layout)
+        right_layout.addWidget(dest_group)
+        
+        # Options group
+        options_group = QGroupBox("Extract Options")
+        options_group_layout = QVBoxLayout(options_group)
+        
+        options_layout = QHBoxLayout()
+        
+        # Left options column
+        left_options = QVBoxLayout()
         self.batch_create_subfolders_check = CheckBox("Create subfolder for each archive")
         self.batch_create_subfolders_check.setChecked(True)
-        batch_options_sizer.addWidget(self.batch_create_subfolders_check)
+        left_options.addWidget(self.batch_create_subfolders_check)
         
-        # Overwrite existing files
         self.batch_overwrite_files_check = CheckBox("Overwrite existing files")
         self.batch_overwrite_files_check.setChecked(False)
-        batch_options_sizer.addWidget(self.batch_overwrite_files_check)
+        left_options.addWidget(self.batch_overwrite_files_check)
         
-        batch_sizer.addWidget(batch_options_box)
-
-        # Progress and statistics
+        options_layout.addLayout(left_options)
+        options_layout.addStretch(1)
+        
+        options_group_layout.addLayout(options_layout)
+        right_layout.addWidget(options_group)
+        
+        # Progress group
+        progress_group = QGroupBox("Progress & Statistics")
+        progress_group_layout = QVBoxLayout(progress_group)
+        
+        # Progress label
         self.batch_progress_label = QLabel("Ready to extract archives")
-        batch_sizer.addWidget(self.batch_progress_label)
+        self.batch_progress_label.setWordWrap(True)
+        progress_group_layout.addWidget(self.batch_progress_label)
         
+        # Progress bar
         self.batch_progress = ProgressBar()
         self.batch_progress.setRange(0, 100)
         self.batch_progress.setValue(0)
-        batch_sizer.addWidget(self.batch_progress)
+        progress_group_layout.addWidget(self.batch_progress)
         
-        # Statistics
-        stats_layout = QHBoxLayout()
+        # Statistics in a grid layout
+        stats_widget = QWidget()
+        stats_layout = QGridLayout(stats_widget)
+        stats_layout.setSpacing(10)
         
-        self.batch_total_count_label = QLabel("Total: 0")
-        stats_layout.addWidget(self.batch_total_count_label)
+        # Statistics labels
+        self.batch_total_count_label = QLabel("Total Archives:")
+        self.batch_total_count_value = QLabel("0")
+        stats_layout.addWidget(self.batch_total_count_label, 0, 0)
+        stats_layout.addWidget(self.batch_total_count_value, 0, 1)
         
-        self.batch_success_count_label = QLabel("Success: 0")
-        stats_layout.addWidget(self.batch_success_count_label)
+        self.batch_success_count_label = QLabel("Successful:")
+        self.batch_success_count_value = QLabel("0")
+        stats_layout.addWidget(self.batch_success_count_label, 1, 0)
+        stats_layout.addWidget(self.batch_success_count_value, 1, 1)
         
-        self.batch_failed_count_label = QLabel("Failed: 0")
-        stats_layout.addWidget(self.batch_failed_count_label)
+        self.batch_failed_count_label = QLabel("Failed:")
+        self.batch_failed_count_value = QLabel("0")
+        stats_layout.addWidget(self.batch_failed_count_label, 2, 0)
+        stats_layout.addWidget(self.batch_failed_count_value, 2, 1)
         
-        batch_sizer.addLayout(stats_layout)
-
+        progress_group_layout.addWidget(stats_widget)
+        right_layout.addWidget(progress_group)
+        
         # Control buttons
-        button_layout = QHBoxLayout()
+        button_widget = QWidget()
+        button_layout = QHBoxLayout(button_widget)
+        button_layout.setSpacing(10)
         
-        self.batch_start_btn = PrimaryPushButton("Start Batch Extract")
+        self.batch_start_btn = PrimaryPushButton("Start Extract")
+        self.batch_start_btn.setMinimumWidth(100)
         self.batch_start_btn.clicked.connect(self.start_batch_extract)
         button_layout.addWidget(self.batch_start_btn)
         
         self.batch_stop_btn = PushButton("Stop")
+        self.batch_stop_btn.setMinimumWidth(60)
         self.batch_stop_btn.clicked.connect(self.stop_batch_extract)
         self.batch_stop_btn.setEnabled(False)
         button_layout.addWidget(self.batch_stop_btn)
         
-        batch_sizer.addLayout(button_layout)
+        button_layout.addStretch(1)
+        right_layout.addWidget(button_widget)
+        
+        # Add panels to main layout with proportional sizing
+        main_layout.addWidget(left_panel, 3)  # 3/5 of width for file management
+        main_layout.addWidget(right_panel, 2)  # 2/5 of width for options and progress
         
         self.extract_tab_widget.addTab(batch_panel, "Batch Extract")
 

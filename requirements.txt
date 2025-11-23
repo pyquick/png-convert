@@ -5,5 +5,4 @@ rarfile
 py7zr
 requests
 PySide6-Fluent-Widgets[full]
-patool
 cryptography

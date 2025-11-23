@@ -413,8 +413,8 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
                     # Use CLI tool for ZIP creation
                     success = _create_zip_with_cli(output_path, [wrapped_source_path], progress_callback, password)
                 elif archive_format in ["tar", "tar.gz", "tar.bz2", "tar.xz", "zipx"]:
-                    # Use patool for processing
-                    success = _create_with_patool(output_path, [wrapped_source_path], archive_format, progress_callback, password)
+                    # Use CLI tool for processing
+                    success = _create_tar_with_cli(output_path, [wrapped_source_path], archive_format, progress_callback)
                 elif archive_format in ["bz2", "xz", "lzma", "gz"]:
                     # These formats can only compress single files, so need to create tar first, then compress
                     success = _create_single_file_compression(output_path, [wrapped_source_path], archive_format, progress_callback)
@@ -452,277 +452,141 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
             progress_callback(f"Error creating archive: {str(e)}", -1)
         return False
 
-def _create_with_patool(output_path, source_paths, archive_format, progress_callback=None, password=None):
-    """Create archive file using patool"""
-    import subprocess
-    try:
-        import patoolib
-    except ImportError:
-        raise ImportError("patool is required for this format. Install with: pip install patool")
-    
-    # Create temporary directory
-    temp_dir = tempfile.mkdtemp()
-    try:
-        # Copy all source files to temporary directory
-        for source_path in source_paths:
-            if os.path.isfile(source_path):
-                shutil.copy2(source_path, temp_dir)
-            elif os.path.isdir(source_path):
-                dest_dir = os.path.join(temp_dir, os.path.basename(source_path))
-                # Ensure the destination directory doesn't already exist
-                if os.path.exists(dest_dir):
-                    shutil.rmtree(dest_dir)
-                shutil.copytree(source_path, dest_dir)
-        
-        # Use patool to create archive - fix path issues, use full paths
-        temp_files = []
-        for item in os.listdir(temp_dir):
-            item_path = os.path.join(temp_dir, item)
-            temp_files.append(item_path)
-        
-        if not temp_files:
-            raise ValueError("No files found to archive")
-            
-        if progress_callback:
-            progress_callback(f"Creating {archive_format} archive with patool...", 50)
-        
-        # Add debug information
-        if progress_callback:
-            progress_callback(f"Output path: {output_path}", 55)
-            progress_callback(f"Temp files: {temp_files}", 60)
-        
-        # For ZIP format with password, use Python's zipfile module
-        if archive_format == "zip" and password:
-            if progress_callback:
-                progress_callback(f"Creating password-protected ZIP file...", 65)
-            
-            password_success = False
-            
-            # First try to use zip command if available (most compatible)
-            zip_tool = _get_cli_tool("zip")
-            if zip_tool:
-                if progress_callback:
-                    progress_callback(f"Trying to create password-protected ZIP with zip command...", 70)
-                
-                # Create a temporary directory for zip to work with
-                temp_zip_dir = tempfile.mkdtemp()
-                try:
-                    # Ensure output file doesn't exist
-                    if os.path.exists(output_path):
-                        os.remove(output_path)
-                    
-                    # Copy files to temp directory
-                    for file_path in temp_files:
-                        if os.path.isfile(file_path):
-                            shutil.copy2(file_path, temp_zip_dir)
-                        elif os.path.isdir(file_path):
-                            dest_dir = os.path.join(temp_zip_dir, os.path.basename(file_path))
-                            shutil.copytree(file_path, dest_dir)
-                    
-                    # Create password-protected ZIP with zip command
-                    cmd = [zip_tool, "-r", "-P", password, output_path, "."]
-                    result = subprocess.run(cmd, cwd=temp_zip_dir, capture_output=True, text=True)
-                    
-                    # Check if the command succeeded (return code 0) and the output file exists
-                    if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                        password_success = True
-                        if progress_callback:
-                            progress_callback(f"Password-protected ZIP created with zip command", 85)
-                    else:
-                        if progress_callback:
-                            progress_callback(f"Failed to create password-protected ZIP with zip command: return code {result.returncode}", 75)
-                finally:
-                    shutil.rmtree(temp_zip_dir)
-            else:
-                if progress_callback:
-                    progress_callback(f"zip command not available, trying pyzipper...", 75)
-            
-            # If zip command failed, try to use pyzipper
-            if not password_success:
-                try:
-                    import pyzipper
-                    if progress_callback:
-                        progress_callback(f"Creating password-protected ZIP with pyzipper...", 70)
-                    
-                    # Create a password-protected ZIP with pyzipper
-                    with pyzipper.AESZipFile(output_path, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as zf:
-                        zf.setpassword(password.encode())
-                        for file_path in temp_files:
-                            if os.path.isfile(file_path):
-                                # 只使用文件名，不包含路径
-                                zf.write(file_path, os.path.basename(file_path))
-                            elif os.path.isdir(file_path):
-                                # 对于目录，递归添加所有文件，保留目录结构
-                                for root, dirs, files in os.walk(file_path):
-                                    for file in files:
-                                        file_full_path = os.path.join(root, file)
-                                        # 计算相对于目录的路径，保留子目录结构
-                                        arcname = os.path.relpath(file_full_path, file_path)
-                                        zf.write(file_full_path, arcname)
-                    
-                    password_success = True
-                    if progress_callback:
-                        progress_callback(f"Password-protected ZIP created with pyzipper", 85)
-                        
-                except ImportError:
-                    if progress_callback:
-                        progress_callback(f"pyzipper not available, trying 7zz...", 75)
-                except Exception as e:
-                    if progress_callback:
-                        progress_callback(f"Failed to create password-protected ZIP with pyzipper: {str(e)}", 75)
-            
-            # If pyzipper failed, try to use 7zz
-            if not password_success:
-                sevenz_tool = _get_cli_tool("7zz")
-                if sevenz_tool:
-                    if progress_callback:
-                        progress_callback(f"Trying to create password-protected ZIP with 7zz...", 75)
-                    
-                    # Create a temporary directory for 7zz to work with
-                    temp_7z_dir = tempfile.mkdtemp()
-                    try:
-                        # Copy files to temp directory
-                        for file_path in temp_files:
-                            if os.path.isfile(file_path):
-                                shutil.copy2(file_path, temp_7z_dir)
-                            elif os.path.isdir(file_path):
-                                dest_dir = os.path.join(temp_7z_dir, os.path.basename(file_path))
-                                shutil.copytree(file_path, dest_dir)
-                        
-                        # Create password-protected ZIP with 7zz
-                        cmd = [sevenz_tool, "a", f"-p{password}", "-y", output_path, os.path.join(temp_7z_dir, "*")]
-                        result = subprocess.run(cmd, capture_output=True, text=True)
-                        
-                        if result.returncode == 0:
-                            password_success = True
-                            if progress_callback:
-                                progress_callback(f"Password-protected ZIP created with 7zz", 85)
-                        else:
-                            if progress_callback:
-                                progress_callback(f"Failed to create password-protected ZIP with 7zz: {result.stderr}", 80)
-                    finally:
-                        shutil.rmtree(temp_7z_dir)
-                else:
-                    if progress_callback:
-                        progress_callback(f"7zz not available", 75)
-            
-            # If pyzipper and 7zz both failed, we'll fall back to standard ZIP without password
-            if not password_success:
-                if progress_callback:
-                    progress_callback(f"All password protection methods failed", 75)
-            
-            # If all methods failed, create a non-password-protected ZIP
-            if not password_success:
-                if progress_callback:
-                    progress_callback(f"Warning: Could not create password-protected ZIP, creating standard ZIP", 75)
-                
-                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for file_path in temp_files:
-                        if os.path.isfile(file_path):
-                            # 只使用文件名，不包含路径
-                            zf.write(file_path, os.path.basename(file_path))
-                        elif os.path.isdir(file_path):
-                            # 对于目录，递归添加所有文件，保留目录结构
-                            for root, dirs, files in os.walk(file_path):
-                                for file in files:
-                                    file_full_path = os.path.join(root, file)
-                                    # 计算相对于目录的路径，保留子目录结构
-                                    arcname = os.path.relpath(file_full_path, file_path)
-                                    zf.write(file_full_path, arcname)
-                
-                if progress_callback:
-                    progress_callback(f"Standard ZIP created (no password protection)", 85)
-            
-            if progress_callback:
-                progress_callback(f"ZIP archive created", 90)
-        else:
-            # Try different patool calling methods
-            try:
-                # Method 1: Directly pass file paths
-                patoolib.create_archive(output_path, temp_files)
-            except Exception as e1:
-                # Method 2: Switch to temporary directory and use relative paths
-                try:
-                    original_cwd = os.getcwd()
-                    os.chdir(temp_dir)
-                    rel_files = [os.path.basename(f) for f in temp_files]
-                    patoolib.create_archive(output_path, rel_files)
-                    os.chdir(original_cwd)
-                except Exception as e2:
-                    os.chdir(original_cwd)
-                    
-                    # Method 3: Use full paths and patool's --verbose option
-                    try:
-                        import subprocess
-                        cmd = ["patool", "create", output_path] + temp_files
-                        result = subprocess.run(cmd, capture_output=True, text=True)
-                        if result.returncode != 0:
-                            raise RuntimeError(f"patool command failed: {result.stderr}")
-                    except Exception as e3:
-                        raise RuntimeError(f"All patool methods failed: {e1}, {e2}, {e3}")
-            
-            if progress_callback:
-                progress_callback(f"{archive_format} archive created", 90)
-            
-        return True
-    except Exception as e:
-        if progress_callback:
-            progress_callback(f"Error creating {archive_format} archive: {str(e)}", -1)
-        return False
-    finally:
-        shutil.rmtree(temp_dir)
+
 
 def _create_single_file_compression(output_path, source_paths, compression_format, progress_callback=None):
     """
-    Create single file compression format (bz2, xz, lzma)
+    Create single file compression format (bz2, xz, lzma, gz)
     These formats can only compress single files, so need to create tar first, then compress
     """
     try:
-        import patoolib
-    except ImportError:
-        raise ImportError("patool is required for this format. Install with: pip install patool")
-    
-    # Create temporary directory
-    temp_dir = tempfile.mkdtemp()
-    try:
-        # Step 1: Create tar file
-        base_name = os.path.splitext(os.path.basename(output_path))[0]
-        tar_path = os.path.join(temp_dir, f"{base_name}.tar")
-        
-        if progress_callback:
-            progress_callback(f"Creating intermediate tar file...", 50)
-        
-        # Create tar file
-        patoolib.create_archive(tar_path, source_paths)
-        
-        if not os.path.exists(tar_path):
-            raise RuntimeError("Failed to create intermediate tar file")
-        
-        # Step 2: Compress tar file
-        if progress_callback:
-            progress_callback(f"Compressing tar file with {compression_format}...", 70)
-        
-        # Use patool to compress tar file
-        patoolib.create_archive(output_path, [tar_path])
-        
-        if progress_callback:
-            progress_callback(f"{compression_format} archive created", 90)
+        # Create temporary directory
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # Step 1: Create tar file using tar command
+            base_name = os.path.splitext(os.path.basename(output_path))[0]
+            tar_path = os.path.join(temp_dir, f"{base_name}.tar")
             
-        return True
+            if progress_callback:
+                progress_callback(f"Creating intermediate tar file...", 30)
+            
+            # Build tar command
+            cmd = ["tar", "-c", "-f", tar_path]
+            
+            # Process source paths
+            if len(source_paths) == 1:
+                source_path = source_paths[0]
+                if os.path.isdir(source_path):
+                    # For directories, add directory contents
+                    work_dir = os.path.dirname(source_path) or "."
+                    rel_path = os.path.basename(source_path)
+                    cmd.append(rel_path)
+                else:
+                    # For files, use directory containing the file
+                    work_dir = os.path.dirname(source_path) or "."
+                    rel_path = os.path.basename(source_path)
+                    cmd.append(rel_path)
+            else:
+                # Multiple sources - use parent directory as working directory
+                work_dir = os.path.commonpath([os.path.dirname(p) if os.path.isfile(p) else p for p in source_paths])
+                for source_path in source_paths:
+                    if os.path.isfile(source_path):
+                        cmd.append(os.path.basename(source_path))
+                    elif os.path.isdir(source_path):
+                        cmd.append(os.path.basename(source_path))
+            
+            # Run tar command
+            result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=30)
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"tar creation failed: {result.stderr}")
+            
+            if not os.path.exists(tar_path):
+                raise RuntimeError("Failed to create intermediate tar file")
+            
+            # Step 2: Compress tar file using appropriate command
+            if progress_callback:
+                progress_callback(f"Compressing tar file with {compression_format}...", 60)
+            
+            # Build compression command based on format
+            if compression_format == "gz":
+                try:
+                    gzip_tool = _get_cli_tool("gzip")
+                    cmd = [gzip_tool, "-c", tar_path]
+                except FileNotFoundError:
+                    # Fallback to system gzip
+                    cmd = ["gzip", "-c", tar_path]
+                output_file = open(output_path, "wb")
+                result = subprocess.run(cmd, stdout=output_file, stderr=subprocess.PIPE)
+                output_file.close()
+            elif compression_format == "bz2":
+                try:
+                    bzip2_tool = _get_cli_tool("bzip2")
+                    cmd = [bzip2_tool, "-c", tar_path]
+                except FileNotFoundError:
+                    # Fallback to system bzip2
+                    cmd = ["bzip2", "-c", tar_path]
+                output_file = open(output_path, "wb")
+                result = subprocess.run(cmd, stdout=output_file, stderr=subprocess.PIPE)
+                output_file.close()
+            elif compression_format == "xz":
+                try:
+                    xz_tool = _get_cli_tool("xz")
+                    cmd = [xz_tool, "-c", tar_path]
+                    output_file = open(output_path, "wb")
+                    result = subprocess.run(cmd, stdout=output_file, stderr=subprocess.PIPE)
+                    output_file.close()
+                except FileNotFoundError:
+                    # Fallback to 7zz tool
+                    try:
+                        sevenz_tool = _get_cli_tool("7zz")
+                        cmd = [sevenz_tool, "a", "-txz", output_path, tar_path]
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                    except FileNotFoundError:
+                        # Final fallback to system xz
+                        cmd = ["xz", "-c", tar_path]
+                        output_file = open(output_path, "wb")
+                        result = subprocess.run(cmd, stdout=output_file, stderr=subprocess.PIPE)
+                        output_file.close()
+            elif compression_format == "lzma":
+                # Use Python's lzma module directly
+                try:
+                    import lzma
+                    with open(tar_path, 'rb') as f_in:
+                        with lzma.open(output_path, 'wb') as f_out:
+                            shutil.copyfileobj(f_in, f_out)
+                    # Create a dummy successful result
+                    class DummyResult:
+                        def __init__(self):
+                            self.returncode = 0
+                            self.stderr = ""
+                    result = DummyResult()
+                except Exception as e:
+                    raise RuntimeError(f"Failed to create LZMA archive: {str(e)}")
+            else:
+                raise ValueError(f"Unsupported compression format: {compression_format}")
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"Compression failed: {result.stderr}")
+            
+            if progress_callback:
+                progress_callback(f"{compression_format} archive created", 90)
+                
+            return True
+        finally:
+            shutil.rmtree(temp_dir)
     except Exception as e:
         if progress_callback:
             progress_callback(f"Error creating {compression_format} archive: {str(e)}", -1)
         return False
-    finally:
-        shutil.rmtree(temp_dir)
 
 def _create_zip_with_cli(output_path, source_paths, progress_callback=None, password=None):
     """Create ZIP file using zip CLI tool"""
     try:
         zip_tool = _get_cli_tool("zip")
     except FileNotFoundError:
-        # Fallback to patool if zip tool not found
-        return _create_with_patool(output_path, source_paths, "zip", progress_callback, password)
+        # If zip tool is not found, raise an error instead of falling back to patool
+        raise RuntimeError("zip tool not found. Please install zip command-line tool")
     
     # Build zip command - use working directory approach
     temp_dir = None  # Initialize temp_dir to None
@@ -790,13 +654,11 @@ def _create_zip_with_cli(output_path, source_paths, progress_callback=None, pass
 
 def _create_cab_with_cli(output_path, source_paths, progress_callback=None):
     """Create CAB archive file using gcab tool"""
-    try:
-        gcab_tool = _get_cli_tool("gcab")
-    except FileNotFoundError:
-        # Try to get gcab from system path
-        gcab_tool = shutil.which("gcab")
-        if not gcab_tool:
-            raise RuntimeError("gcab tool not found. Please install with: brew install gcab")
+    # Use project's built-in gcab tool directly
+    gcab_tool = os.path.join(CLI_BASE_PATH, "Universal", "gcab")
+    
+    if not os.path.exists(gcab_tool):
+        raise RuntimeError(f"Built-in gcab tool not found at {gcab_tool}")
     
     # Create temporary directory for source files
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -823,12 +685,12 @@ def _create_cab_with_cli(output_path, source_paths, progress_callback=None):
             # Update progress
             if progress_callback:
                 progress = (i + 1) / len(source_paths) * 50  # First half of progress for copying files
-                progress_callback(progress)
+                progress_callback(f"Copying files for CAB archive...", progress)
         
         if not copied_files:
             raise ValueError("No valid source files found")
         
-        # Build gcab command
+        # Build gcab command for CAB format
         cmd = [gcab_tool, "-c", "-n", output_path]
         cmd.extend([str(f) for f in copied_files])
         
@@ -844,7 +706,7 @@ def _create_cab_with_cli(output_path, source_paths, progress_callback=None):
             
             # Update final progress
             if progress_callback:
-                progress_callback(100)
+                progress_callback("CAB archive created successfully", 100)
                 
             return True
         except subprocess.CalledProcessError as e:
@@ -917,6 +779,81 @@ def _create_rar_with_cli(output_path, source_paths, progress_callback=None, pass
         # Clean up temporary directory if it was created
         if temp_dir and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
+
+def _create_tar_with_cli(output_path, source_paths, archive_format, progress_callback=None, password=None):
+    """Create tar file using system tar command"""
+    try:
+        if progress_callback:
+            progress_callback(f"Creating {archive_format} archive with tar command...", 0)
+        
+        # Ensure output path is absolute
+        output_path_abs = os.path.abspath(output_path)
+        
+        # Build tar command based on format
+        cmd = ["tar", "-c"]
+        
+        # Add compression options based on format
+        if archive_format == "tar.gz" or archive_format == "tgz":
+            cmd.append("-z")
+        elif archive_format == "tar.bz2" or archive_format == "tbz2":
+            cmd.append("-j")
+        elif archive_format == "tar.xz" or archive_format == "txz":
+            cmd.append("-J")
+        
+        # Add output file option
+        cmd.extend(["-f", output_path_abs])
+        
+        # Handle password protection for zipx format
+        if archive_format == "zipx" and password:
+            # For zipx, we'll create a standard zip with password protection
+            return _create_zip_with_cli(output_path, source_paths, progress_callback, password)
+        
+        # Process source paths
+        if len(source_paths) == 1:
+            source_path = source_paths[0]
+            if os.path.isdir(source_path):
+                # For directories, add directory contents
+                work_dir = os.path.dirname(source_path) or "."
+                rel_path = os.path.basename(source_path)
+                cmd.append(rel_path)
+            else:
+                # For files, use directory containing the file
+                work_dir = os.path.dirname(source_path) or "."
+                rel_path = os.path.basename(source_path)
+                cmd.append(rel_path)
+        else:
+            # Multiple sources - use parent directory as working directory
+            work_dir = os.path.commonpath([os.path.dirname(p) if os.path.isfile(p) else p for p in source_paths])
+            for source_path in source_paths:
+                if os.path.isfile(source_path):
+                    cmd.append(os.path.basename(source_path))
+                elif os.path.isdir(source_path):
+                    cmd.append(os.path.basename(source_path))
+        
+        if progress_callback:
+            progress_callback(f"Running tar command for {archive_format}...", 50)
+        
+        # Run tar command
+        result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=30, progress_callback=progress_callback)
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"tar creation failed: {result.stderr}")
+        
+        # Handle zipx format (rename tar to zipx)
+        if archive_format == "zipx":
+            temp_path = output_path_abs + ".tmp"
+            os.rename(output_path_abs, temp_path)
+            os.rename(temp_path, output_path)
+        
+        if progress_callback:
+            progress_callback(f"{archive_format} archive created successfully", 100)
+        
+        return True
+    
+    except Exception as e:
+        if progress_callback:
+            progress_callback(f"Error creating {archive_format} archive: {str(e)}", -1)
+        return False
 
 def _create_7z_with_cli(output_path, source_paths, progress_callback=None, password=None):
     """Create 7z file using 7zz CLI tool"""
@@ -1129,11 +1066,8 @@ def extract_archive(archive_path, extract_to, progress_callback=None, password=N
                 # Use unar as fallback on failure
                 _extract_with_unar(archive_path, extract_to, progress_callback, password)
         elif archive_format in ["zipx"]:
-            # Use patool, fallback to unar on failure
-            try:
-                _extract_with_patool(archive_path, extract_to, progress_callback, password)
-            except Exception:
-                _extract_with_unar(archive_path, extract_to, progress_callback, password)
+            # Use unar directly for zipx format
+            _extract_with_unar(archive_path, extract_to, progress_callback, password)
         elif archive_format == "cab":
             # Prioritize using cabextract tool to extract CAB files
             try:
@@ -1381,60 +1315,60 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
         # Single file compression format
         import bz2
         import lzma
+        import tarfile
         
-        output_file = os.path.join(extract_to, os.path.basename(archive_path).rsplit('.', 1)[0])
+        # First, decompress the file to a temporary tar file
+        temp_tar = os.path.join(extract_to, os.path.basename(archive_path).rsplit('.', 1)[0] + '.tar')
         
-        if archive_format == "bz2":
-            with bz2.open(archive_path, 'rb') as f_in:
-                with open(output_file, 'wb') as f_out:
-                    # Use binary mode for reading and writing
-                    while True:
-                        chunk = f_in.read(8192)
-                        if not chunk:
-                            break
-                        f_out.write(chunk)
-        else:
-            with lzma.open(archive_path, 'rb') as f_in:
-                with open(output_file, 'wb') as f_out:
-                    # Use binary mode for reading and writing
-                    while True:
-                        chunk = f_in.read(8192)
-                        if not chunk:
-                            break
-                        f_out.write(chunk)
+        try:
+            if archive_format == "bz2":
+                with bz2.open(archive_path, 'rb') as f_in:
+                    with open(temp_tar, 'wb') as f_out:
+                        # Use binary mode for reading and writing
+                        while True:
+                            chunk = f_in.read(8192)
+                            if not chunk:
+                                break
+                            f_out.write(chunk)
+            else:
+                with lzma.open(archive_path, 'rb') as f_in:
+                    with open(temp_tar, 'wb') as f_out:
+                        # Use binary mode for reading and writing
+                        while True:
+                            chunk = f_in.read(8192)
+                            if not chunk:
+                                break
+                            f_out.write(chunk)
+            
+            # Now extract the tar file
+            with tarfile.open(temp_tar, 'r') as tarf:
+                members = tarf.getmembers()
+                total_members = len(members)
+                for i, member in enumerate(members):
+                    # 保留TAR文件的目录结构，但清理绝对路径
+                    if member.name.startswith('/') or member.name.startswith('./'):
+                        # 将绝对路径转换为相对路径，但保留目录结构
+                        member.name = os.path.relpath(member.name, '/')
+                        if member.name == '.':
+                            member.name = os.path.basename(member.name)
+                    tarf.extract(member, extract_to)
+                    if progress_callback:
+                        progress = ((i + 1) / total_members) * 100
+                        progress_callback(f"Extracting {member.name}", progress)
+            
+            # Clean up the temporary tar file
+            os.remove(temp_tar)
+            
+        except Exception as e:
+            # Clean up the temporary tar file if it exists
+            if os.path.exists(temp_tar):
+                os.remove(temp_tar)
+            raise e
         
         if progress_callback:
-            progress_callback(f"Extracted {output_file}", 100)
+            progress_callback(f"Extracted {archive_format} archive", 100)
 
-def _extract_with_patool(archive_path, extract_to, progress_callback=None, password=None):
-    """Extract using patool"""
-    try:
-        import patoolib
-    except ImportError:
-        raise ImportError("patool is required for this format")
-    
-    # patoolib doesn't directly support password, so we'll use unar for password-protected archives
-    if password:
-        _extract_with_unar(archive_path, extract_to, progress_callback, password)
-        return True
-    
-    patoolib.extract_archive(archive_path, outdir=extract_to)
-    
-    # 检查并警告潜在的绝对路径解压问题
-    if os.path.exists(extract_to):
-        # 检查解压目录中是否包含系统目录
-        for item in os.listdir(extract_to):
-            item_path = os.path.join(extract_to, item)
-            if os.path.isdir(item_path):
-                # 检查是否是常见的系统目录
-                if item in ['var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'sys', 'proc', 'dev']:
-                    if progress_callback:
-                        progress_callback(f"Warning: System directory '{item}' was extracted. This may indicate absolute paths in the archive.", -1)
-    
-    if progress_callback:
-        progress_callback("Archive extracted", 100)
-    
-    return True
+
 
 def _extract_rar_with_cli(archive_path, extract_to, progress_callback=None, password=None):
     """Extract RAR file using unrar CLI tool"""
