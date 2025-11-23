@@ -146,10 +146,16 @@ class DownloadThread(QThread):
                 
             except Exception as e:
                 print(f"DownloadThread exception: {e}")
+                # Clean up temp directory on exception
+                import shutil
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as cleanup_error:
+                    print(f"Failed to clean up temp directory: {cleanup_error}")
+                
                 error_result = {
                     "status": "error",
-                    "message": f"Download failed: {str(e)}",
-                    "temp_dir": temp_dir
+                    "message": f"Download failed: {str(e)}"
                 }
                 self.finished.emit(error_result)
             
@@ -184,7 +190,7 @@ class DownloadThread(QThread):
             self.wait(500)  # Wait another 500ms to ensure termination is complete
 
 class UpdateDialog(QWidget):
-    __version__ = "2.1.0A2" 
+    __version__ = "2.1.0A3" 
 
     def __init__(self):
         super().__init__()

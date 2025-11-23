@@ -122,12 +122,12 @@ def _get_archive_type(file_path):
         return "lzh"
     return None
 
-def _run_command_with_timeout(cmd, timeout=2, progress_callback=None):
+def _run_command_with_timeout(cmd, timeout=2, progress_callback=None, cwd=None):
     """Run command with timeout limit"""
     start_time = time.time()
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
         
         if progress_callback:
             elapsed = time.time() - start_time
@@ -355,13 +355,13 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
         if progress_callback:
             progress_callback(f"Starting {archive_format} archive creation...", 0)
         
-        # For password-protected ZIP files, use direct processing without wrapper directory
+        # For password-protected ZIP files, use CLI tool
         if archive_format == "zip" and password:
             if progress_callback:
-                progress_callback(f"Creating password-protected ZIP file directly...", 10)
+                progress_callback(f"Creating password-protected ZIP file with CLI tool...", 10)
             
-            # Use a specialized function for password-protected ZIP files
-            success = _create_password_protected_zip(output_path, source_paths, password, progress_callback)
+            # Use CLI tool for password-protected ZIP files
+            success = _create_zip_with_cli(output_path, source_paths, progress_callback, password)
             if not success:
                 raise RuntimeError(f"Failed to create password-protected ZIP archive")
         else:
@@ -370,10 +370,14 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
             temp_dir = tempfile.mkdtemp()
             wrapper_dir = os.path.join(temp_dir, archive_name)
             
-            # Ensure the wrapper directory doesn't already exist
-            if os.path.exists(wrapper_dir):
-                shutil.rmtree(wrapper_dir)
-            os.makedirs(wrapper_dir)
+            # Create the wrapper directory - ensure it doesn't already exist
+            try:
+                os.makedirs(wrapper_dir, exist_ok=False)
+            except FileExistsError:
+                # If directory already exists, remove it and create a new one
+                if os.path.exists(wrapper_dir):
+                    shutil.rmtree(wrapper_dir)
+                os.makedirs(wrapper_dir)
             
             try:
                 # Copy all source files to the wrapper directory
@@ -405,7 +409,10 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
                     progress_callback(f"Creating {archive_format} archive...", 40)
                     
                 success = False
-                if archive_format in ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz", "zipx"]:
+                if archive_format == "zip":
+                    # Use CLI tool for ZIP creation
+                    success = _create_zip_with_cli(output_path, [wrapped_source_path], progress_callback, password)
+                elif archive_format in ["tar", "tar.gz", "tar.bz2", "tar.xz", "zipx"]:
                     # Use patool for processing
                     success = _create_with_patool(output_path, [wrapped_source_path], archive_format, progress_callback, password)
                 elif archive_format in ["bz2", "xz", "lzma", "gz"]:
@@ -709,6 +716,78 @@ def _create_single_file_compression(output_path, source_paths, compression_forma
     finally:
         shutil.rmtree(temp_dir)
 
+def _create_zip_with_cli(output_path, source_paths, progress_callback=None, password=None):
+    """Create ZIP file using zip CLI tool"""
+    try:
+        zip_tool = _get_cli_tool("zip")
+    except FileNotFoundError:
+        # Fallback to patool if zip tool not found
+        return _create_with_patool(output_path, source_paths, "zip", progress_callback, password)
+    
+    # Build zip command - use working directory approach
+    temp_dir = None  # Initialize temp_dir to None
+    if len(source_paths) == 1:
+        # Single source - can use directly
+        source_path = source_paths[0]
+        if os.path.isdir(source_path):
+            # For directories, use relative path from parent directory
+            work_dir = os.path.dirname(source_path) or "."
+            rel_path = os.path.basename(source_path)
+        else:
+            # For files, use directory containing the file
+            work_dir = os.path.dirname(source_path) or "."
+            rel_path = os.path.basename(source_path)
+    else:
+        # Multiple sources - create temporary directory approach
+        temp_dir = tempfile.mkdtemp()
+        work_dir = temp_dir
+        rel_paths = []
+        
+        try:
+            for source_path in source_paths:
+                if os.path.isfile(source_path):
+                    dest_path = os.path.join(temp_dir, os.path.basename(source_path))
+                    shutil.copy2(source_path, dest_path)
+                    rel_paths.append(os.path.basename(source_path))
+                elif os.path.isdir(source_path):
+                    dest_path = os.path.join(temp_dir, os.path.basename(source_path))
+                    shutil.copytree(source_path, dest_path)
+                    rel_paths.append(os.path.basename(source_path))
+        except Exception:
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            raise
+        
+        source_paths = rel_paths
+    
+    try:
+        cmd = [zip_tool, "-r"]
+        if password:
+            cmd.extend(["-P", password])
+        cmd.append(output_path)
+        cmd.extend(source_paths if len(source_paths) > 1 else [rel_path])
+        
+        # Ensure output path is absolute
+        output_path_abs = os.path.abspath(output_path)
+        cmd[cmd.index(output_path)] = output_path_abs
+        
+        if progress_callback:
+            progress_callback(f"Creating ZIP archive with CLI tool...", 50)
+        
+        result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=2, progress_callback=progress_callback)
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"ZIP creation failed: {result.stderr}")
+        
+        if progress_callback:
+            progress_callback(f"ZIP archive created successfully", 90)
+        
+        return True
+    finally:
+        # Clean up temporary directory if it was created
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+
 def _create_cab_with_cli(output_path, source_paths, progress_callback=None):
     """Create CAB archive file using gcab tool"""
     try:
@@ -779,21 +858,65 @@ def _create_rar_with_cli(output_path, source_paths, progress_callback=None, pass
         # Fallback: Use unar/lsar
         return _create_with_unar(output_path, source_paths, "rar", progress_callback)
     
-    # Build rar command
-    cmd = [rar_tool, "a", "-r"]
-    if password:
-        cmd.extend(["-p" + password, "-y"])
+    # Build rar command - use working directory approach
+    temp_dir = None  # Initialize temp_dir to None
+    if len(source_paths) == 1:
+        # Single source - can use directly
+        source_path = source_paths[0]
+        if os.path.isdir(source_path):
+            # For directories, use relative path from parent directory
+            work_dir = os.path.dirname(source_path) or "."
+            rel_path = os.path.basename(source_path)
+        else:
+            # For files, use directory containing the file
+            work_dir = os.path.dirname(source_path) or "."
+            rel_path = os.path.basename(source_path)
     else:
-        cmd.append("-y")
-    cmd.append(output_path)
-    cmd.extend(source_paths)
+        # Multiple sources - create temporary directory approach
+        temp_dir = tempfile.mkdtemp()
+        work_dir = temp_dir
+        rel_paths = []
+        
+        try:
+            for source_path in source_paths:
+                if os.path.isfile(source_path):
+                    dest_path = os.path.join(temp_dir, os.path.basename(source_path))
+                    shutil.copy2(source_path, dest_path)
+                    rel_paths.append(os.path.basename(source_path))
+                elif os.path.isdir(source_path):
+                    dest_path = os.path.join(temp_dir, os.path.basename(source_path))
+                    shutil.copytree(source_path, dest_path)
+                    rel_paths.append(os.path.basename(source_path))
+        except Exception:
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            raise
+        
+        source_paths = rel_paths
     
-    result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
-    
-    if result.returncode != 0:
-        raise RuntimeError(f"RAR creation failed: {result.stderr}")
-    
-    return True
+    try:
+        cmd = [rar_tool, "a", "-r"]
+        if password:
+            cmd.extend(["-p" + password, "-y"])
+        else:
+            cmd.append("-y")
+        cmd.append(output_path)
+        cmd.extend(source_paths if len(source_paths) > 1 else [rel_path])
+        
+        # Ensure output path is absolute
+        output_path_abs = os.path.abspath(output_path)
+        cmd[cmd.index(output_path)] = output_path_abs
+        
+        result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=2, progress_callback=progress_callback)
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"RAR creation failed: {result.stderr}")
+        
+        return True
+    finally:
+        # Clean up temporary directory if it was created
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
 
 def _create_7z_with_cli(output_path, source_paths, progress_callback=None, password=None):
     """Create 7z file using 7zz CLI tool"""
@@ -804,20 +927,65 @@ def _create_7z_with_cli(output_path, source_paths, progress_callback=None, passw
         _create_with_unar(output_path, source_paths, "7z", progress_callback)
         return True
     
-    cmd = [sevenz_tool, "a"]
-    if password:
-        cmd.extend(["-p" + password, "-y"])
+    # Build 7z command - use working directory approach
+    temp_dir = None  # Initialize temp_dir to None
+    if len(source_paths) == 1:
+        # Single source - can use directly
+        source_path = source_paths[0]
+        if os.path.isdir(source_path):
+            # For directories, use relative path from parent directory
+            work_dir = os.path.dirname(source_path) or "."
+            rel_path = os.path.basename(source_path)
+        else:
+            # For files, use directory containing the file
+            work_dir = os.path.dirname(source_path) or "."
+            rel_path = os.path.basename(source_path)
     else:
-        cmd.append("-y")
-    cmd.append(output_path)
-    cmd.extend(source_paths)
+        # Multiple sources - create temporary directory approach
+        temp_dir = tempfile.mkdtemp()
+        work_dir = temp_dir
+        rel_paths = []
+        
+        try:
+            for source_path in source_paths:
+                if os.path.isfile(source_path):
+                    dest_path = os.path.join(temp_dir, os.path.basename(source_path))
+                    shutil.copy2(source_path, dest_path)
+                    rel_paths.append(os.path.basename(source_path))
+                elif os.path.isdir(source_path):
+                    dest_path = os.path.join(temp_dir, os.path.basename(source_path))
+                    shutil.copytree(source_path, dest_path)
+                    rel_paths.append(os.path.basename(source_path))
+        except Exception:
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            raise
+        
+        source_paths = rel_paths
     
-    result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
-    
-    if result.returncode != 0:
-        raise RuntimeError(f"7z creation failed: {result.stderr}")
-    
-    return True
+    try:
+        cmd = [sevenz_tool, "a"]
+        if password:
+            cmd.extend(["-p" + password, "-y"])
+        else:
+            cmd.append("-y")
+        cmd.append(output_path)
+        cmd.extend(source_paths if len(source_paths) > 1 else [rel_path])
+        
+        # Ensure output path is absolute
+        output_path_abs = os.path.abspath(output_path)
+        cmd[cmd.index(output_path)] = output_path_abs
+        
+        result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=2, progress_callback=progress_callback)
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"7z creation failed: {result.stderr}")
+        
+        return True
+    finally:
+        # Clean up temporary directory if it was created
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
 
 def _create_iso_with_system(output_path, source_paths, progress_callback=None):
     """Create ISO file using system command"""
@@ -826,12 +994,15 @@ def _create_iso_with_system(output_path, source_paths, progress_callback=None):
     
     source_dir = source_paths[0]
     
+    # Ensure output path is absolute
+    output_path_abs = os.path.abspath(output_path)
+    
     # Try using hdiutil (macOS)
     if platform.system() == "Darwin":
-        cmd = ["hdiutil", "makehybrid", "-o", output_path, "-hfs", "-iso", "-joliet", source_dir]
+        cmd = ["hdiutil", "makehybrid", "-o", output_path_abs, "-hfs", "-iso", "-joliet", source_dir]
     else:
         # Other systems use mkisofs
-        cmd = ["mkisofs", "-o", output_path, "-J", "-R", source_dir]
+        cmd = ["mkisofs", "-o", output_path_abs, "-J", "-R", source_dir]
     
     result = _run_command_with_timeout(cmd, timeout=60, progress_callback=progress_callback)
     
@@ -1056,6 +1227,18 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
                         total_files = len(file_list)
                         for i, file_name in enumerate(file_list):
                             try:
+                                # 清理绝对路径，防止解压到系统目录
+                                if file_name.startswith('/') or file_name.startswith('./'):
+                                    # 将绝对路径转换为相对路径
+                                    file_name = os.path.relpath(file_name, '/')
+                                    if file_name == '.':
+                                        continue  # 跳过当前目录引用
+                                
+                                # 防止路径遍历攻击（../）
+                                if '..' in file_name.split(os.sep):
+                                    # 跳过包含父目录引用的路径
+                                    continue
+                                
                                 zipf.extract(file_name, extract_to)
                             except (RuntimeError, pyzipper.BadZipFile) as e:
                                 error_msg = str(e).lower()
@@ -1106,6 +1289,18 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
             total_files = len(file_list)
             for i, file_name in enumerate(file_list):
                 try:
+                    # 清理绝对路径，防止解压到系统目录
+                    if file_name.startswith('/') or file_name.startswith('./'):
+                        # 将绝对路径转换为相对路径
+                        file_name = os.path.relpath(file_name, '/')
+                        if file_name == '.':
+                            continue  # 跳过当前目录引用
+                    
+                    # 防止路径遍历攻击（../）
+                    if '..' in file_name.split(os.sep):
+                        # 跳过包含父目录引用的路径
+                        continue
+                    
                     # 保留压缩包的目录结构
                     if file_name.endswith('/'):
                         # 如果是目录，创建完整路径
@@ -1129,6 +1324,20 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
                 if progress_callback:
                     progress = ((i + 1) / total_files) * 100
                     progress_callback(f"Extracting {file_name}", progress)
+        
+        # 检查解压后的目录中是否包含系统目录
+        if progress_callback:
+            try:
+                # 检查解压后的目录中是否包含系统目录
+                for root, dirs, files in os.walk(extract_to):
+                    for dir_name in dirs:
+                        # 检查是否是系统目录
+                        if dir_name.lower() in ['bin', 'sbin', 'usr', 'etc', 'var', 'sys', 'proc', 'dev', 'boot', 'lib', 'lib64', 'opt', 'run', 'srv', 'tmp']:
+                            full_path = os.path.join(root, dir_name)
+                            progress_callback(f"警告: 检测到系统目录 {full_path}", 50)
+            except Exception as e:
+                # 忽略检查过程中的错误
+                pass
     
     elif archive_format.startswith("tar"):
         mode = "r"
@@ -1153,6 +1362,20 @@ def _extract_with_python(archive_path, extract_to, archive_format, progress_call
                 if progress_callback:
                     progress = ((i + 1) / total_members) * 100
                     progress_callback(f"Extracting {member.name}", progress)
+        
+        # 检查解压后的目录中是否包含系统目录
+        if progress_callback:
+            try:
+                # 检查解压后的目录中是否包含系统目录
+                for root, dirs, files in os.walk(extract_to):
+                    for dir_name in dirs:
+                        # 检查是否是系统目录
+                        if dir_name.lower() in ['bin', 'sbin', 'usr', 'etc', 'var', 'sys', 'proc', 'dev', 'boot', 'lib', 'lib64', 'opt', 'run', 'srv', 'tmp']:
+                            full_path = os.path.join(root, dir_name)
+                            progress_callback(f"警告: 检测到系统目录 {full_path}", 50)
+            except Exception as e:
+                # 忽略检查过程中的错误
+                pass
     
     elif archive_format in ["bz2", "xz", "lzma"]:
         # Single file compression format
@@ -1193,12 +1416,25 @@ def _extract_with_patool(archive_path, extract_to, progress_callback=None, passw
     # patoolib doesn't directly support password, so we'll use unar for password-protected archives
     if password:
         _extract_with_unar(archive_path, extract_to, progress_callback, password)
-        return
+        return True
     
     patoolib.extract_archive(archive_path, outdir=extract_to)
     
+    # 检查并警告潜在的绝对路径解压问题
+    if os.path.exists(extract_to):
+        # 检查解压目录中是否包含系统目录
+        for item in os.listdir(extract_to):
+            item_path = os.path.join(extract_to, item)
+            if os.path.isdir(item_path):
+                # 检查是否是常见的系统目录
+                if item in ['var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'sys', 'proc', 'dev']:
+                    if progress_callback:
+                        progress_callback(f"Warning: System directory '{item}' was extracted. This may indicate absolute paths in the archive.", -1)
+    
     if progress_callback:
         progress_callback("Archive extracted", 100)
+    
+    return True
 
 def _extract_rar_with_cli(archive_path, extract_to, progress_callback=None, password=None):
     """Extract RAR file using unrar CLI tool"""
@@ -1259,6 +1495,17 @@ def _extract_rar_with_cli(archive_path, extract_to, progress_callback=None, pass
             
             if not extracted_files:
                 raise RuntimeError("Password required for encrypted RAR file")
+    
+    # 检查并警告潜在的绝对路径解压问题
+    if os.path.exists(extract_to):
+        # 检查解压目录中是否包含系统目录
+        for item in os.listdir(extract_to):
+            item_path = os.path.join(extract_to, item)
+            if os.path.isdir(item_path):
+                # 检查是否是常见的系统目录
+                if item in ['var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'sys', 'proc', 'dev']:
+                    if progress_callback:
+                        progress_callback(f"Warning: System directory '{item}' was extracted. This may indicate absolute paths in the archive.", -1)
 
 def _extract_7z_with_cli(archive_path, extract_to, progress_callback=None, password=None):
     """Extract 7z file using 7zz CLI tool"""
@@ -1317,6 +1564,17 @@ def _extract_7z_with_cli(archive_path, extract_to, progress_callback=None, passw
             raise RuntimeError("Password required for encrypted 7Z file")
         raise RuntimeError(f"7z extraction failed: {result.stderr}")
     
+    # 检查并警告潜在的绝对路径解压问题
+    if os.path.exists(extract_to):
+        # 检查解压目录中是否包含系统目录
+        for item in os.listdir(extract_to):
+            item_path = os.path.join(extract_to, item)
+            if os.path.isdir(item_path):
+                # 检查是否是常见的系统目录
+                if item in ['var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'sys', 'proc', 'dev']:
+                    if progress_callback:
+                        progress_callback(f"Warning: System directory '{item}' was extracted. This may indicate absolute paths in the archive.", -1)
+    
     return True
 
 def _extract_iso_with_system(archive_path, extract_to, progress_callback=None):
@@ -1369,6 +1627,17 @@ def _extract_iso_with_system(archive_path, extract_to, progress_callback=None):
             if result.returncode != 0:
                 raise RuntimeError(f"Failed to copy files from ISO: {result.stderr}")
             
+            # 检查并警告潜在的绝对路径解压问题
+            if os.path.exists(extract_to):
+                # 检查解压目录中是否包含系统目录
+                for item in os.listdir(extract_to):
+                    item_path = os.path.join(extract_to, item)
+                    if os.path.isdir(item_path):
+                        # 检查是否是常见的系统目录
+                        if item in ['var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'sys', 'proc', 'dev']:
+                            if progress_callback:
+                                progress_callback(f"Warning: System directory '{item}' was extracted. This may indicate absolute paths in the archive.", -1)
+            
             if progress_callback:
                 progress_callback("ISO extracted successfully", 100)
             
@@ -1386,6 +1655,17 @@ def _extract_iso_with_system(archive_path, extract_to, progress_callback=None):
                 
                 if result.returncode != 0:
                     raise RuntimeError(f"7z extraction failed: {result.stderr}")
+                
+                # 检查并警告潜在的绝对路径解压问题
+                if os.path.exists(extract_to):
+                    # 检查解压目录中是否包含系统目录
+                    for item in os.listdir(extract_to):
+                        item_path = os.path.join(extract_to, item)
+                        if os.path.isdir(item_path):
+                            # 检查是否是常见的系统目录
+                            if item in ['var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'sys', 'proc', 'dev']:
+                                if progress_callback:
+                                    progress_callback(f"Warning: System directory '{item}' was extracted. This may indicate absolute paths in the archive.", -1)
                 
                 if progress_callback:
                     progress_callback("ISO extracted with 7z", 100)
@@ -1405,6 +1685,17 @@ def _extract_iso_with_system(archive_path, extract_to, progress_callback=None):
             
             if result.returncode != 0:
                 raise RuntimeError(f"ISO extraction failed: {result.stderr}")
+            
+            # 检查并警告潜在的绝对路径解压问题
+            if os.path.exists(extract_to):
+                # 检查解压目录中是否包含系统目录
+                for item in os.listdir(extract_to):
+                    item_path = os.path.join(extract_to, item)
+                    if os.path.isdir(item_path):
+                        # 检查是否是常见的系统目录
+                        if item in ['var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'sys', 'proc', 'dev']:
+                            if progress_callback:
+                                progress_callback(f"Warning: System directory '{item}' was extracted. This may indicate absolute paths in the archive.", -1)
             
             if progress_callback:
                 progress_callback("ISO extracted successfully", 100)
@@ -1433,6 +1724,17 @@ def _extract_cab_with_cabextract(archive_path, extract_to, progress_callback=Non
     
     if result.returncode != 0:
         raise RuntimeError(f"CAB extraction failed: {result.stderr}")
+    
+    # 检查并警告潜在的绝对路径解压问题
+    if os.path.exists(extract_to):
+        # 检查解压目录中是否包含系统目录
+        for item in os.listdir(extract_to):
+            item_path = os.path.join(extract_to, item)
+            if os.path.isdir(item_path):
+                # 检查是否是常见的系统目录
+                if item in ['var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'sys', 'proc', 'dev']:
+                    if progress_callback:
+                        progress_callback(f"Warning: System directory '{item}' was extracted. This may indicate absolute paths in the archive.", -1)
 
 def _extract_with_unar(archive_path, extract_to, progress_callback=None, password=None):
     """Use unar as ultimate fallback"""
@@ -1466,6 +1768,19 @@ def _extract_with_unar(archive_path, extract_to, progress_callback=None, passwor
         elif not password and any(keyword in error_msg for keyword in ["password", "encrypted", "authentication", "required", "requires a password"]):
             raise RuntimeError("Password required for encrypted archive")
         raise RuntimeError(f"Extraction failed: {result.stderr}")
+    
+    # 即使unar命令成功执行，也需要检查解压结果，防止创建系统目录
+    # 检查是否创建了var目录或其他系统目录
+    system_dirs = ['var', 'etc', 'usr', 'bin', 'sbin', 'lib', 'tmp', 'dev', 'proc', 'sys']
+    for root, dirs, files in os.walk(extract_to):
+        for dir_name in dirs:
+            if dir_name in system_dirs:
+                # 如果发现系统目录，需要检查是否是绝对路径导致的问题
+                full_path = os.path.join(root, dir_name)
+                rel_path = os.path.relpath(full_path, extract_to)
+                # 如果是直接在解压根目录下创建的系统目录，可能是绝对路径问题
+                if os.path.dirname(rel_path) == '' and dir_name in ['var', 'tmp']:
+                    print(f"Warning: Detected potential system directory extraction: {rel_path}")
     
     # 即使命令成功执行，也需要检查是否真的解压了文件
     if not password:
@@ -2176,7 +2491,8 @@ def _add_7z_with_cli(archive_path, file_to_add_path, progress_callback=None):
 
 # Test function
 def batch_extract_archives(archive_paths, extract_to_base, progress_callback=None, password=None, 
-                           overwrite_existing=False, create_subfolders=True, error_callback=None):
+                           overwrite_existing=False, create_subfolders=True, error_callback=None,
+                           password_callback=None, password_detector=None):
     """
     Extract multiple archive files in batch.
     
@@ -2188,6 +2504,8 @@ def batch_extract_archives(archive_paths, extract_to_base, progress_callback=Non
         overwrite_existing (bool): Whether to overwrite existing files.
         create_subfolders (bool): Whether to create subfolders for each archive.
         error_callback (function): Optional callback for individual file error updates (filename, error).
+        password_callback (function): Optional callback to request password from user (archive_path, format, is_protected).
+        password_detector (PasswordDetector): Optional password detector instance for checking protected archives.
         
     Returns:
         dict: Results dictionary with 'success_count', 'error_count', 'results' list.
@@ -2197,6 +2515,17 @@ def batch_extract_archives(archive_paths, extract_to_base, progress_callback=Non
         'error_count': 0,
         'results': []
     }
+    
+    # 初始化密码检测器
+    if password_detector is None:
+        try:
+            from password_detector import PasswordDetector
+            password_detector = PasswordDetector()
+        except ImportError:
+            password_detector = None
+    
+    # 缓存密码避免重复询问
+    password_cache = {}
     
     total_archives = len(archive_paths)
     
@@ -2218,6 +2547,49 @@ def batch_extract_archives(archive_paths, extract_to_base, progress_callback=Non
             
             os.makedirs(archive_extract_to, exist_ok=True)
             
+            # 检测密码保护状态
+            current_password = password
+            if password_detector and password_callback:
+                try:
+                    detection_result = password_detector.is_password_protected(archive_path)
+                    if detection_result['is_protected']:
+                        archive_format = detection_result.get('format', 'unknown')
+                        
+                        # 检查是否已有该格式的密码
+                        if archive_format not in password_cache:
+                            # 询问用户输入密码
+                            if progress_callback:
+                                progress_callback(f"检测到密码保护的 {archive_format.upper()} 文件: {os.path.basename(archive_path)}", 
+                                                (i / total_archives) * 100)
+                            
+                            requested_password = password_callback(archive_path, archive_format, True)
+                            if requested_password:
+                                password_cache[archive_format] = requested_password
+                                current_password = requested_password
+                            else:
+                                # 用户取消操作
+                                results['error_count'] += 1
+                                error_msg = "用户取消密码输入"
+                                if error_callback:
+                                    error_callback(archive_path, error_msg)
+                                results['results'].append({
+                                    'archive_path': archive_path,
+                                    'extract_to': archive_extract_to,
+                                    'status': 'cancelled',
+                                    'error': error_msg
+                                })
+                                continue
+                        else:
+                            current_password = password_cache[archive_format]
+                    elif detection_result.get('error'):
+                        # 检测出错，但仍然尝试正常解压
+                        if error_callback:
+                            error_callback(archive_path, f"密码检测失败: {detection_result['error']}")
+                except Exception as e:
+                    # 密码检测失败，继续尝试正常解压
+                    if error_callback:
+                        error_callback(archive_path, f"密码检测出错: {str(e)}")
+            
             # Create individual progress callback for this archive
             def archive_progress(message, percent):
                 if progress_callback:
@@ -2227,7 +2599,7 @@ def batch_extract_archives(archive_paths, extract_to_base, progress_callback=Non
             
             # Extract the archive
             success = extract_archive(archive_path, archive_extract_to, 
-                                    progress_callback=archive_progress, password=password)
+                                    progress_callback=archive_progress, password=current_password)
             
             if success:
                 results['success_count'] += 1
@@ -2263,7 +2635,7 @@ def batch_extract_archives(archive_paths, extract_to_base, progress_callback=Non
     
     # Final progress update
     if progress_callback:
-        progress_callback(f"Batch extraction complete: {results['success_count']}/{total_archives} successful", 100)
+        progress_callback(results['success_count'], total_archives, f"Batch extraction complete: {results['success_count']}/{total_archives} successful")
     
     return results
 

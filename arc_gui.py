@@ -18,7 +18,8 @@ from support.toggle import ThemeManager
 # Add the current directory to Python path to import convertzip module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from support.archive_manager import create_archive, extract_archive, add_to_archive, list_archive_contents, SUPPORTED_ARCHIVE_FORMATS, batch_extract_archives
-from support.password_detector import PasswordDetector, detect_password_protection
+from support.password_detector import PasswordDetector
+from password_dialog import PasswordDialog, SimplePasswordDialog
 
 # Batch Drop Zone Widget for archive files
 class BatchDropZoneWidget(QFrame):
@@ -415,18 +416,19 @@ class ListZipContentsWorker(QObject):
 
 class BatchExtractWorker(QObject):
     """Worker for batch archive extraction"""
-    finished = Signal(dict)  # Emits result dictionary with success/failure counts
-    progress_updated = Signal(str, int)  # Emits current progress message and percentage
+    finished = Signal(int, int)  # Emits success_count, failed_count
+    progress_updated = Signal(int, int, str, int, int)  # processed_count, total_count, current_file, success_count, failed_count
     conversion_error = Signal(str)  # Emits error messages
     individual_progress = Signal(str, str, int)  # Emits archive name, message, percentage
 
-    def __init__(self, archive_paths, dest_folder, create_subfolders=True, overwrite_files=False):
+    def __init__(self, archive_paths, dest_folder, create_subfolders=True, overwrite_files=False, parent_gui=None):
         super().__init__()
         self.archive_paths = archive_paths
         self.dest_folder = dest_folder
         self.create_subfolders = create_subfolders
         self.overwrite_files = overwrite_files
         self.is_stopped = False
+        self.parent_gui = parent_gui  # Reference to main GUI for password dialogs
 
     def stop(self):
         """Stop the batch extraction process"""
@@ -444,27 +446,69 @@ class BatchExtractWorker(QObject):
             if not os.path.exists(self.dest_folder):
                 os.makedirs(self.dest_folder)
             
-            def progress_callback(current, total, message=""):
+            # Initialize password detector
+            password_detector = PasswordDetector()
+            
+            # Track statistics during processing
+            self.success_count = 0
+            self.failed_count = 0
+            
+            def progress_callback(current, total, current_file=""):
                 if self.is_stopped:
                     return  # Stop processing if requested
-                    
-                overall_percentage = int((current / total) * 100)
-                progress_msg = f"Processing {current}/{total} archives"
-                if message:
-                    progress_msg += f" - {message}"
-                self.progress_updated.emit(progress_msg, overall_percentage)
+                
+                # Handle different call patterns
+                if isinstance(current, str):
+                    # Called with (message, progress_percent) pattern
+                    message = current
+                    progress_percent = total
+                    current_file = ""  # Reset current file for message-only updates
+                    # For message-only updates, use current/total as 0/1 to avoid int() conversion errors
+                    current_val = 0
+                    total_val = 1
+                else:
+                    # Called with (current, total, current_file) pattern
+                    message = current_file if current_file else ""
+                    progress_percent = (current / total * 100) if total > 0 else 0
+                    current_file = self.archive_paths[current - 1] if isinstance(current, int) and current <= len(self.archive_paths) else str(current_file)
+                    current_val = int(current) if isinstance(current, (int, float)) else 0
+                    total_val = int(total) if isinstance(total, (int, float)) else 1
+                
+                # Emit progress with all required parameters
+                self.progress_updated.emit(current_val, total_val, str(current_file), self.success_count, self.failed_count)
+            
+            def password_callback(archive_path, format_name, is_protected):
+                """Callback to request password from user via GUI"""
+                if self.is_stopped:
+                    return None
+                if self.parent_gui and hasattr(self.parent_gui, 'request_password'):
+                    try:
+                        # Request password from main GUI thread
+                        return self.parent_gui.request_password(archive_path, format_name, is_protected)
+                    except Exception:
+                        # If password request fails, return None
+                        return None
+                return None
+            
+            def error_callback(archive_path, error_message):
+                """Callback for individual archive errors"""
+                self.failed_count += 1  # Increment failed count
+                self.conversion_error.emit(f"Error processing {os.path.basename(archive_path)}: {error_message}")
             
             # Prepare options for batch extraction
             options = {
                 'create_subfolders': self.create_subfolders,
-                'overwrite': self.overwrite_files,
-                'progress_callback': progress_callback if not self.is_stopped else None
+                'overwrite_existing': self.overwrite_files,
+                'progress_callback': progress_callback if not self.is_stopped else None,
+                'password_callback': password_callback if not self.is_stopped else None,
+                'password_detector': password_detector,
+                'error_callback': error_callback
             }
             
             if self.is_stopped:
                 return
                 
-            # Call batch extraction function
+            # Call batch extraction function with password detection
             result = batch_extract_archives(
                 self.archive_paths,
                 self.dest_folder,
@@ -472,7 +516,10 @@ class BatchExtractWorker(QObject):
             )
             
             if not self.is_stopped:
-                self.finished.emit(result)
+                # Update final statistics
+                self.success_count = result.get('success_count', 0)
+                self.failed_count = result.get('error_count', 0)
+                self.finished.emit(self.success_count, self.failed_count)
                 
         except ValueError as e:
             self.conversion_error.emit(f"Input error: {str(e)}")
@@ -610,6 +657,35 @@ class ZipGUI(QMainWindow):
         # Password protection status for archive contents
         self.is_password_protected = False
         self._current_password = None
+        self._password_dialog = None
+
+    def request_password(self, archive_path, format_name, is_protected):
+        """Request password from user for a protected archive"""
+        archive_name = os.path.basename(archive_path)
+        title = "Password Required"
+        
+        if is_protected:
+            content = f"The archive '{archive_name}' ({format_name.upper()}) is password protected.\nPlease enter the password:"
+        else:
+            content = f"Enter password for archive '{archive_name}' ({format_name.upper()}):"
+        
+        # Create and show password dialog
+        self._password_dialog = PasswordDialog(
+            parent=self,
+            title=title,
+            content=content,
+            error_message=""
+        )
+        
+        # Show dialog and get result
+        if self._password_dialog.exec() == PasswordDialog.DialogCode.Accepted:
+            password = self._password_dialog.get_password()
+            self._password_dialog = None
+            return password
+        else:
+            # User canceled
+            self._password_dialog = None
+            return None
 
     def setup_ui(self):
         self.main_widget = QWidget(self)
@@ -1640,7 +1716,8 @@ class ZipGUI(QMainWindow):
             file_paths, 
             self.batch_extract_dest_path, 
             create_subfolders, 
-            overwrite_files
+            overwrite_files,
+            parent_gui=self  # Pass reference to main GUI for password dialogs
         )
         self.batch_extract_worker_thread = QThread()
         self.batch_extract_worker.moveToThread(self.batch_extract_worker_thread)

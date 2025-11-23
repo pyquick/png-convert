@@ -105,7 +105,7 @@ def convert_image(input_path, output_path, output_format, min_size=16, max_size=
             elif output_format.lower() in ["heic", "heif"]:
                 # HEIC/HEIF format support
                 if progress_callback:
-                    progress_callback(f"Converting to {output_format.upper()} format...", 70)
+                    progress_callback(70, 100, f"Converting to {output_format.upper()} format...")
                 # Try to save as HEIF if available, otherwise fallback
                 try:
                     img.save(output_path, format='HEIF', quality=quality)
@@ -135,7 +135,7 @@ def convert_image(input_path, output_path, output_format, min_size=16, max_size=
                 img.save(output_path, format=output_format.upper())
                 
             if progress_callback:
-                progress_callback(f"Successfully converted {input_path} to {output_path} ({output_format})", 100)
+                progress_callback(100, 100, f"Successfully converted {input_path} to {output_path} ({output_format})")
             else:
                 print(f"Successfully converted {input_path} to {output_path} ({output_format})")
         except Exception as e:
@@ -156,19 +156,19 @@ def _create_icns_internal(png_path, icns_path, min_size=16, max_size=None, progr
     if max_size is None:
         max_size = min(img.width, img.height)
         if progress_callback:
-            progress_callback(f"Auto-detected maximum size: {max_size}", 5)
+            progress_callback(5, 100, f"Auto-detected maximum size: {max_size}")
         else:
             print(f"Auto-detected maximum size: {max_size}")
     
     if progress_callback:
-        progress_callback(f"Source image size: {img.width}x{img.height}", 10)
+        progress_callback(10, 100, f"Source image size: {img.width}x{img.height}")
     else:
         print(f"Source image size: {img.width}x{img.height}")
     
     # Ensure the image is square
     if img.width != img.height:
         if progress_callback:
-            progress_callback("Warning: Image is not square. Cropping to square.", 15)
+            progress_callback(15, 100, "Warning: Image is not square. Cropping to square.")
         else:
             print("Warning: Image is not square. Cropping to square.")
         min_dimension = min(img.width, img.height)
@@ -195,7 +195,7 @@ def _create_icns_internal(png_path, icns_path, min_size=16, max_size=None, progr
             if min_size <= size <= max_size:
                 current_step += 1
                 if progress_callback:
-                    progress_callback(f"Generating size: {size}x{size}", 20 + int(60 * current_step / total_steps))
+                    progress_callback(20 + int(60 * current_step / total_steps), 100, f"Generating size: {size}x{size}")
                 else:
                     print(f"Generated size: {size}x{size}")
                 
@@ -213,7 +213,7 @@ def _create_icns_internal(png_path, icns_path, min_size=16, max_size=None, progr
                     current_step += 1
                     retina_size = retina_pairs[size]
                     if progress_callback:
-                        progress_callback(f"Generating retina size: {retina_size}x{retina_size}", 20 + int(60 * current_step / total_steps))
+                        progress_callback(20 + int(60 * current_step / total_steps), 100, f"Generating retina size: {retina_size}x{retina_size}")
                     else:
                         print(f"Generated retina size: {retina_size}x{retina_size}")
                     
@@ -225,7 +225,7 @@ def _create_icns_internal(png_path, icns_path, min_size=16, max_size=None, progr
         # Make sure we include max_size if it's not already included
         if max_size not in generated_sizes:
             if progress_callback:
-                progress_callback(f"Generating max size: {max_size}x{max_size}", 85)
+                progress_callback(85, 100, f"Generating max size: {max_size}x{max_size}")
             else:
                 print(f"Generated max size: {max_size}x{max_size}")
             
@@ -236,14 +236,14 @@ def _create_icns_internal(png_path, icns_path, min_size=16, max_size=None, progr
         
         # Use iconutil to create ICNS file (macOS only)
         if progress_callback:
-            progress_callback("Creating ICNS file with iconutil...", 90)
+            progress_callback(90, 100, "Creating ICNS file with iconutil...")
         else:
             print("Creating ICNS file with iconutil...")
             
         try:
             subprocess.run(["iconutil", "-c", "icns", iconset_dir, "-o", icns_path], check=True)
             if progress_callback:
-                progress_callback(f"Successfully converted {png_path} to {icns_path}", 100)
+                progress_callback(100, 100, f"Successfully converted {png_path} to {icns_path}")
             else:
                 print(f"Successfully converted {png_path} to {icns_path}")
                 print(f"Generated sizes: {sorted(set(generated_sizes))}")
@@ -251,8 +251,8 @@ def _create_icns_internal(png_path, icns_path, min_size=16, max_size=None, progr
             error_detail = e.stderr.decode() if e.stderr else str(e)
             error_msg = f"Error creating ICNS with iconutil: {error_detail}"
             if progress_callback:
-                progress_callback(error_msg, 90)
-                progress_callback("Falling back to Pillow method...", 90)
+                progress_callback(90, 100, error_msg)
+                progress_callback(90, 100, "Falling back to Pillow method...")
             else:
                 print(error_msg)
                 print("Falling back to Pillow method...")
@@ -261,8 +261,8 @@ def _create_icns_internal(png_path, icns_path, min_size=16, max_size=None, progr
         except Exception as e:
             error_msg = f"Unexpected error during iconutil conversion: {e}"
             if progress_callback:
-                progress_callback(error_msg, 90)
-                progress_callback("Falling back to Pillow method...", 90)
+                progress_callback(90, 100, error_msg)
+                progress_callback(90, 100, "Falling back to Pillow method...")
             else:
                 print(error_msg)
                 print("Falling back to Pillow method...")
@@ -276,7 +276,7 @@ def _fallback_method_internal(iconset_dir, icns_path, progress_callback=None):
     if not icon_files:
         error_msg = "No icons generated, cannot create ICNS file"
         if progress_callback:
-            progress_callback(error_msg, 100)
+            progress_callback(100, 100, error_msg)
         else:
             print(error_msg)
         return
@@ -306,7 +306,7 @@ def _fallback_method_internal(iconset_dir, icns_path, progress_callback=None):
     
     success_msg = f"Successfully converted using fallback method to {icns_path}"
     if progress_callback:
-        progress_callback(success_msg, 100)
+        progress_callback(100, 100, success_msg)
     else:
         print(success_msg)
 

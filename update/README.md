@@ -41,8 +41,8 @@ from update.download_update import download_and_apply_update
 # 假设从UpdateManager获取到了更新信息
 update_info = {
     "status": "update_available",
-    "download_url": "https://github.com/user/repo/releases/tag/v2.1.0A2",
-    "latest_version": "v2.1.0A2"  # 注意：需要完整的tag名称
+    "download_url": "https://github.com/user/repo/releases/tag/v2.1.0A3",
+    "latest_version": "v2.1.0A3"  # 注意：需要完整的tag名称
 }
 
 # 下载并应用更新
@@ -132,7 +132,7 @@ def perform_update():
 #### `download_update(tag_name: str) -> dict`
 下载并应用更新。
 
-- `tag_name`: 版本标签名称（如v2.1.0A2）
+- `tag_name`: 版本标签名称（如v2.1.0A3）
 
 返回字典结构：
 ```python
