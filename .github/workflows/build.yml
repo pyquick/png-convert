@@ -10,7 +10,7 @@ jobs:
     build:
         name: Build ARM64
         runs-on: macos-26
-        if: github.repository_owner == 'intsant'
+        if: github.repository_owner == 'pyquick'
         permissions:
             contents: write
         steps:
