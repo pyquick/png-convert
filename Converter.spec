@@ -275,5 +275,5 @@ app = BUNDLE(
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '11.7',
     },
-    version='2.1.0A3',
+    version='2.1.0A4',
 )

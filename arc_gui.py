@@ -15,260 +15,12 @@ from qfluentwidgets import *
 
 from con import CON
 from support.toggle import ThemeManager
+from support.GUI.arc_support import BatchDropZoneWidget
 # Add the current directory to Python path to import convertzip module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from support.archive_manager import create_archive, extract_archive, add_to_archive, list_archive_contents, SUPPORTED_ARCHIVE_FORMATS, batch_extract_archives
 from support.password_detector import PasswordDetector
 from password_dialog import PasswordDialog, SimplePasswordDialog
-
-# Batch Drop Zone Widget for archive files
-class BatchDropZoneWidget(QFrame):
-    """Custom widget for drag and drop archive file selection"""
-    files_dropped = Signal(list)  # Signal for multiple archive files dropped
-    
-    def __init__(self, placeholder_text="Drag archive files here or click to browse", parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.setMinimumHeight(100)  # 增加到100确保足够空间
-        self.setFixedHeight(100)   # 设置固定高度防止缩小
-        self.setMinimumWidth(200)  # 设置最小宽度
-        self.is_dark_mode = False  # Track current theme mode
-        
-        # Define supported archive formats
-        self.supported_formats = {
-            '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.cab', '.iso', '.arj', '.ace', '.lzh', '.lha'
-        }
-        
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setContentsMargins(10, 10, 10, 10)  # 设置内边距防止内容紧贴边框
-        
-        self.icon_label = QLabel("📁")
-        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_label.setStyleSheet("font-size: 20px;")
-        
-        self.text_label = QLabel(placeholder_text)
-        self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.text_label.setStyleSheet("color: #666; font-size: 12px;")
-        self.text_label.setWordWrap(True)
-        
-        layout.addWidget(self.icon_label)
-        layout.addWidget(self.text_label)
-        
-        self.drag_over = False
-        
-        # Click to browse
-        self.mousePressEvent = self.browse_files
-        
-        # Apply initial light theme style after all widgets are created
-        self._apply_light_theme_style()
-        
-    def sizeHint(self):
-        """Return fixed size hint to prevent resizing"""
-        return super().sizeHint()
-        
-    def minimumSizeHint(self):
-        """Return minimum size hint to prevent shrinking"""
-        return QSize(200, 100)
-        
-    def set_theme(self, is_dark_mode):
-        """Update the theme of the drag and drop area"""
-        self.is_dark_mode = is_dark_mode
-        if self.is_dark_mode:
-            self._apply_dark_theme_style()
-        else:
-            self._apply_light_theme_style()
-            
-    def _apply_light_theme_style(self):
-        """Apply light theme styles"""
-        self.setStyleSheet("""
-            QFrame {
-                border: 2px dashed #aaa;
-                border-radius: 10px;
-                background-color: #f9f9f9;
-            }
-            QFrame:hover {
-                border-color: #007acc;
-                background-color: #f0f8ff;
-            }
-            QFrame:drop {
-                border-color: #28a745;
-                background-color: #f0fff0;
-            }
-        """)
-        self.text_label.setStyleSheet("color: #666; font-size: 12px;")
-        
-    def _apply_dark_theme_style(self):
-        """Apply dark theme styles"""
-        self.setStyleSheet("""
-            QFrame {
-                border: 2px dashed #555;
-                border-radius: 10px;
-                background-color: #2d2d2d;
-            }
-            QFrame:hover {
-                border-color: #007acc;
-                background-color: #1e3a5f;
-            }
-            QFrame:drop {
-                border-color: #28a745;
-                background-color: #1a2f1a;
-            }
-        """)
-        self.text_label.setStyleSheet("color: #aaa; font-size: 12px;")
-        
-    def browse_files(self, event):
-        """Open file browser when clicked"""
-        file_dialog = QFileDialog()
-        file_paths, _ = file_dialog.getOpenFileNames(
-            self,
-            "Select Archive Files",
-            "",
-            "Archive Files (*.zip *.rar *.7z *.tar *.gz *.bz2 *.xz *.cab *.iso *.arj *.ace *.lzh *.lha);;All Files (*)"
-        )
-        if file_paths:
-            self.files_dropped.emit(file_paths)
-        
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            # Check if any of the dragged items are supported archive formats
-            has_supported_files = False
-            total_files = 0
-            supported_files = 0
-            
-            for url in event.mimeData().urls():
-                if hasattr(url, 'toLocalFile'):
-                    path = url.toLocalFile()
-                else:
-                    path = url.path() if hasattr(url, 'path') else ""
-                
-                if path and os.path.isfile(path):
-                    total_files += 1
-                    if self._is_supported_archive_file(path):
-                        supported_files += 1
-            
-            # Accept if there are supported archive files
-            if supported_files > 0:
-                self._set_drag_over_style(True)
-                event.acceptProposedAction()
-                self._update_text_label(total_files, supported_files, True)
-            else:
-                self._set_reject_style()
-        else:
-            event.ignore()
-            
-    def dragLeaveEvent(self, event):
-        self._reset_style()
-        
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
-            self._set_drag_over_style(True)
-            event.acceptProposedAction()
-        else:
-            event.ignore()
-        
-    def dropEvent(self, event):
-        self._reset_style()
-        
-        files = []
-        
-        for url in event.mimeData().urls():
-            path = url.toLocalFile()
-            if os.path.isfile(path) and self._is_supported_archive_file(path):
-                files.append(path)
-                    
-        # Emit signal for valid archive files
-        if files:
-            self.files_dropped.emit(files)
-            
-    def _is_supported_archive_file(self, file_path):
-        """Check if the file has a supported archive format extension"""
-        if not file_path:
-            return False
-        _, ext = os.path.splitext(file_path.lower())
-        return ext in self.supported_formats
-        
-    def _set_drag_over_style(self, has_supported=True):
-        """Set style for drag over state"""
-        # Ensure fixed size is maintained during style changes
-        current_width = self.width()
-        current_height = self.height()
-        
-        if self.is_dark_mode:
-            self.setStyleSheet("""
-                QFrame {
-                    border: 2px solid #28a745;
-                    border-radius: 10px;
-                    background-color: #1a2f1a;
-                }
-            """)
-        else:
-            self.setStyleSheet("""
-                QFrame {
-                    border: 2px solid #28a745;
-                    border-radius: 10px;
-                    background-color: #f0fff0;
-                }
-            """)
-        
-        # Restore fixed size after style change
-        self.setFixedHeight(100)
-        if current_width > 0:
-            self.setMinimumWidth(current_width)
-            
-        self.drag_over = True
-            
-    def _set_reject_style(self):
-        """Set style for rejected drag items"""
-        # Ensure fixed size is maintained during style changes
-        current_width = self.width()
-        
-        if self.is_dark_mode:
-            self.setStyleSheet("""
-                QFrame {
-                    border: 2px solid #dc3545;
-                    border-radius: 10px;
-                    background-color: #2a1a1a;
-                }
-            """)
-        else:
-            self.setStyleSheet("""
-                QFrame {
-                    border: 2px solid #dc3545;
-                    border-radius: 10px;
-                    background-color: #fff5f5;
-                }
-            """)
-        
-        # Restore fixed size after style change
-        self.setFixedHeight(100)
-        if current_width > 0:
-            self.setMinimumWidth(current_width)
-        
-    def _reset_style(self):
-        """Reset to default style"""
-        # Ensure fixed size is maintained during style changes
-        current_width = self.width()
-        
-        if self.is_dark_mode:
-            self._apply_dark_theme_style()
-        else:
-            self._apply_light_theme_style()
-        
-        # Restore fixed size after style change
-        self.setFixedHeight(100)
-        if current_width > 0:
-            self.setMinimumWidth(current_width)
-            
-        self.drag_over = False
-        
-    def _update_text_label(self, total_files, supported_files, has_supported):
-        """Update the text label during drag operations"""
-        if has_supported:
-            if total_files == supported_files:
-                self.text_label.setText(f"Release to add {supported_files} archive file(s)")
-            else:
-                self.text_label.setText(f"Release to add {supported_files} archive file(s)\n({total_files - supported_files} unsupported file(s) will be ignored)")
 
 # Remove the problematic reconfigure calls
 # sys.stdout.reconfigure(encoding='utf-8')
@@ -416,10 +168,11 @@ class ListZipContentsWorker(QObject):
 
 class BatchExtractWorker(QObject):
     """Worker for batch archive extraction"""
-    finished = Signal(int, int)  # Emits success_count, failed_count
+    finished = Signal(int, int, list, list)  # Emits success_count, failed_count, success_files, failed_files
     progress_updated = Signal(int, int, str, int, int)  # processed_count, total_count, current_file, success_count, failed_count
     conversion_error = Signal(str)  # Emits error messages
     individual_progress = Signal(str, str, int)  # Emits archive name, message, percentage
+    status_updated = Signal(str)  # Emits status messages
 
     def __init__(self, archive_paths, dest_folder, create_subfolders=True, overwrite_files=False, parent_gui=None):
         super().__init__()
@@ -429,10 +182,17 @@ class BatchExtractWorker(QObject):
         self.overwrite_files = overwrite_files
         self.is_stopped = False
         self.parent_gui = parent_gui  # Reference to main GUI for password dialogs
+        
+        # Track detailed statistics
+        self.success_count = 0
+        self.failed_count = 0
+        self.success_files = []
+        self.failed_files = []
 
     def stop(self):
         """Stop the batch extraction process"""
         self.is_stopped = True
+        self.status_updated.emit("Stopping batch extraction...")
 
     def run(self):
         """Execute batch extraction"""
@@ -443,15 +203,24 @@ class BatchExtractWorker(QObject):
             if not self.dest_folder:
                 raise ValueError("Destination folder is not specified")
             
+            # Ensure destination folder exists
             if not os.path.exists(self.dest_folder):
-                os.makedirs(self.dest_folder)
+                try:
+                    os.makedirs(self.dest_folder, exist_ok=True)
+                except Exception as e:
+                    raise ValueError(f"Failed to create destination folder: {str(e)}")
             
             # Initialize password detector
             password_detector = PasswordDetector()
             
-            # Track statistics during processing
+            # Reset statistics
             self.success_count = 0
             self.failed_count = 0
+            self.success_files = []
+            self.failed_files = []
+            
+            total_files = len(self.archive_paths)
+            self.status_updated.emit(f"Starting batch extraction of {total_files} archive(s)...")
             
             def progress_callback(current, total, current_file=""):
                 if self.is_stopped:
@@ -459,23 +228,28 @@ class BatchExtractWorker(QObject):
                 
                 # Handle different call patterns
                 if isinstance(current, str):
-                    # Called with (message, progress_percent) pattern
+                    # Called with (message, progress_percent) pattern for individual file extraction
                     message = current
                     progress_percent = total
-                    current_file = ""  # Reset current file for message-only updates
-                    # For message-only updates, use current/total as 0/1 to avoid int() conversion errors
-                    current_val = 0
-                    total_val = 1
+                    archive_name = os.path.basename(current_file) if current_file else ""
+                    # Emit individual file progress
+                    self.individual_progress.emit(archive_name, message, int(progress_percent))
                 else:
-                    # Called with (current, total, current_file) pattern
-                    message = current_file if current_file else ""
-                    progress_percent = (current / total * 100) if total > 0 else 0
-                    current_file = self.archive_paths[current - 1] if isinstance(current, int) and current <= len(self.archive_paths) else str(current_file)
+                    # Called with (current, total, current_file) pattern for batch progress
                     current_val = int(current) if isinstance(current, (int, float)) else 0
-                    total_val = int(total) if isinstance(total, (int, float)) else 1
-                
-                # Emit progress with all required parameters
-                self.progress_updated.emit(current_val, total_val, str(current_file), self.success_count, self.failed_count)
+                    total_val = int(total) if isinstance(total, (int, float)) else total_files
+                    
+                    # Get current file path
+                    if isinstance(current, int) and 1 <= current <= total_files:
+                        current_file_path = self.archive_paths[current - 1]
+                    else:
+                        current_file_path = str(current_file) if current_file else ""
+                    
+                    # Calculate overall progress percentage
+                    overall_progress = (current_val / total_val * 100) if total_val > 0 else 0
+                    
+                    # Emit batch progress update
+                    self.progress_updated.emit(current_val, total_val, current_file_path, self.success_count, self.failed_count)
             
             def password_callback(archive_path, format_name, is_protected):
                 """Callback to request password from user via GUI"""
@@ -485,15 +259,27 @@ class BatchExtractWorker(QObject):
                     try:
                         # Request password from main GUI thread
                         return self.parent_gui.request_password(archive_path, format_name, is_protected)
-                    except Exception:
-                        # If password request fails, return None
+                    except Exception as e:
+                        self.conversion_error.emit(f"Error requesting password: {str(e)}")
                         return None
                 return None
             
             def error_callback(archive_path, error_message):
                 """Callback for individual archive errors"""
                 self.failed_count += 1  # Increment failed count
+                self.failed_files.append((archive_path, error_message))
                 self.conversion_error.emit(f"Error processing {os.path.basename(archive_path)}: {error_message}")
+                # Update progress after error
+                processed = self.success_count + self.failed_count
+                self.progress_updated.emit(processed, total_files, archive_path, self.success_count, self.failed_count)
+            
+            def success_callback(archive_path):
+                """Callback for successful archive extraction"""
+                self.success_count += 1  # Increment success count
+                self.success_files.append(archive_path)
+                # Update progress after success
+                processed = self.success_count + self.failed_count
+                self.progress_updated.emit(processed, total_files, archive_path, self.success_count, self.failed_count)
             
             # Prepare options for batch extraction
             options = {
@@ -502,10 +288,13 @@ class BatchExtractWorker(QObject):
                 'progress_callback': progress_callback if not self.is_stopped else None,
                 'password_callback': password_callback if not self.is_stopped else None,
                 'password_detector': password_detector,
-                'error_callback': error_callback
+                'error_callback': error_callback,
+                'success_callback': success_callback
             }
             
             if self.is_stopped:
+                self.status_updated.emit("Batch extraction stopped by user")
+                self.finished.emit(self.success_count, self.failed_count, self.success_files, self.failed_files)
                 return
                 
             # Call batch extraction function with password detection
@@ -516,19 +305,35 @@ class BatchExtractWorker(QObject):
             )
             
             if not self.is_stopped:
-                # Update final statistics
-                self.success_count = result.get('success_count', 0)
-                self.failed_count = result.get('error_count', 0)
-                self.finished.emit(self.success_count, self.failed_count)
+                # Update final statistics from result
+                self.success_count = result.get('success_count', self.success_count)
+                self.failed_count = result.get('error_count', self.failed_count)
+                
+                # Emit final status
+                self.status_updated.emit(f"Batch extraction completed: {self.success_count} successful, {self.failed_count} failed")
+                
+                # Emit finished signal with detailed results
+                self.finished.emit(self.success_count, self.failed_count, self.success_files, self.failed_files)
+            else:
+                self.status_updated.emit("Batch extraction stopped by user")
+                self.finished.emit(self.success_count, self.failed_count, self.success_files, self.failed_files)
                 
         except ValueError as e:
-            self.conversion_error.emit(f"Input error: {str(e)}")
+            error_msg = f"Input error: {str(e)}"
+            self.conversion_error.emit(error_msg)
+            self.status_updated.emit(f"Batch extraction failed: {error_msg}")
+            self.finished.emit(0, total_files if 'total_files' in locals() else 0, [], self.archive_paths)
         except RuntimeError as e:
-            self.conversion_error.emit(str(e))
+            error_msg = str(e)
+            self.conversion_error.emit(error_msg)
+            self.status_updated.emit(f"Batch extraction failed: {error_msg}")
+            self.finished.emit(0, total_files if 'total_files' in locals() else 0, [], self.archive_paths)
         except Exception as e:
             import traceback
             error_msg = f"Unexpected error during batch extraction: {str(e)}\n{traceback.format_exc()}"
             self.conversion_error.emit(error_msg)
+            self.status_updated.emit(f"Batch extraction failed unexpectedly")
+            self.finished.emit(0, total_files if 'total_files' in locals() else 0, [], self.archive_paths)
 
 
 class ZipGUI(QMainWindow):
@@ -586,8 +391,8 @@ class ZipGUI(QMainWindow):
     def __init__(self, initial_dark_mode=False):
         super().__init__()
         self.setWindowTitle("Archive File Processing Tool")
-        self.setGeometry(200, 200, 800, 600)
-        self.setMinimumSize(1000, 750)
+        self.setGeometry(200, 200, 1200, 900)
+        self.setMinimumSize(1200, 900)
         
         # Enable drag and drop for the main window
         self.setAcceptDrops(True)
@@ -749,17 +554,36 @@ class ZipGUI(QMainWindow):
         tab_sizer = QVBoxLayout(tab_panel)
         self.notebook.addTab(tab_panel, "Create Archive") # Changed tab title
 
-        # Output file selection
+        # Output file selection with ScrollArea inside GroupBox
         output_box = QGroupBox("Output Archive File") # Changed group box title
-        output_box_sizer = QHBoxLayout(output_box)
+        output_box.setMinimumHeight(200)  # Set minimum height
+        output_box_sizer = QVBoxLayout(output_box)
+        
+        # Create ScrollArea inside GroupBox
+        output_scroll_area = ScrollArea()
+        output_scroll_area.setWidgetResizable(True)
+        output_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        output_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        content_widget = QWidget()
+        content_layout = QHBoxLayout(content_widget)
         
         self.create_output_text = LineEdit()
         setCustomStyleSheet(self.create_output_text, CON.qss_line, CON.qss_line)
         # self.create_output_text.setReadOnly(True)  # Allow users to manually input path
-        output_box_sizer.addWidget(self.create_output_text, 1)
+        content_layout.addWidget(self.create_output_text, 1)
         output_button = PushButton("Browse...")
         output_button.clicked.connect(self.browse_create_output)
-        output_box_sizer.addWidget(output_button)
+        content_layout.addWidget(output_button)
+        
+        # Set content widget to ScrollArea
+        output_scroll_area.setWidget(content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        output_box_sizer.addWidget(output_scroll_area)
+        
+        # Add GroupBox to main layout
         tab_sizer.addWidget(output_box)
 
         # Archive Format Selection (new)
@@ -779,13 +603,24 @@ class ZipGUI(QMainWindow):
         format_layout.addWidget(self.create_format_combo, 1)
         tab_sizer.addLayout(format_layout)
 
-        # Source files list
+        # Source files list with ScrollArea inside GroupBox
         sources_box = QGroupBox("Source Files/Directories")
+        sources_box.setMinimumHeight(200)  # Set minimum height
         sources_box_sizer = QVBoxLayout(sources_box)
+        
+        # Create ScrollArea inside GroupBox
+        sources_scroll_area = ScrollArea()
+        sources_scroll_area.setWidgetResizable(True)
+        sources_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        sources_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
         
         self.sources_listbox = ListWidget()
         self.sources_listbox.setMinimumHeight(280)  # Set minimum height
-        sources_box_sizer.addWidget(self.sources_listbox, 1)  # Increase stretch weight
+        content_layout.addWidget(self.sources_listbox, 1)  # Increase stretch weight
         # Set right-click to immediately select
         self.sources_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         # Context menu functionality removed
@@ -806,7 +641,15 @@ class ZipGUI(QMainWindow):
         button_sizer.addWidget(remove_button)
         button_sizer.addStretch(1) # Push buttons to left
         
-        sources_box_sizer.addLayout(button_sizer)
+        content_layout.addLayout(button_sizer)
+        
+        # Set content widget to ScrollArea
+        sources_scroll_area.setWidget(content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        sources_box_sizer.addWidget(sources_scroll_area)
+        
+        # Add GroupBox to main layout
         tab_sizer.addWidget(sources_box, 1) # Give sources box more stretch
 
         # Progress bar
@@ -848,32 +691,68 @@ class ZipGUI(QMainWindow):
         single_panel = QWidget()
         single_sizer = QVBoxLayout(single_panel)
 
-        # Archive file selection (changed title)
+        # Archive file selection with ScrollArea inside GroupBox (changed title)
         zip_box = QGroupBox("Archive File to Extract")
-        zip_box_sizer = QHBoxLayout(zip_box)
+        zip_box.setMinimumHeight(200)  # Set minimum height
+        zip_box_sizer = QVBoxLayout(zip_box)
 
+        # Create ScrollArea inside GroupBox
+        zip_scroll_area = ScrollArea()
+        zip_scroll_area.setWidgetResizable(True)
+        zip_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        zip_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        content_widget = QWidget()
+        content_layout = QHBoxLayout(content_widget)
+        
         self.extract_zip_text = LineEdit()
         setCustomStyleSheet(self.extract_zip_text, CON.qss_line, CON.qss_line)
         # self.extract_zip_text.setReadOnly(True)  # Allow users to manually input path
-        zip_box_sizer.addWidget(self.extract_zip_text, 1)
+        content_layout.addWidget(self.extract_zip_text, 1)
         zip_button = PushButton("Browse...")
-
         zip_button.clicked.connect(self.browse_extract_archive) # Changed signal
-        zip_box_sizer.addWidget(zip_button)
+        content_layout.addWidget(zip_button)
+        
+        # Set content widget to ScrollArea
+        zip_scroll_area.setWidget(content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        zip_box_sizer.addWidget(zip_scroll_area)
+        
+        # Add GroupBox to main layout
         single_sizer.addWidget(zip_box)
 
-        # Destination folder selection
+        # Destination folder selection with ScrollArea inside GroupBox
         dest_box = QGroupBox("Destination Folder")
-        dest_box_sizer = QHBoxLayout(dest_box)
+        dest_box.setMinimumHeight(200)  # Set minimum height
+        dest_box_sizer = QVBoxLayout(dest_box)
 
+        # Create ScrollArea inside GroupBox
+        dest_scroll_area = ScrollArea()
+        dest_scroll_area.setWidgetResizable(True)
+        dest_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        dest_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        content_widget = QWidget()
+        content_layout = QHBoxLayout(content_widget)
+        
         self.extract_dest_text = LineEdit()
         setCustomStyleSheet(self.extract_dest_text, CON.qss_line, CON.qss_line)
         # self.extract_dest_text.setReadOnly(True)  # Allow users to manually input path
-        dest_box_sizer.addWidget(self.extract_dest_text, 1)
+        content_layout.addWidget(self.extract_dest_text, 1)
         dest_button = PushButton("Browse...")
-
         dest_button.clicked.connect(self.browse_extract_dest)
-        dest_box_sizer.addWidget(dest_button)
+        content_layout.addWidget(dest_button)
+        
+        # Set content widget to ScrollArea
+        dest_scroll_area.setWidget(content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        dest_box_sizer.addWidget(dest_scroll_area)
+        
+        # Add GroupBox to main layout
         single_sizer.addWidget(dest_box)
 
         # Password status indicator
@@ -912,19 +791,30 @@ class ZipGUI(QMainWindow):
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         
-        # File selection group
+        # File selection group with ScrollArea inside GroupBox
         file_group = QGroupBox("Batch Archive Files")
+        file_group.setMinimumHeight(200)  # Set minimum height
         file_group_layout = QVBoxLayout(file_group)
+        
+        # Create ScrollArea inside GroupBox
+        file_scroll_area = ScrollArea()
+        file_scroll_area.setWidgetResizable(True)
+        file_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        file_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        file_content_widget = QWidget()
+        file_content_layout = QVBoxLayout(file_content_widget)
         
         # Drag and drop area
         self.batch_drop_area = BatchDropZoneWidget("Drag archive files here\nor click to browse")
-        file_group_layout.addWidget(self.batch_drop_area)
+        file_content_layout.addWidget(self.batch_drop_area)
         
         # File list
         self.batch_files_listbox = ListWidget()
         self.batch_files_listbox.setMinimumHeight(200)
         self.batch_files_listbox.setMinimumWidth(300)
-        file_group_layout.addWidget(self.batch_files_listbox)
+        file_content_layout.addWidget(self.batch_files_listbox)
         
         # File management buttons
         file_buttons_layout = QHBoxLayout()
@@ -945,7 +835,13 @@ class ZipGUI(QMainWindow):
         file_buttons_layout.addWidget(self.batch_clear_files_btn)
         
         file_buttons_layout.addStretch()
-        file_group_layout.addLayout(file_buttons_layout)
+        file_content_layout.addLayout(file_buttons_layout)
+        
+        # Set content widget to ScrollArea
+        file_scroll_area.setWidget(file_content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        file_group_layout.addWidget(file_scroll_area)
         
         left_layout.addWidget(file_group)
         left_layout.addStretch(1)
@@ -954,9 +850,20 @@ class ZipGUI(QMainWindow):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         
-        # Destination folder group
+        # Destination folder group with ScrollArea inside GroupBox
         dest_group = QGroupBox("Destination Folder")
+        dest_group.setMinimumHeight(200)  # Set minimum height
         dest_group_layout = QVBoxLayout(dest_group)
+        
+        # Create ScrollArea inside GroupBox
+        dest_scroll_area = ScrollArea()
+        dest_scroll_area.setWidgetResizable(True)
+        dest_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        dest_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        dest_content_widget = QWidget()
+        dest_content_layout = QVBoxLayout(dest_content_widget)
         
         dest_layout = QHBoxLayout()
         self.batch_extract_dest_text = LineEdit()
@@ -968,12 +875,30 @@ class ZipGUI(QMainWindow):
         batch_dest_button.clicked.connect(self.browse_batch_extract_dest)
         dest_layout.addWidget(batch_dest_button)
         
-        dest_group_layout.addLayout(dest_layout)
+        dest_content_layout.addLayout(dest_layout)
+        
+        # Set content widget to ScrollArea
+        dest_scroll_area.setWidget(dest_content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        dest_group_layout.addWidget(dest_scroll_area)
+        
         right_layout.addWidget(dest_group)
         
-        # Options group
+        # Options group with ScrollArea inside GroupBox
         options_group = QGroupBox("Extract Options")
+        options_group.setMinimumHeight(200)  # Set minimum height
         options_group_layout = QVBoxLayout(options_group)
+        
+        # Create ScrollArea inside GroupBox
+        options_scroll_area = ScrollArea()
+        options_scroll_area.setWidgetResizable(True)
+        options_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        options_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        options_content_widget = QWidget()
+        options_content_layout = QVBoxLayout(options_content_widget)
         
         options_layout = QHBoxLayout()
         
@@ -983,30 +908,65 @@ class ZipGUI(QMainWindow):
         self.batch_create_subfolders_check.setChecked(True)
         left_options.addWidget(self.batch_create_subfolders_check)
         
+        # Overwrite options
         self.batch_overwrite_files_check = CheckBox("Overwrite existing files")
         self.batch_overwrite_files_check.setChecked(False)
         left_options.addWidget(self.batch_overwrite_files_check)
         
+        # Skip existing files option
+        self.batch_skip_existing_files_check = CheckBox("Skip existing files")
+        self.batch_skip_existing_files_check.setChecked(False)
+        left_options.addWidget(self.batch_skip_existing_files_check)
+        
+        # Overwrite strategy options
+        self.overwrite_strategy_combo = ComboBox()
+        self.overwrite_strategy_combo.addItems([
+            "Overwrite all",
+            "Skip existing",
+            "Rename new",
+            "Overwrite if newer"
+        ])
+        left_options.addWidget(QLabel("Overwrite Strategy:"))
+        left_options.addWidget(self.overwrite_strategy_combo)
+        
         options_layout.addLayout(left_options)
         options_layout.addStretch(1)
         
-        options_group_layout.addLayout(options_layout)
+        options_content_layout.addLayout(options_layout)
+        
+        # Set content widget to ScrollArea
+        options_scroll_area.setWidget(options_content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        options_group_layout.addWidget(options_scroll_area)
+        
         right_layout.addWidget(options_group)
         
-        # Progress group
+        # Progress group with ScrollArea inside GroupBox
         progress_group = QGroupBox("Progress & Statistics")
+        progress_group.setMinimumHeight(200)  # Set minimum height
         progress_group_layout = QVBoxLayout(progress_group)
+        
+        # Create ScrollArea inside GroupBox
+        progress_scroll_area = ScrollArea()
+        progress_scroll_area.setWidgetResizable(True)
+        progress_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        progress_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        progress_content_widget = QWidget()
+        progress_content_layout = QVBoxLayout(progress_content_widget)
         
         # Progress label
         self.batch_progress_label = QLabel("Ready to extract archives")
         self.batch_progress_label.setWordWrap(True)
-        progress_group_layout.addWidget(self.batch_progress_label)
+        progress_content_layout.addWidget(self.batch_progress_label)
         
         # Progress bar
         self.batch_progress = ProgressBar()
         self.batch_progress.setRange(0, 100)
         self.batch_progress.setValue(0)
-        progress_group_layout.addWidget(self.batch_progress)
+        progress_content_layout.addWidget(self.batch_progress)
         
         # Statistics in a grid layout
         stats_widget = QWidget()
@@ -1029,7 +989,14 @@ class ZipGUI(QMainWindow):
         stats_layout.addWidget(self.batch_failed_count_label, 2, 0)
         stats_layout.addWidget(self.batch_failed_count_value, 2, 1)
         
-        progress_group_layout.addWidget(stats_widget)
+        progress_content_layout.addWidget(stats_widget)
+        
+        # Set content widget to ScrollArea
+        progress_scroll_area.setWidget(progress_content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        progress_group_layout.addWidget(progress_scroll_area)
+        
         right_layout.addWidget(progress_group)
         
         # Control buttons
@@ -1052,8 +1019,8 @@ class ZipGUI(QMainWindow):
         right_layout.addWidget(button_widget)
         
         # Add panels to main layout with proportional sizing
-        main_layout.addWidget(left_panel, 3)  # 3/5 of width for file management
-        main_layout.addWidget(right_panel, 2)  # 2/5 of width for options and progress
+        main_layout.addWidget(left_panel, 2)  # 2/4 of width for file management
+        main_layout.addWidget(right_panel, 2)  # 2/4 of width for options and progress - equal width for both panels
         
         self.extract_tab_widget.addTab(batch_panel, "Batch Extract")
 
@@ -1065,34 +1032,69 @@ class ZipGUI(QMainWindow):
         tab_sizer = QVBoxLayout(tab_panel)
         self.notebook.addTab(tab_panel, "Add to Archive") # Changed tab title
 
-        # Existing Archive file selection
+        # Existing Archive file selection with ScrollArea inside GroupBox
         zip_box = QGroupBox("Existing Archive File") # Changed group box title
-        zip_box_sizer = QHBoxLayout(zip_box)
+        zip_box.setMinimumHeight(200)  # Set minimum height
+        zip_box_sizer = QVBoxLayout(zip_box)
+        
+        # Create ScrollArea inside GroupBox
+        zip_scroll_area = ScrollArea()
+        zip_scroll_area.setWidgetResizable(True)
+        zip_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        zip_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        zip_content_widget = QWidget()
+        zip_content_layout = QHBoxLayout(zip_content_widget)
 
         self.add_zip_text = LineEdit()
         setCustomStyleSheet(self.add_zip_text, CON.qss_line, CON.qss_line)
         # self.add_zip_text.setReadOnly(True)  # Allow users to manually input path
-        zip_box_sizer.addWidget(self.add_zip_text, 1)
+        zip_content_layout.addWidget(self.add_zip_text, 1)
         zip_button = PushButton("Browse...")
 
         zip_button.clicked.connect(self.browse_add_archive) # Changed signal
-        zip_box_sizer.addWidget(zip_button)
+        zip_content_layout.addWidget(zip_button)
+        
+        # Set content widget to ScrollArea
+        zip_scroll_area.setWidget(zip_content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        zip_box_sizer.addWidget(zip_scroll_area)
+        
         tab_sizer.addWidget(zip_box)
 
-        # File to add selection
+        # File to add selection with ScrollArea inside GroupBox
         file_box = QGroupBox("Files to Add")
+        file_box.setMinimumHeight(200)  # Set minimum height
         file_box_sizer = QVBoxLayout(file_box)
+        
+        # Create ScrollArea inside GroupBox
+        file_scroll_area = ScrollArea()
+        file_scroll_area.setWidgetResizable(True)
+        file_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        file_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        file_content_widget = QWidget()
+        file_content_layout = QVBoxLayout(file_content_widget)
 
         # File list for multiple files (always visible)
         self.add_files_listbox = ListWidget()
         self.add_files_listbox.setMinimumHeight(150)
         self.add_files_listbox.setVisible(True)  # Always visible
-        file_box_sizer.addWidget(self.add_files_listbox)
+        file_content_layout.addWidget(self.add_files_listbox)
         
         # Browse button
         file_button = PushButton("Browse...")
         file_button.clicked.connect(self.browse_add_file)
-        file_box_sizer.addWidget(file_button)
+        file_content_layout.addWidget(file_button)
+        
+        # Set content widget to ScrollArea
+        file_scroll_area.setWidget(file_content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        file_box_sizer.addWidget(file_scroll_area)
         
         tab_sizer.addWidget(file_box)
 
@@ -1118,18 +1120,36 @@ class ZipGUI(QMainWindow):
         tab_sizer = QVBoxLayout(tab_panel)
         self.notebook.addTab(tab_panel, "List Contents")
 
-        # Archive file selection (changed title)
+        # Archive file selection with ScrollArea inside GroupBox (changed title)
         zip_box = QGroupBox("Archive File")
-        zip_box_sizer = QHBoxLayout(zip_box)
+        zip_box.setMinimumHeight(200)  # Set minimum height
+        zip_box_sizer = QVBoxLayout(zip_box)
+        
+        # Create ScrollArea inside GroupBox
+        zip_scroll_area = ScrollArea()
+        zip_scroll_area.setWidgetResizable(True)
+        zip_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        zip_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        zip_content_widget = QWidget()
+        zip_content_layout = QHBoxLayout(zip_content_widget)
         
         self.list_zip_text = LineEdit()
         setCustomStyleSheet(self.list_zip_text, CON.qss_line, CON.qss_line)
         # self.list_zip_text.setReadOnly(True)  # Allow users to manually input path
-        zip_box_sizer.addWidget(self.list_zip_text, 1)
+        zip_content_layout.addWidget(self.list_zip_text, 1)
         zip_button = PushButton("Browse...")
 
         zip_button.clicked.connect(self.browse_list_archive) # Changed signal
-        zip_box_sizer.addWidget(zip_button)
+        zip_content_layout.addWidget(zip_button)
+        
+        # Set content widget to ScrollArea
+        zip_scroll_area.setWidget(zip_content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        zip_box_sizer.addWidget(zip_scroll_area)
+        
         tab_sizer.addWidget(zip_box)
         
         # Password status indicator
@@ -1142,19 +1162,37 @@ class ZipGUI(QMainWindow):
         password_status_box.addStretch()
         tab_sizer.addLayout(password_status_box)
         
-        # Listbox for contents
+        # Listbox for contents with ScrollArea inside GroupBox
         contents_box = QGroupBox("Archive Contents") # Changed group box title
+        contents_box.setMinimumHeight(200)  # Set minimum height
         contents_box_sizer = QVBoxLayout(contents_box)
+        
+        # Create ScrollArea inside GroupBox
+        contents_scroll_area = ScrollArea()
+        contents_scroll_area.setWidgetResizable(True)
+        contents_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        contents_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Create content widget for ScrollArea
+        contents_content_widget = QWidget()
+        contents_content_layout = QVBoxLayout(contents_content_widget)
 
         self.contents_listbox = ListWidget()
         self.contents_listbox.setMinimumHeight(250)  # Set larger minimum height
         self.contents_listbox.setDragEnabled(True)  # Enable drag functionality
-        contents_box_sizer.addWidget(self.contents_listbox, 3)  # Increase stretch weight
+        contents_content_layout.addWidget(self.contents_listbox, 3)  # Increase stretch weight
         # Set right-click menu
         self.contents_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         # Context menu functionality removed
         # self.contents_listbox.customContextMenuRequested.connect(self.show_contents_context_menu)
-        tab_sizer.addWidget(contents_box, 2) # Give contents box more stretch
+        
+        # Set content widget to ScrollArea
+        contents_scroll_area.setWidget(contents_content_widget)
+        
+        # Add ScrollArea to GroupBox layout
+        contents_box_sizer.addWidget(contents_scroll_area)
+        
+        tab_sizer.addWidget(contents_box, 2) # Give contents group box more stretch
 
         # List button
         self.list_button = PrimaryPushButton("List Contents")
@@ -1289,87 +1327,9 @@ class ZipGUI(QMainWindow):
         return True
     
     def on_tab_changed(self, index):
-        """Handle tab change with optional slide animation effect based on UI_FLUENT environment variable"""
-        import sys
-        import os
-        sys.path.append(os.path.join(os.path.dirname(__file__), 'support'))
-        from support.check_flag import check_flag
-        
-        # Check if UI_FLUENT environment variable is set to YES using check_flag function
-        ui_fluent_enabled = check_flag("UI_FLUENT")
-        
-        # Skip animation if UI_FLUENT is not enabled
-        if not ui_fluent_enabled:
-            self._previous_tab_index = index
-            # Force layout update when animation is disabled
-            self.notebook.currentWidget().updateGeometry()
-            if self.notebook.currentWidget().layout():
-                self.notebook.currentWidget().layout().update()
-                self.notebook.currentWidget().layout().activate()
-            return
-            
-        # Proceed with animation if UI_FLUENT is enabled
-        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
-        
-        # Get current tab widget
-        current_widget = self.notebook.currentWidget()
-        if not current_widget:
-            return
-            
-        # Skip animation during initial startup to prevent layout issues
-        if not hasattr(self, '_previous_tab_index') and not self.notebook.isVisible():
-            self._previous_tab_index = index
-            return
-            
-        # Get tab widget dimensions
-        tab_width = self.notebook.width()
-        tab_height = self.notebook.height()
-        
-        # Skip animation if window is not yet properly sized
-        if tab_width <= 0 or tab_height <= 0:
-            self._previous_tab_index = index
-            return
-        
-        # Determine slide direction based on tab index
-        if hasattr(self, '_previous_tab_index'):
-            if index > self._previous_tab_index:
-                # Sliding from right to left - start from 80% of width to prevent going out of bounds
-                start_pos = QRect(int(tab_width * 0.8), 0, tab_width, tab_height)
-            else:
-                # Sliding from left to right - start from -80% of width to prevent going out of bounds
-                start_pos = QRect(int(-tab_width * 0.8), 0, tab_width, tab_height)
-        else:
-            # First time, slide from right - start from 80% of width
-            start_pos = QRect(int(tab_width * 0.8), 0, tab_width, tab_height)
-        
-        # Set initial position
-        current_widget.setGeometry(start_pos)
-        
-        # Create slide animation
-        self.slide_animation = QPropertyAnimation(current_widget, b"geometry")
-        self.slide_animation.setDuration(300)  # 300ms animation for smooth slide
-        self.slide_animation.setStartValue(start_pos)
-        self.slide_animation.setEndValue(QRect(0, 0, tab_width, tab_height))
-        self.slide_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        
-        # Store current tab index for next animation
+        """Handle tab change without animation"""
+        # Simply store the previous tab index and return
         self._previous_tab_index = index
-        
-        # Connect animation finished signal to update layout
-        self.slide_animation.finished.connect(lambda: self._update_tab_layout(current_widget))
-        
-        # Start the animation
-        self.slide_animation.start()
-    
-    def _update_tab_layout(self, widget):
-        """Update widget layout after animation completes"""
-        # Force layout update to prevent layout issues
-        if widget and widget.layout():
-            widget.layout().update()
-            widget.layout().activate()
-            widget.updateGeometry()
-            # Repaint the widget to ensure all elements are properly displayed
-            widget.repaint()
 
     
     
@@ -1747,13 +1707,50 @@ class ZipGUI(QMainWindow):
             )
             return
 
+        # Validate destination folder
+        if not os.path.exists(self.batch_extract_dest_path):
+            try:
+                os.makedirs(self.batch_extract_dest_path, exist_ok=True)
+            except Exception as e:
+                self._show_popup(
+                    target=self.batch_start_btn,
+                    icon=InfoBarIcon.ERROR,
+                    title='Error',
+                    content=f'Failed to create destination folder: {str(e)}',
+                    duration=2000
+                )
+                return
+
         # Create batch extract options
         create_subfolders = self.batch_create_subfolders_check.isChecked()
-        overwrite_files = self.batch_overwrite_files_check.isChecked()
+        
+        # Get overwrite strategy
+        overwrite_strategy = self.overwrite_strategy_combo.currentText()
+        
+        # Determine overwrite behavior based on strategy
+        if overwrite_strategy == "Overwrite all":
+            overwrite_files = True
+            skip_existing = False
+        elif overwrite_strategy == "Skip existing":
+            overwrite_files = False
+            skip_existing = True
+        elif overwrite_strategy == "Rename new":
+            overwrite_files = False
+            skip_existing = False
+            # Note: Rename new functionality would need to be implemented in the archive_manager
+        elif overwrite_strategy == "Overwrite if newer":
+            overwrite_files = True
+            skip_existing = False
+            # Note: Overwrite if newer functionality would need to be implemented in the archive_manager
+        else:
+            # Default behavior
+            overwrite_files = self.batch_overwrite_files_check.isChecked()
+            skip_existing = self.batch_skip_existing_files_check.isChecked()
         
         # Reset progress and statistics
         self.batch_progress.setValue(0)
         self.update_batch_stats()
+        self.batch_progress_label.setText("Preparing for batch extraction...")
         
         # Disable start button and enable stop button
         self.batch_start_btn.setEnabled(False)
@@ -1774,6 +1771,8 @@ class ZipGUI(QMainWindow):
         self.batch_extract_worker.finished.connect(self.on_batch_extract_finished)
         self.batch_extract_worker.progress_updated.connect(self.on_batch_extract_progress)
         self.batch_extract_worker.conversion_error.connect(self.on_batch_extract_error)
+        self.batch_extract_worker.individual_progress.connect(self.on_batch_individual_progress)
+        self.batch_extract_worker.status_updated.connect(self.on_batch_status_updated)
         self.batch_extract_worker_thread.started.connect(self.batch_extract_worker.run)
         self.batch_extract_worker_thread.start()
 
@@ -1781,7 +1780,61 @@ class ZipGUI(QMainWindow):
         """Stop batch extraction process"""
         if hasattr(self, 'batch_extract_worker'):
             self.batch_extract_worker.stop()
+            self.batch_progress_label.setText("Stopping batch extraction...")
+            # Disable stop button to prevent multiple stops
+            self.batch_stop_btn.setEnabled(False)
+            # Start a timer to check if thread has stopped after a timeout
+            QTimer.singleShot(2000, self._check_batch_thread_status)
+        
+    def _check_batch_thread_status(self):
+        """Check if batch thread has stopped after timeout"""
+        if hasattr(self, 'batch_extract_worker_thread') and self.batch_extract_worker_thread.isRunning():
+            # Thread is still running, try to force stop
+            self.batch_progress_label.setText("Force stopping batch extraction...")
+            self._force_stop_batch_thread()
             self.on_batch_extract_stopped()
+        
+    def _force_stop_batch_thread(self):
+        """Force stop batch extraction thread"""
+        if hasattr(self, 'batch_extract_worker_thread') and self.batch_extract_worker_thread.isRunning():
+            try:
+                # Try to quit gracefully first
+                self.batch_extract_worker_thread.quit()
+                if not self.batch_extract_worker_thread.wait(1000):  # Wait 1 second
+                    # If graceful quit fails, terminate
+                    self.batch_extract_worker_thread.terminate()
+                    self.batch_extract_worker_thread.wait(1000)  # Wait another second
+            except Exception as e:
+                print(f"Error stopping batch thread: {str(e)}")
+        
+    def on_batch_extract_stopped(self):
+        """Handle batch extraction stopped by user"""
+        self.batch_progress_label.setText("Batch extraction stopped by user")
+        self._cleanup_batch_thread()
+        # Update UI
+        self.batch_start_btn.setEnabled(True)
+        self.batch_stop_btn.setEnabled(False)
+        
+    def _cleanup_batch_thread(self):
+        """Clean up batch extraction thread and worker resources"""
+        # Clean up worker thread
+        if hasattr(self, 'batch_extract_worker_thread'):
+            if self.batch_extract_worker_thread.isRunning():
+                try:
+                    self.batch_extract_worker_thread.quit()
+                    self.batch_extract_worker_thread.wait(1000)
+                except Exception as e:
+                    print(f"Error cleaning up batch thread: {str(e)}")
+            
+            # Delete thread object
+            self.batch_extract_worker_thread.deleteLater()
+            delattr(self, 'batch_extract_worker_thread')
+        
+        # Clean up worker
+        if hasattr(self, 'batch_extract_worker'):
+            # Delete worker object
+            self.batch_extract_worker.deleteLater()
+            delattr(self, 'batch_extract_worker')
 
     def on_batch_extract_progress(self, processed_count, total_count, current_file, success_count, failed_count):
         """Handle batch extraction progress update"""
@@ -1789,24 +1842,44 @@ class ZipGUI(QMainWindow):
         self.batch_progress.setValue(progress_percentage)
         
         # Update statistics
-        self.batch_total_count_label.setText(f"Total: {total_count}")
-        self.batch_success_count_label.setText(f"Success: {success_count}")
-        self.batch_failed_count_label.setText(f"Failed: {failed_count}")
+        self.batch_total_count_value.setText(str(total_count))
+        self.batch_success_count_value.setText(str(success_count))
+        self.batch_failed_count_value.setText(str(failed_count))
         
-        # Update progress label
-        self.batch_progress_label.setText(f"Processing: {os.path.basename(current_file)} ({processed_count}/{total_count})")
+        # Update progress label with more detailed information
+        current_file_name = os.path.basename(current_file) if current_file else ""
+        self.batch_progress_label.setText(f"Processing: {current_file_name} ({processed_count}/{total_count}) - {progress_percentage}%")
+    
+    def on_batch_individual_progress(self, archive_name, message, progress):
+        """Handle individual archive extraction progress"""
+        # Update status bar with individual file progress
+        self.status_bar.showMessage(f"Extracting {archive_name}: {message} - {progress}%")
+    
+    def on_batch_status_updated(self, status_message):
+        """Handle batch extraction status updates"""
+        # Update status bar with general status messages
+        self.status_bar.showMessage(status_message)
 
-    def on_batch_extract_finished(self, success_count, failed_count):
+    def on_batch_extract_finished(self, success_count, failed_count, success_files=None, failed_files=None):
         """Handle batch extraction finished"""
         # Clean up thread
-        self._force_cleanup_batch_thread()
+        self._cleanup_batch_thread()
+        
+        # Update final statistics
+        total_count = success_count + failed_count
+        self.batch_total_count_value.setText(str(total_count))
+        self.batch_success_count_value.setText(str(success_count))
+        self.batch_failed_count_value.setText(str(failed_count))
         
         # Re-enable start button and disable stop button
         self.batch_start_btn.setEnabled(True)
         self.batch_stop_btn.setEnabled(False)
         
-        # Show completion message
-        total_count = success_count + failed_count
+        # Show completion message with detailed results
+        result_message = f"Batch extraction completed: {success_count} successful, {failed_count} failed"
+        self.batch_progress_label.setText(result_message)
+        
+        # Show appropriate message based on results
         if failed_count == 0:
             self._show_info_bar(
                 title='Success',
@@ -1821,12 +1894,47 @@ class ZipGUI(QMainWindow):
                 content=f'Failed to extract all {total_count} archives.',
                 duration=3000
             )
+            # Show detailed failures if available
+            if failed_files:
+                self._show_batch_extract_failures(failed_files)
         else:
             self._show_info_bar(
                 title='Partially Complete',
                 content=f'Extracted {success_count} out of {total_count} archives successfully.',
                 duration=3000
             )
+            # Show detailed failures if available
+            if failed_files:
+                self._show_batch_extract_failures(failed_files)
+        
+        # Clear status bar
+        self.status_bar.clearMessage()
+    
+    def _show_batch_extract_failures(self, failed_files):
+        """Show detailed information about failed extractions"""
+        from qfluentwidgets import MessageBox
+        
+        # Create detailed failure message
+        failure_details = "Failed to extract the following archives:\n\n"
+        for file_path, error_msg in failed_files[:10]:  # Show first 10 failures
+            file_name = os.path.basename(file_path)
+            failure_details += f"• {file_name}: {error_msg}\n"
+        
+        if len(failed_files) > 10:
+            failure_details += f"\n... and {len(failed_files) - 10} more failures."
+        
+        # Show message box with failure details
+        msg_box = MessageBox(
+            'Batch Extraction Failures',
+            failure_details,
+            self
+        )
+        msg_box.yesButton.setText('OK')
+        msg_box.exec()
+        
+    def _force_cleanup_batch_thread(self):
+        """Deprecated method, use _cleanup_batch_thread instead"""
+        self._cleanup_batch_thread()
 
     def on_batch_extract_error(self, error_message):
         """Handle batch extraction error"""

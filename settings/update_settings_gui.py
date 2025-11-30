@@ -190,7 +190,7 @@ class DownloadThread(QThread):
             self.wait(500)  # Wait another 500ms to ensure termination is complete
 
 class UpdateDialog(QWidget):
-    __version__ = "2.1.0A3" 
+    __version__ = "2.1.0A4" 
 
     def __init__(self):
         super().__init__()
