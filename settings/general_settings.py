@@ -52,6 +52,12 @@ class GeneralSettingsWidget(QWidget):
         behavior_layout.addWidget(self.completion_notify_check)
         behavior_layout.addSpacing(10)
         
+        # Task mode setting
+        self.task_mode_check = CheckBox("Enable Task Mode")
+        self.task_mode_check.setChecked(False)
+        behavior_layout.addWidget(self.task_mode_check)
+        behavior_layout.addSpacing(10)
+        
         image_converter_layout.addWidget(behavior_group)
         image_converter_layout.addStretch()
         
@@ -93,6 +99,7 @@ class GeneralSettingsWidget(QWidget):
         self.auto_preview_check.stateChanged.connect(self.on_settings_changed)
         self.remember_path_check.stateChanged.connect(self.on_settings_changed)
         self.completion_notify_check.stateChanged.connect(self.on_settings_changed)
+        self.task_mode_check.stateChanged.connect(self.on_settings_changed)
         
         # Placeholder for future general settings signals
         pass
@@ -111,6 +118,9 @@ class GeneralSettingsWidget(QWidget):
         self.remember_path_check.setChecked(settings.value("image_converter/remember_path", True, type=bool))
         self.completion_notify_check.setChecked(settings.value("image_converter/completion_notify", True, type=bool))
         
+        # Task mode setting
+        self.task_mode_check.setChecked(settings.value("task_mode", False, type=bool))
+        
         # GitHub PAT settings
         encrypted_pat = settings.value("general/github_pat", "", type=str)
         if encrypted_pat:
@@ -125,6 +135,9 @@ class GeneralSettingsWidget(QWidget):
         settings.setValue("image_converter/auto_preview", self.auto_preview_check.isChecked())
         settings.setValue("image_converter/remember_path", self.remember_path_check.isChecked())
         settings.setValue("image_converter/completion_notify", self.completion_notify_check.isChecked())
+        
+        # Task mode setting
+        settings.setValue("task_mode", self.task_mode_check.isChecked())
         
         # GitHub PAT settings
         pat_text = self.pat_input.text().strip()

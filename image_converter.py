@@ -81,19 +81,43 @@ class ConversionWorker(QObject):
             self.conversion_error.emit(error_msg)
             print(f"[ERROR] ConversionWorker: {error_msg}")
 
-    def _update_progress_callback(self, message, percentage):
+    def _update_progress_callback(self, *args):
+        """Handle variable number of arguments from progress_callback
+        Can be called with:
+        - (message, percentage)
+        - (current, total, message)
+        - (message, percentage, extra)
+        """
+        # Determine the arguments format
+        if len(args) == 2:
+            # Format: (message, percentage)
+            message, percentage = args
+        elif len(args) == 3:
+            # Format: (current, total, message) or (message, percentage, extra)
+            if isinstance(args[0], (int, float)) and isinstance(args[1], (int, float)):
+                # Format: (current, total, message)
+                current, total, message = args
+                percentage = int((current / total) * 100) if total > 0 else 0
+            else:
+                # Format: (message, percentage, extra)
+                message, percentage, _ = args
+        else:
+            # Unexpected format, use default values
+            message = "Processing..." if args else "Unknown progress"
+            percentage = 0
+        
         self.progress_updated.emit(message, percentage)
 
 
 class BatchConversionWorker(QObject):
     finished = Signal()
     progress_updated = Signal(int, int, str, int)  # current_index, total_count, current_file, percentage
-    file_processed = Signal(str, bool, str)  # filename, success, error_message
+    file_processed = Signal(str, str, str, bool, str)  # filename, input_path, output_path, success, error_message
     batch_error = Signal(str)
     total_progress_updated = Signal(int)  # overall progress percentage
 
     def __init__(self, input_paths, output_dir, output_format, min_size_param=None, max_size_param=None, quality_param=None, 
-                 preserve_folder_structure=False, prefix="", suffix=""):
+                 preserve_folder_structure=False, prefix="", suffix="", auto_detect_max_size=False):
         super().__init__()
         self.input_paths = input_paths
         self.output_dir = output_dir
@@ -103,6 +127,7 @@ class BatchConversionWorker(QObject):
         self.preserve_folder_structure = preserve_folder_structure
         self.prefix = prefix
         self.suffix = suffix
+        self.auto_detect_max_size = auto_detect_max_size
         
         if output_format == "icns":
             self.min_size = int(min_size_param) if min_size_param is not None else 16
@@ -203,11 +228,11 @@ class BatchConversionWorker(QObject):
                     try:
                         success, message = future.result()
                         # Signal that this file was processed
-                        self.file_processed.emit(task['filename'], success, message if not success else "")
+                        self.file_processed.emit(task['filename'], task['input_path'], task['output_path'], success, message if not success else "")
                     except Exception as e:
                         # Signal that this file failed
                         error_msg = f"Error processing {task['filename']}: {str(e)}"
-                        self.file_processed.emit(task['filename'], False, error_msg)
+                        self.file_processed.emit(task['filename'], task['input_path'], task['output_path'], False, error_msg)
                         print(f"[ERROR] BatchConversionWorker: {error_msg}")
                     
                     # Update processed count and overall progress
@@ -233,18 +258,55 @@ class BatchConversionWorker(QObject):
         self.progress_updated.emit(task['index']+1, task['total_files'], task['filename'], 0)
         
         # Create a progress callback for this specific file
-        def progress_callback(message, percentage):
+        def progress_callback(*args):
+            """Handle variable number of arguments from progress_callback
+            Can be called with:
+            - (message, percentage)
+            - (current, total, message)
+            - (message, percentage, extra)
+            """
+            # Determine the arguments format
+            if len(args) == 2:
+                # Format: (message, percentage)
+                message, percentage = args
+            elif len(args) == 3:
+                # Format: (current, total, message) or (message, percentage, extra)
+                if isinstance(args[0], (int, float)) and isinstance(args[1], (int, float)):
+                    # Format: (current, total, message)
+                    current, total, message = args
+                    percentage = int((current / total) * 100) if total > 0 else 0
+                else:
+                    # Format: (message, percentage, extra)
+                    message, percentage, _ = args
+            else:
+                # Unexpected format, use default values
+                message = "Processing..." if args else "Unknown progress"
+                percentage = 0
+            
             # Update the file-specific progress
             self.progress_updated.emit(task['index']+1, task['total_files'], task['filename'], percentage)
         
         # Perform the conversion
         if self.output_format == "icns":
+            # Auto-detect max size if enabled
+            current_max_size = int(self.max_size) if self.max_size is not None else None
+            if self.auto_detect_max_size:
+                try:
+                    # Get image dimensions
+                    width, height = convert.get_image_info(task['input_path'])
+                    # Use the minimum of width and height as the max size (since ICNS uses square sizes)
+                    current_max_size = min(width, height)
+                except Exception as e:
+                    # Fall back to default if auto-detect fails
+                    print(f"[WARNING] Failed to auto-detect max size for {task['filename']}: {str(e)}")
+                    current_max_size = int(self.max_size) if self.max_size is not None else None
+            
             success, message = convert.convert_image(
                 task['input_path'],
                 task['output_path'],
                 self.output_format,
                 int(self.min_size) if self.min_size is not None else 16,
-                int(self.max_size) if self.max_size is not None else None,
+                current_max_size,
                 quality=self.quality,
                 progress_callback=progress_callback
             )
@@ -355,10 +417,12 @@ class ICNSConverterGUI(QMainWindow):
         auto_preview_val = settings.value("image_converter/auto_preview", True, type=bool)
         remember_path_val = settings.value("image_converter/remember_path", True, type=bool)
         completion_notify_val = settings.value("image_converter/completion_notify", True, type=bool)
+        task_mode_val = settings.value("task_mode", False, type=bool)
         
         self.auto_preview = bool(auto_preview_val) if auto_preview_val is not None else True
         self.remember_path = bool(remember_path_val) if remember_path_val is not None else True
         self.completion_notify = bool(completion_notify_val) if completion_notify_val is not None else True
+        self.task_mode = bool(task_mode_val) if task_mode_val is not None else False
         
         # Load remembered paths if setting is enabled
         if self.remember_path:
@@ -385,8 +449,10 @@ class ICNSConverterGUI(QMainWindow):
             self.icns_method_combo.setCurrentText(str(self.icns_method))
         if hasattr(self, 'overwrite_confirm_check'):
             self.overwrite_confirm_check.setChecked(bool(self.overwrite_confirm))
+        if hasattr(self, 'task_mode_check'):
+            self.task_mode_check.setChecked(bool(self.task_mode))
         
-        print(f"Settings loaded: min_size={self.min_size}, max_size={self.max_size}, output_format={self.output_format}")
+        print(f"Settings loaded: min_size={self.min_size}, max_size={self.max_size}, output_format={self.output_format}, task_mode={self.task_mode}")
         
     def save_settings(self):
         """Save settings to QSettings"""
@@ -410,6 +476,12 @@ class ICNSConverterGUI(QMainWindow):
         settings.setValue("image_converter/auto_preview", self.auto_preview)
         settings.setValue("image_converter/remember_path", self.remember_path)
         settings.setValue("image_converter/completion_notify", self.completion_notify)
+        
+        # Save task mode setting
+        if hasattr(self, 'task_mode_check'):
+            settings.setValue("task_mode", self.task_mode_check.isChecked())
+        else:
+            settings.setValue("task_mode", self.task_mode)
         
         # Save remembered paths if setting is enabled
         if self.remember_path:
@@ -702,6 +774,12 @@ class ICNSConverterGUI(QMainWindow):
         progress_group_layout.setContentsMargins(10, 25, 10, 10)
         left_layout.addWidget(progress_group_box, 0) # No stretch for progress, compact
 
+        # Task mode control
+        self.task_mode_check = CheckBox("Enable Task Mode")
+        self.task_mode_check.setChecked(False)
+        progress_group_layout.addWidget(self.task_mode_check)
+        progress_group_layout.addSpacing(10)
+
         self.progress_label = QLabel("Ready")
         self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.progress = ProgressBar()
@@ -710,7 +788,11 @@ class ICNSConverterGUI(QMainWindow):
 
         progress_group_layout.addWidget(self.progress_label)
         progress_group_layout.addWidget(self.progress)
-        # Convert Button (moved before Progress) - Replace with PrimaryPushButton and apply custom style
+        # Convert and Cancel Button Layout
+        convert_control_layout = QHBoxLayout()
+        convert_control_layout.setSpacing(10)
+        
+        # Convert Button - Replace with PrimaryPushButton and apply custom style
         self.convert_button = PrimaryPushButton("Convert to ICNS")
         self.convert_button.setFixedSize(180, 40)
         font = self.convert_button.font()
@@ -720,7 +802,26 @@ class ICNSConverterGUI(QMainWindow):
         # Apply custom style to convert button
         setCustomStyleSheet(self.convert_button, CON.qss, CON.qss)
         self.convert_button.clicked.connect(self.on_start_conversion)
-        left_layout.addWidget(self.convert_button, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        # Cancel Button
+        self.cancel_button = PushButton("Cancel")
+        self.cancel_button.setFixedSize(180, 40)
+        font = self.cancel_button.font()
+        font.setPointSize(font.pointSize() + 1)
+        self.cancel_button.setFont(font)
+        self.cancel_button.setEnabled(False)
+        # Apply custom style to cancel button
+        setCustomStyleSheet(self.cancel_button, CON.qss, CON.qss)
+        self.cancel_button.clicked.connect(self.on_cancel_conversion)
+        
+        convert_control_layout.addWidget(self.convert_button)
+        convert_control_layout.addWidget(self.cancel_button)
+        # Create a wrapper widget to center the button layout
+        button_wrapper = QWidget()
+        button_wrapper_layout = QVBoxLayout(button_wrapper)
+        button_wrapper_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        button_wrapper_layout.addLayout(convert_control_layout)
+        left_layout.addWidget(button_wrapper)
 
         
 
@@ -931,7 +1032,9 @@ class ICNSConverterGUI(QMainWindow):
 
         # Batch control buttons
         batch_control_layout = QHBoxLayout()
-        self.start_batch_btn = PrimaryPushButton("Start Batch Conversion")
+        # Initialize with default format text
+        batch_output_format = self.batch_format_combo.currentText().lower() if hasattr(self, 'batch_format_combo') else 'icns'
+        self.start_batch_btn = PrimaryPushButton(f"Convert to {batch_output_format.upper()}")
         self.stop_batch_btn = PushButton("Stop")
         self.stop_batch_btn.setEnabled(False)
         
@@ -1087,22 +1190,38 @@ class ICNSConverterGUI(QMainWindow):
         size_item.addChild(max_size_sub_item)
         self.batch_options_tree.setItemWidget(max_size_sub_item, 0, max_size_widget)
         
-        # Auto-detect button (also indented)
-        auto_widget = QWidget()
-        auto_layout = QHBoxLayout(auto_widget)
-        auto_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        # Auto-detect max size checkbox
+        auto_detect_widget = QWidget()
+        auto_detect_layout = QHBoxLayout(auto_detect_widget)
+        auto_detect_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
         # 使用更灵活的尺寸策略
-        auto_widget.setMinimumHeight(40)
-        auto_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        auto_detect_widget.setMinimumHeight(45)
+        auto_detect_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
-        self.batch_auto_button = PrimaryPushButton("🔍 Auto-detect Max Size")
-        setCustomStyleSheet(self.batch_auto_button, CON.qss_debug, CON.qss_debug)
-        self.batch_auto_button.clicked.connect(self.on_batch_auto_detect)
-        auto_layout.addWidget(self.batch_auto_button)
+        self.batch_auto_detect_check = CheckBox("🔍 Auto-detect max size for each image")
+        self.batch_auto_detect_check.stateChanged.connect(self.on_batch_auto_detect_toggle)
+        auto_detect_layout.addWidget(self.batch_auto_detect_check)
         
-        auto_sub_item = QTreeWidgetItem()
-        size_item.addChild(auto_sub_item)
-        self.batch_options_tree.setItemWidget(auto_sub_item, 0, auto_widget)
+        auto_detect_sub_item = QTreeWidgetItem()
+        size_item.addChild(auto_detect_sub_item)
+        self.batch_options_tree.setItemWidget(auto_detect_sub_item, 0, auto_detect_widget)
+        
+        # Auto-detect button (disabled for now, will be removed later)
+        # auto_widget = QWidget()
+        # auto_layout = QHBoxLayout(auto_widget)
+        # auto_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        # # 使用更灵活的尺寸策略
+        # auto_widget.setMinimumHeight(40)
+        # auto_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # 
+        # self.batch_auto_button = PrimaryPushButton("🔍 Auto-detect Max Size")
+        # setCustomStyleSheet(self.batch_auto_button, CON.qss_debug, CON.qss_debug)
+        # self.batch_auto_button.clicked.connect(self.on_batch_auto_detect)
+        # auto_layout.addWidget(self.batch_auto_button)
+        # 
+        # auto_sub_item = QTreeWidgetItem()
+        # size_item.addChild(auto_sub_item)
+        # self.batch_options_tree.setItemWidget(auto_sub_item, 0, auto_widget)
         
         # Expand size options by default
         size_item.setExpanded(True)
@@ -1157,8 +1276,11 @@ class ICNSConverterGUI(QMainWindow):
         self.batch_quality_slider.valueChanged.connect(self.on_batch_quality_changed)
         quality_layout.addWidget(self.batch_quality_slider, 1)  # Give slider more stretch
         
+        # Use read-only QLabel for quality value, same as single conversion
         self.batch_quality_label = QLabel(str(self.quality))
         self.batch_quality_label.setMinimumWidth(30)  # Ensure consistent width for label
+        self.batch_quality_label.setMaximumWidth(60)  # Limit width
+        self.batch_quality_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         quality_layout.addWidget(self.batch_quality_label)
         
         quality_item = QTreeWidgetItem()
@@ -2059,6 +2181,10 @@ class ICNSConverterGUI(QMainWindow):
         """Handle format change in batch conversion"""
         batch_output_format = self.batch_format_combo.currentText().lower()
         
+        # Update batch conversion button text to match format
+        if hasattr(self, 'start_batch_btn'):
+            self.start_batch_btn.setText(f"Convert to {batch_output_format.upper()}")
+        
         # Enable/disable auto-detect button based on format
         if hasattr(self, 'batch_use_auto_detect'):
             if batch_output_format in ['png', 'jpg', 'jpeg', 'webp']:
@@ -2160,15 +2286,26 @@ class ICNSConverterGUI(QMainWindow):
         self.quality_label.setText(str(value))
         self.save_settings()
         
+    def on_batch_auto_detect_toggle(self, state):
+        """Handle auto-detect toggle in batch conversion"""
+        auto_detect_enabled = bool(state)
+        # Enable/disable min and max size spin boxes based on auto-detect setting
+        if hasattr(self, 'batch_min_spin') and hasattr(self, 'batch_max_spin'):
+            self.batch_min_spin.setEnabled(not auto_detect_enabled)
+            self.batch_max_spin.setEnabled(not auto_detect_enabled)
+        
+        # Enable/disable auto-detect button if it exists
+        if hasattr(self, 'batch_auto_button'):
+            self.batch_auto_button.setEnabled(not auto_detect_enabled)
+    
     def on_batch_auto_detect(self):
         """Handle auto-detect in batch conversion"""
-        # For batch conversion, auto-detect would typically operate on the first file
-        # or show a message that this feature is not applicable for batch conversion
+        # This method is deprecated, will be removed in future
         PopupTeachingTip.create(
             target=self.batch_auto_button,
             icon=InfoBarIcon.WARNING,
             title='Notice',
-            content="Auto-detect is not available for batch conversion. Size limits will apply to all files.",
+            content="Auto-detect is now available through the checkbox option.",
             isClosable=True,
             tailPosition=TeachingTipTailPosition.TOP,
             duration=3000,
@@ -2195,6 +2332,8 @@ class ICNSConverterGUI(QMainWindow):
     def on_batch_quality_changed(self, value):
         if hasattr(self, 'batch_quality'):
             self.batch_quality = value
+        if hasattr(self, 'batch_quality_label'):
+            self.batch_quality_label.setText(str(value))
             
     def on_batch_icns_method_changed(self, text):
         if hasattr(self, 'batch_icns_method'):
@@ -2336,8 +2475,40 @@ class ICNSConverterGUI(QMainWindow):
             )
             return
             
+        # Check if task mode is enabled
+        settings = QSettings("MyCompany", "ConverterApp")
+        task_mode_enabled = settings.value("task_mode", False, type=bool)
+        
+        if task_mode_enabled:
+            # Create a simple task notification file
+            import json
+            import uuid
+            import time
+            
+            task_id = str(uuid.uuid4())
+            task_info = {
+                "task_id": task_id,
+                "task_type": "image",
+                "input_path": self.input_path,
+                "output_path": self.output_path,
+                "status": "pending",
+                "progress": 0,
+                "timestamp": time.time()
+            }
+            
+            # Write task info to a temporary file
+            task_dir = os.path.expanduser("~/.converter/tasks")
+            os.makedirs(task_dir, exist_ok=True)
+            task_file = os.path.join(task_dir, f"task_{task_id}.json")
+            with open(task_file, "w") as f:
+                json.dump(task_info, f)
+            
+            # Store task_id for later updates
+            self.current_task_id = task_id
+        
         self.converting = True
         self.convert_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
         self.progress.setValue(0)
         self.progress_label.setText("Starting conversion...")
         
@@ -2356,11 +2527,36 @@ class ICNSConverterGUI(QMainWindow):
         self._thread.started.connect(self._worker.run)
         self._thread.start()
 
+    def on_cancel_conversion(self):
+        """Cancel the ongoing conversion process"""
+        if not self.converting:
+            return
+        
+        # Update UI to show cancellation
+        self.progress_label.setText("Canceling conversion...")
+        self.cancel_button.setEnabled(False)
+        
+        # Stop the worker thread safely
+        if hasattr(self, '_thread') and self._thread.isRunning():
+            self._thread.quit()
+            self._thread.wait()
+        
+        # Update UI state
+        self.converting = False
+        self.convert_button.setEnabled(True)
+        self.progress.setValue(0)
+        self.progress_label.setText("Conversion canceled")
+        self.status_bar.showMessage("Conversion canceled by user")
+    
     def on_conversion_finished(self):
         self.converting = False
         if hasattr(self, '_thread') and self._thread.isRunning():
             self._thread.quit()
             self._thread.wait()
+        
+        # Reset button states
+        self.convert_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         
         # Add to history if remember_path is enabled
         if self.remember_path:
@@ -2386,7 +2582,6 @@ class ICNSConverterGUI(QMainWindow):
             self.show_success_view()
         else:
             # If completion notification is disabled, just show a simple status message
-            self.convert_button.setEnabled(True)
             self.progress.setValue(100)
             self.progress_label.setText("Conversion completed successfully!")
             self.status_bar.showMessage(f"Conversion completed: {os.path.basename(self.output_path)}")
@@ -2414,9 +2609,36 @@ class ICNSConverterGUI(QMainWindow):
     def on_conversion_error(self, error_message):
         self.converting = False
         self.convert_button.setEnabled(True)
+        self.cancel_button.setEnabled(False) # Reset cancel button state
         if hasattr(self, '_thread') and self._thread.isRunning():
             self._thread.quit()
             self._thread.wait()
+        
+        # Update task status if task mode is enabled
+        if hasattr(self, 'current_task_id') and self.current_task_id:
+            try:
+                import json
+                import time
+                
+                task_dir = os.path.expanduser("~/.converter/tasks")
+                task_file = os.path.join(task_dir, f"task_{self.current_task_id}.json")
+                
+                # Read existing task info
+                if os.path.exists(task_file):
+                    with open(task_file, "r") as f:
+                        task_info = json.load(f)
+                    
+                    # Update task info
+                    task_info["status"] = "failed"
+                    task_info["error"] = error_message
+                    task_info["timestamp"] = time.time()
+                    
+                    # Write updated task info
+                    with open(task_file, "w") as f:
+                        json.dump(task_info, f)
+            except Exception as e:
+                print(f"Error updating task status: {e}")
+        
         PopupTeachingTip.create(
             target=self.convert_button,
             icon=InfoBarIcon.ERROR,
@@ -2588,7 +2810,8 @@ class ICNSConverterGUI(QMainWindow):
             quality_param=options['quality'],
             preserve_folder_structure=options['preserve_folder_structure'],
             prefix=options['prefix'],
-            suffix=options['suffix']
+            suffix=options['suffix'],
+            auto_detect_max_size=options['auto_detect_max_size']
         )
         self.batch_worker.moveToThread(self.batch_thread)
         
@@ -2635,12 +2858,16 @@ class ICNSConverterGUI(QMainWindow):
         self.current_file_progress.setValue(percentage)
         self.current_file_label.setText(f"Processing {current_file} ({current_index}/{total_count})")
         
-    def on_batch_file_processed(self, filename, success, error_message):
+    def on_batch_file_processed(self, filename, input_path, output_path, success, error_message):
         """Handle individual file processing result"""
         if success:
             item_text = f"✓ {filename}"
             item = QListWidgetItem(item_text)
             item.setForeground(Qt.green)
+            # Add to history if conversion was successful and remember_path is enabled
+            if self.remember_path:
+                format_type = self.batch_format_combo.currentText().lower()
+                self.add_to_history(input_path, output_path, format_type)
         else:
             item_text = f"✗ {filename}: {error_message}"
             item = QListWidgetItem(item_text)
@@ -2745,6 +2972,7 @@ class ICNSConverterGUI(QMainWindow):
                 'min_size': self.batch_min_spin.value(),
                 'max_size': self.batch_max_spin.value(),
                 'use_auto_detect': getattr(self, 'batch_use_auto_detect', False),
+                'auto_detect_max_size': self.batch_auto_detect_check.isChecked() if hasattr(self, 'batch_auto_detect_check') else False,
                 'keep_aspect_ratio': self.batch_keep_aspect_check.isChecked(),
                 'auto_crop': self.batch_auto_crop_check.isChecked(),
                 'quality': self.batch_quality_slider.value(),
@@ -2879,6 +3107,35 @@ class ICNSConverterGUI(QMainWindow):
         if hasattr(self, 'status_bar'):
             self.status_bar.showMessage("Ready")
         
+        # Reset batch conversion related UI elements when returning to main view
+        if hasattr(self, 'batch_output_text'):
+            self.batch_output_text.clear()  # Clear batch output directory
+        if hasattr(self, 'batch_format_combo'):
+            self.batch_format_combo.setCurrentText("icns")  # Reset batch output format
+        if hasattr(self, 'batch_min_spin'):
+            self.batch_min_spin.setValue(16)  # Reset batch min size
+        if hasattr(self, 'batch_max_spin'):
+            self.batch_max_spin.setValue(1024)  # Reset batch max size
+        if hasattr(self, 'batch_options_tree'):
+            self.batch_options_tree.collapseAll()  # Reset batch options tree
+            # Expand basic categories for batch options
+            if self.batch_options_tree.topLevelItemCount() >= 3:
+                item0 = self.batch_options_tree.topLevelItem(0)
+                item1 = self.batch_options_tree.topLevelItem(1)
+                item2 = self.batch_options_tree.topLevelItem(2)
+                if item0:
+                    item0.setExpanded(True)  # Basic Options
+                if item1:
+                    item1.setExpanded(True)  # Image Processing
+                if item2:
+                    item2.setExpanded(False)  # Advanced Settings
+        if hasattr(self, 'start_batch_btn'):
+            self.start_batch_btn.setEnabled(True)  # Reset batch start button
+        if hasattr(self, 'stop_batch_btn'):
+            self.stop_batch_btn.setEnabled(False)  # Reset batch stop button
+        if hasattr(self, 'results_list_widget'):
+            self.results_list_widget.clear()  # Clear batch results list
+        
         # Only update history tab visibility if it's the first time or remember_path setting changed
         if not hasattr(self, '_history_tab_initialized'):
             self.create_history_tab()
@@ -2888,6 +3145,32 @@ class ICNSConverterGUI(QMainWindow):
     def update_progress(self, message, percentage):
         self.progress_label.setText(message)
         self.progress.setValue(percentage)
+        
+        # Update task progress file if task mode is enabled
+        if hasattr(self, 'current_task_id') and self.current_task_id:
+            try:
+                import json
+                import time
+                
+                task_dir = os.path.expanduser("~/.converter/tasks")
+                task_file = os.path.join(task_dir, f"task_{self.current_task_id}.json")
+                
+                # Read existing task info
+                if os.path.exists(task_file):
+                    with open(task_file, "r") as f:
+                        task_info = json.load(f)
+                    
+                    # Update task info
+                    task_info["status"] = "running"
+                    task_info["progress"] = percentage
+                    task_info["message"] = message
+                    task_info["timestamp"] = time.time()
+                    
+                    # Write updated task info
+                    with open(task_file, "w") as f:
+                        json.dump(task_info, f)
+            except Exception as e:
+                print(f"Error updating task progress: {e}")
 
     def center_window(self):
         qr = self.frameGeometry()

@@ -5,7 +5,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl, QObject, QSize
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl, QObject, QSize, QSettings
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QGridLayout,
                                QPushButton, QLabel, QLineEdit, QTextEdit, QProgressBar, 
                                QTabWidget, QWidget, QGroupBox, QListWidget, QListWidgetItem,
@@ -30,6 +30,7 @@ class CreateZipWorker(QObject):
     finished = Signal()
     progress_updated = Signal(str, int)
     conversion_error = Signal(str)
+    canceled = Signal()  # Add canceled signal
 
     def __init__(self, output_path, sources, archive_format, password=None):
         super().__init__()
@@ -37,6 +38,12 @@ class CreateZipWorker(QObject):
         self.sources = sources
         self.archive_format = archive_format
         self.password = password
+        self.is_stopped = False  # Add stop flag
+
+    def stop(self):
+        """Stop the archive creation process"""
+        self.is_stopped = True
+        self.progress_updated.emit("Canceling archive creation...", 0)
 
     def run(self):
         try:
@@ -53,8 +60,22 @@ class CreateZipWorker(QObject):
                 if not os.path.exists(source):
                     raise ValueError(f"Source file does not exist: {source}")
             
-            create_archive(self.output_path, self.sources, self.archive_format, self._update_progress_callback, self.password)
-            self.finished.emit()
+            # Update progress callback to check for cancellation
+            def progress_callback(message, percentage):
+                if self.is_stopped:
+                    raise RuntimeError("Archive creation canceled by user")
+                self.progress_updated.emit(message, percentage)
+            
+            create_archive(self.output_path, self.sources, self.archive_format, progress_callback, self.password)
+            if not self.is_stopped:
+                self.finished.emit()
+            else:
+                self.canceled.emit()
+        except RuntimeError as e:
+            if "canceled" in str(e).lower():
+                self.canceled.emit()
+            else:
+                self.conversion_error.emit(str(e))
         except ValueError as e:
             # Handle value errors
             self.conversion_error.emit(f"Input error: {str(e)}")
@@ -72,9 +93,12 @@ class CreateZipWorker(QObject):
             self.conversion_error.emit(str(e))
         except Exception as e:
             # Handle all other exceptions
-            import traceback
-            error_msg = f"Unexpected error: {str(e)}\n{traceback.format_exc()}"
-            self.conversion_error.emit(error_msg)
+            if self.is_stopped:
+                self.canceled.emit()
+            else:
+                import traceback
+                error_msg = f"Unexpected error: {str(e)}\n{traceback.format_exc()}"
+                self.conversion_error.emit(error_msg)
 
     def _update_progress_callback(self, message, percentage):
         self.progress_updated.emit(message, percentage)
@@ -84,25 +108,47 @@ class ExtractZipWorker(QObject):
     progress_updated = Signal(str, int)
     conversion_error = Signal(str)
     password_required = Signal(str) # Emits error message when password is required
+    canceled = Signal()  # Add canceled signal
 
     def __init__(self, zip_path, dest_path, password=None):
         super().__init__()
         self.archive_path = zip_path # Renamed for clarity with generic archive_manager
         self.extract_to = dest_path
         self.password = password
+        self.is_stopped = False  # Add stop flag
+
+    def stop(self):
+        """Stop the archive extraction process"""
+        self.is_stopped = True
+        self.progress_updated.emit("Canceling archive extraction...", 0)
 
     def run(self):
         try:
-            extract_archive(self.archive_path, self.extract_to, self._update_progress_callback, self.password)
-            self.finished.emit()
+            # Update progress callback to check for cancellation
+            def progress_callback(message, percentage):
+                if self.is_stopped:
+                    raise RuntimeError("Archive extraction canceled by user")
+                self.progress_updated.emit(message, percentage)
+            
+            extract_archive(self.archive_path, self.extract_to, progress_callback, self.password)
+            if not self.is_stopped:
+                self.finished.emit()
+            else:
+                self.canceled.emit()
         except RuntimeError as e:
-            # Handle password required case
-            if "password" in str(e).lower() or "encrypted" in str(e).lower():
-                self.password_required.emit(str(e))
+            if "canceled" in str(e).lower():
+                self.canceled.emit()
+            else:
+                # Handle password required case
+                if "password" in str(e).lower() or "encrypted" in str(e).lower():
+                    self.password_required.emit(str(e))
+                else:
+                    self.conversion_error.emit(str(e))
+        except Exception as e:
+            if self.is_stopped:
+                self.canceled.emit()
             else:
                 self.conversion_error.emit(str(e))
-        except Exception as e:
-            self.conversion_error.emit(str(e))
 
     def _update_progress_callback(self, message, percentage):
         self.progress_updated.emit(message, percentage)
@@ -111,26 +157,48 @@ class AddToZipWorker(QObject):
     finished = Signal()
     progress_updated = Signal(str, int)
     conversion_error = Signal(str)
+    canceled = Signal()  # Add canceled signal
 
     def __init__(self, zip_path, file_paths):
         super().__init__()
         self.archive_path = zip_path # Renamed for clarity with generic archive_manager
         self.files_to_add = file_paths if isinstance(file_paths, list) else [file_paths]
+        self.is_stopped = False  # Add stop flag
+
+    def stop(self):
+        """Stop the add to archive process"""
+        self.is_stopped = True
+        self.progress_updated.emit("Canceling add to archive...", 0)
 
     def run(self):
         try:
             # Handle multiple files
             total_files = len(self.files_to_add)
             for i, file_path in enumerate(self.files_to_add):
+                # Check if canceled before processing each file
+                if self.is_stopped:
+                    raise RuntimeError("Add to archive canceled by user")
+                
                 self._update_progress_callback(f"Adding file {i+1}/{total_files}: {os.path.basename(file_path)}", (i/total_files)*100)
                 add_to_archive(self.archive_path, file_path, None)  # No individual progress for each file
             
-            self._update_progress_callback(f"Added {total_files} files to archive", 100)
-            self.finished.emit()
+            if not self.is_stopped:
+                self._update_progress_callback(f"Added {total_files} files to archive", 100)
+                self.finished.emit()
+            else:
+                self.canceled.emit()
+        except RuntimeError as e:
+            if "canceled" in str(e).lower():
+                self.canceled.emit()
+            else:
+                self.conversion_error.emit(str(e))
         except NotImplementedError as e:
             self.conversion_error.emit(str(e))
         except Exception as e:
-            self.conversion_error.emit(str(e))
+            if self.is_stopped:
+                self.canceled.emit()
+            else:
+                self.conversion_error.emit(str(e))
 
     def _update_progress_callback(self, message, percentage):
         self.progress_updated.emit(message, percentage)
@@ -139,32 +207,55 @@ class ListZipContentsWorker(QObject):
     finished = Signal(list) # Emits list of contents
     conversion_error = Signal(str)
     password_required = Signal(str) # Emits error message when password is required
+    canceled = Signal()  # Add canceled signal
 
     def __init__(self, zip_path, password=None):
         super().__init__()
         self.archive_path = zip_path # Renamed for clarity with generic archive_manager
         self.password = password
         self.result = None  # Add result attribute to store results
+        self.is_stopped = False  # Add stop flag
+
+    def stop(self):
+        """Stop the list contents process"""
+        self.is_stopped = True
+        print(f"[DEBUG] ListZipContentsWorker: Stop requested")
 
     def run(self):
         try:
+            # Check if canceled before starting
+            if self.is_stopped:
+                self.canceled.emit()
+                return
+                
             print(f"[DEBUG] ListZipContentsWorker: Starting to list contents of {self.archive_path}")
+            # This operation is typically fast, but we'll still add a cancel check
             contents = list_archive_contents(self.archive_path, password=self.password)
             print(f"[DEBUG] ListZipContentsWorker: Got {len(contents) if contents else 0} items")
-            self.result = contents  # 设置result属性
-            self.finished.emit(contents)
-        except RuntimeError as e:
-            # Handle password required case
-            print(f"[DEBUG] ListZipContentsWorker: RuntimeError - {str(e)}")
-            if "password" in str(e).lower() or "encrypted" in str(e).lower():
-                self.password_required.emit(str(e))
+            
+            if not self.is_stopped:
+                self.result = contents  # 设置result属性
+                self.finished.emit(contents)
             else:
-                self.conversion_error.emit(str(e))
+                self.canceled.emit()
+        except RuntimeError as e:
+            if not self.is_stopped:
+                # Handle password required case
+                print(f"[DEBUG] ListZipContentsWorker: RuntimeError - {str(e)}")
+                if "password" in str(e).lower() or "encrypted" in str(e).lower():
+                    self.password_required.emit(str(e))
+                else:
+                    self.conversion_error.emit(str(e))
+            else:
+                self.canceled.emit()
         except Exception as e:
-            print(f"[DEBUG] ListZipContentsWorker: Exception - {str(e)}")
-            import traceback
-            traceback.print_exc()
-            self.conversion_error.emit(str(e))
+            if not self.is_stopped:
+                print(f"[DEBUG] ListZipContentsWorker: Exception - {str(e)}")
+                import traceback
+                traceback.print_exc()
+                self.conversion_error.emit(str(e))
+            else:
+                self.canceled.emit()
 
 class BatchExtractWorker(QObject):
     """Worker for batch archive extraction"""
@@ -173,6 +264,7 @@ class BatchExtractWorker(QObject):
     conversion_error = Signal(str)  # Emits error messages
     individual_progress = Signal(str, str, int)  # Emits archive name, message, percentage
     status_updated = Signal(str)  # Emits status messages
+    canceled = Signal()  # Add canceled signal for consistency
 
     def __init__(self, archive_paths, dest_folder, create_subfolders=True, overwrite_files=False, parent_gui=None):
         super().__init__()
@@ -316,6 +408,8 @@ class BatchExtractWorker(QObject):
                 self.finished.emit(self.success_count, self.failed_count, self.success_files, self.failed_files)
             else:
                 self.status_updated.emit("Batch extraction stopped by user")
+                # Emit canceled signal instead of finished for consistency with other workers
+                self.canceled.emit()
                 self.finished.emit(self.success_count, self.failed_count, self.success_files, self.failed_files)
                 
         except ValueError as e:
@@ -406,6 +500,9 @@ class ZipGUI(QMainWindow):
         setTheme(Theme.AUTO)
         self.themeListener.start()
         qconfig.themeChanged.connect(self._onThemeChanged)
+        
+        # Load settings
+        self.load_settings()
     def closeEvent(self, event):
         """Window close event"""
         # Stop listener thread
@@ -431,6 +528,9 @@ class ZipGUI(QMainWindow):
         self.create_archive_format = "zip" # Default to zip
         self.create_zip_worker_thread = None # Renamed to generic for clarity
         self.create_zip_worker = None # Renamed to generic for clarity
+        
+        # Task mode setting
+        self.task_mode = False
         
         # Variables for Extract ZIP tab
         self.extract_zip_path = ""
@@ -530,6 +630,27 @@ class ZipGUI(QMainWindow):
 
     def _apply_system_theme(self, is_dark_mode):
         self._apply_theme(is_dark_mode)
+    
+    def load_settings(self):
+        """Load settings from QSettings"""
+        settings = QSettings("MyCompany", "ConverterApp")
+        
+        # Load task mode setting
+        self.task_mode = settings.value("task_mode", False, type=bool)
+        if hasattr(self, 'task_mode_check'):
+            self.task_mode_check.setChecked(self.task_mode)
+    
+    def save_settings(self):
+        """Save settings to QSettings"""
+        settings = QSettings("MyCompany", "ConverterApp")
+        
+        # Save task mode setting
+        if hasattr(self, 'task_mode_check'):
+            settings.setValue("task_mode", self.task_mode_check.isChecked())
+        else:
+            settings.setValue("task_mode", self.task_mode)
+        
+        settings.sync()
 
     def center_window(self):
         qr = self.frameGeometry()
@@ -652,6 +773,11 @@ class ZipGUI(QMainWindow):
         # Add GroupBox to main layout
         tab_sizer.addWidget(sources_box, 1) # Give sources box more stretch
 
+        # Task mode control
+        self.task_mode_check = CheckBox("Enable Task Mode")
+        self.task_mode_check.setChecked(False)
+        tab_sizer.addWidget(self.task_mode_check)
+        
         # Progress bar
         self.create_progress_label = QLabel("")
         tab_sizer.addWidget(self.create_progress_label)
@@ -661,11 +787,28 @@ class ZipGUI(QMainWindow):
         self.create_progress.setValue(0)
         tab_sizer.addWidget(self.create_progress)
 
+        # Create button layout with cancel button
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
+        
         # Create button
         self.create_button = PrimaryPushButton("Create Archive") # Changed button text
-
         self.create_button.clicked.connect(self.start_create_archive) # Changed signal
-        tab_sizer.addWidget(self.create_button, 0, Qt.AlignmentFlag.AlignCenter)
+        button_layout.addWidget(self.create_button)
+        
+        # Cancel button
+        self.create_cancel_button = PushButton("Cancel")
+        self.create_cancel_button.clicked.connect(self.cancel_create_archive)
+        self.create_cancel_button.setEnabled(False)  # Initially disabled
+        button_layout.addWidget(self.create_cancel_button)
+        
+        # Create a container widget to center the button layout
+        button_container = QWidget()
+        button_container_layout = QHBoxLayout(button_container)
+        button_container_layout.addStretch()
+        button_container_layout.addLayout(button_layout)
+        button_container_layout.addStretch()
+        tab_sizer.addWidget(button_container)
         
         tab_sizer.addStretch(1) # Push content to top
 
@@ -774,11 +917,28 @@ class ZipGUI(QMainWindow):
         self.extract_progress.setValue(0)
         single_sizer.addWidget(self.extract_progress)
 
+        # Extract button layout with cancel button
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
+        
         # Extract button
         self.extract_button = PrimaryPushButton("Extract Archive") # Changed button text
-
         self.extract_button.clicked.connect(self.start_extract_archive) # Changed signal
-        single_sizer.addWidget(self.extract_button, 0, Qt.AlignmentFlag.AlignCenter)
+        button_layout.addWidget(self.extract_button)
+        
+        # Cancel button
+        self.extract_cancel_button = PushButton("Cancel")
+        self.extract_cancel_button.clicked.connect(self.cancel_extract_archive)
+        self.extract_cancel_button.setEnabled(False)  # Initially disabled
+        button_layout.addWidget(self.extract_cancel_button)
+        
+        # Create a container widget to center the button layout
+        button_container = QWidget()
+        button_container_layout = QHBoxLayout(button_container)
+        button_container_layout.addStretch()
+        button_container_layout.addLayout(button_layout)
+        button_container_layout.addStretch()
+        single_sizer.addWidget(button_container)
         
         self.extract_tab_widget.addTab(single_panel, "Single Extract")
 
@@ -919,14 +1079,17 @@ class ZipGUI(QMainWindow):
         left_options.addWidget(self.batch_skip_existing_files_check)
         
         # Overwrite strategy options
-        self.overwrite_strategy_combo = ComboBox()
+        self.overwrite_strategy_combo = ModelComboBox()
         self.overwrite_strategy_combo.addItems([
             "Overwrite all",
             "Skip existing",
             "Rename new",
             "Overwrite if newer"
         ])
+        self.overwrite_strategy_combo.setMinimumHeight(30)
+        setCustomStyleSheet(self.overwrite_strategy_combo, CON.qss_combo_2, CON.qss_combo_2)
         left_options.addWidget(QLabel("Overwrite Strategy:"))
+        
         left_options.addWidget(self.overwrite_strategy_combo)
         
         options_layout.addLayout(left_options)
@@ -1107,11 +1270,28 @@ class ZipGUI(QMainWindow):
         self.add_progress.setValue(0)
         tab_sizer.addWidget(self.add_progress)
 
+        # Add button layout with cancel button
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
+        
         # Add button
         self.add_button = PrimaryPushButton("Add to Archive") # Changed button text
-
         self.add_button.clicked.connect(self.start_add_to_archive) # Changed signal
-        tab_sizer.addWidget(self.add_button, 0, Qt.AlignmentFlag.AlignCenter)
+        button_layout.addWidget(self.add_button)
+        
+        # Cancel button
+        self.add_cancel_button = PushButton("Cancel")
+        self.add_cancel_button.clicked.connect(self.cancel_add_to_archive)
+        self.add_cancel_button.setEnabled(False)  # Initially disabled
+        button_layout.addWidget(self.add_cancel_button)
+        
+        # Create a container widget to center the button layout
+        button_container = QWidget()
+        button_container_layout = QHBoxLayout(button_container)
+        button_container_layout.addStretch()
+        button_container_layout.addLayout(button_layout)
+        button_container_layout.addStretch()
+        tab_sizer.addWidget(button_container)
         
         tab_sizer.addStretch(1) # Push content to top
 
@@ -1194,11 +1374,28 @@ class ZipGUI(QMainWindow):
         
         tab_sizer.addWidget(contents_box, 2) # Give contents group box more stretch
 
+        # List button layout with cancel button
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
+        
         # List button
         self.list_button = PrimaryPushButton("List Contents")
-
         self.list_button.clicked.connect(self.start_list_archive_contents) # Changed signal
-        tab_sizer.addWidget(self.list_button, 0, Qt.AlignmentFlag.AlignCenter)
+        button_layout.addWidget(self.list_button)
+        
+        # Cancel button
+        self.list_cancel_button = PushButton("Cancel")
+        self.list_cancel_button.clicked.connect(self.cancel_list_archive_contents)
+        self.list_cancel_button.setEnabled(False)  # Initially disabled
+        button_layout.addWidget(self.list_cancel_button)
+        
+        # Create a container widget to center the button layout
+        button_container = QWidget()
+        button_container_layout = QHBoxLayout(button_container)
+        button_container_layout.addStretch()
+        button_container_layout.addLayout(button_layout)
+        button_container_layout.addStretch()
+        tab_sizer.addWidget(button_container)
         
         tab_sizer.addStretch(1) # Push content to top
 
@@ -1325,6 +1522,34 @@ class ZipGUI(QMainWindow):
         # Password is considered valid for archive creation
         # We don't need to verify it against an existing archive since we're creating a new one
         return True
+    
+    def confirm_cancel(self, operation_name):
+        """Show confirmation dialog for canceling an operation
+        
+        Args:
+            operation_name: Name of the operation being canceled
+            
+        Returns:
+            bool: True if user confirmed cancel, False otherwise
+        """
+        reply = QMessageBox.question(
+            self,
+            "取消操作",
+            f"确定要取消当前的{operation_name}操作吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        return reply == QMessageBox.StandardButton.Yes
+    
+    def log_cancel(self, operation_type):
+        """Log a cancel operation
+        
+        Args:
+            operation_type: Type of operation that was canceled
+        """
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] [CANCEL] {operation_type} operation canceled by user")
     
     def on_tab_changed(self, index):
         """Handle tab change without animation"""
@@ -1499,6 +1724,10 @@ class ZipGUI(QMainWindow):
         self.create_progress_label.setText("Starting archive creation...")
         self.create_progress.setValue(0)
         
+        # Enable cancel button and disable create button during operation
+        self.create_button.setEnabled(False)
+        self.create_cancel_button.setEnabled(True)
+        
         self.create_zip_worker = CreateZipWorker(self.create_output_path, self.create_sources, self.create_archive_format, password)
         self.create_zip_worker_thread = QThread()
         self.create_zip_worker.moveToThread(self.create_zip_worker_thread)
@@ -1506,6 +1735,7 @@ class ZipGUI(QMainWindow):
         self.create_zip_worker.finished.connect(self.on_create_archive_finished)
         self.create_zip_worker.progress_updated.connect(self.update_create_progress)
         self.create_zip_worker.conversion_error.connect(self.on_create_archive_error)
+        self.create_zip_worker.canceled.connect(self.on_create_archive_canceled)
         self.create_zip_worker_thread.started.connect(self.create_zip_worker.run)
         self.create_zip_worker_thread.start()
 
@@ -1547,8 +1777,43 @@ class ZipGUI(QMainWindow):
         # Update archive status display
         self.update_archive_status(archive_info, False)
     
+    def cancel_create_archive(self):
+        """Cancel the archive creation process"""
+        if self.confirm_cancel("归档创建"):
+            self.log_cancel("Create Archive")
+            # Stop the worker
+            if self.create_zip_worker:
+                self.create_zip_worker.stop()
+        
+    def on_create_archive_canceled(self):
+        """Handle archive creation canceled"""
+        # 使用强制线程清理方法
+        self._force_cleanup_create_thread()
+        
+        # Reset button states
+        self.create_button.setEnabled(True)
+        self.create_cancel_button.setEnabled(False)
+        
+        # Update progress and status
+        self.create_progress.setValue(0)
+        self.create_progress_label.setText("Archive creation canceled")
+        
+        # Show cancel notification
+        self._show_info_bar(
+            title='Canceled',
+            content='Archive creation canceled by user',
+            duration=2000
+        )
+        
+        # Update archive status display
+        self.update_archive_status("Archive creation canceled", False)
+    
     def _force_cleanup_create_thread(self):
         """强制清理创建归档的线程，确保完全终止"""
+        # Reset button states
+        self.create_button.setEnabled(True)
+        self.create_cancel_button.setEnabled(False)
+        
         if self.create_zip_worker_thread:
             if self.create_zip_worker_thread.isRunning():
                 # 先尝试正常退出
@@ -2030,6 +2295,10 @@ class ZipGUI(QMainWindow):
 
         self.extract_progress_label.setText("Starting archive extraction...")
         self.extract_progress.setValue(0)
+        
+        # Enable cancel button and disable extract button during operation
+        self.extract_button.setEnabled(False)
+        self.extract_cancel_button.setEnabled(True)
 
         # Check if archive is password protected by attempting to list contents first
         try:
@@ -2081,6 +2350,7 @@ class ZipGUI(QMainWindow):
         self.extract_zip_worker.progress_updated.connect(self.update_extract_progress)
         self.extract_zip_worker.conversion_error.connect(self.on_extract_archive_error)
         self.extract_zip_worker.password_required.connect(self.on_extract_archive_error)
+        self.extract_zip_worker.canceled.connect(self.on_extract_archive_canceled)
         self.extract_zip_worker_thread.started.connect(self.extract_zip_worker.run)
         self.extract_zip_worker_thread.start()
 
@@ -2139,6 +2409,9 @@ class ZipGUI(QMainWindow):
                     self.extract_zip_worker = ExtractZipWorker(self.extract_zip_path, self.extract_dest_path, password)
                     self.extract_zip_worker_thread = QThread()
                     self.extract_zip_worker.moveToThread(self.extract_zip_worker_thread)
+                    
+                    # Connect signals including canceled signal
+                    self.extract_zip_worker.canceled.connect(self.on_extract_archive_canceled)
 
                     # 连接信号
                     self.extract_zip_worker.finished.connect(self.on_extract_archive_finished)
@@ -2181,8 +2454,40 @@ class ZipGUI(QMainWindow):
         )
         self.extract_progress_label.setText("Archive extraction failed.")
     
+    def cancel_extract_archive(self):
+        """Cancel the archive extraction process"""
+        if self.confirm_cancel("归档解压"):
+            self.log_cancel("Extract Archive")
+            # Stop the worker
+            if self.extract_zip_worker:
+                self.extract_zip_worker.stop()
+        
+    def on_extract_archive_canceled(self):
+        """Handle archive extraction canceled"""
+        # 使用强制线程清理方法
+        self._force_cleanup_thread()
+        
+        # Update progress and status
+        self.extract_progress.setValue(0)
+        self.extract_progress_label.setText("Archive extraction canceled")
+        
+        # Show cancel notification
+        self._show_info_bar(
+            title='Canceled',
+            content='Archive extraction canceled by user',
+            duration=2000
+        )
+        
+        # Update password status to indicate unknown status
+        self.is_password_protected = False
+        self.update_password_status_extract(False, "Archive Status Unknown")
+    
     def _force_cleanup_thread(self):
         """强制清理线程，确保完全终止"""
+        # Reset button states
+        self.extract_button.setEnabled(True)
+        self.extract_cancel_button.setEnabled(False)
+        
         if self.extract_zip_worker_thread:
             if self.extract_zip_worker_thread.isRunning():
                 # 先尝试正常退出
@@ -2272,6 +2577,10 @@ class ZipGUI(QMainWindow):
 
         self.add_progress_label.setText("Starting archive file addition...")
         self.add_progress.setValue(0)
+        
+        # Enable cancel button and disable add button during operation
+        self.add_button.setEnabled(False)
+        self.add_cancel_button.setEnabled(True)
 
         # Handle multiple files - split by semicolon if contains multiple paths
         if isinstance(self.add_file_path, list):
@@ -2290,7 +2599,8 @@ class ZipGUI(QMainWindow):
 
         self.add_to_zip_worker.finished.connect(self.on_add_to_archive_finished)
         self.add_to_zip_worker.progress_updated.connect(self.update_add_progress)
-        self.add_to_zip_worker.conversion_error.connect(self.on_add_to_archive_error)
+        self.add_to_zip_worker.finished.connect(self.on_add_to_archive_finished)
+        self.add_to_zip_worker.canceled.connect(self.on_add_to_archive_canceled)
         self.add_to_zip_worker_thread.started.connect(self.add_to_zip_worker.run)
         self.add_to_zip_worker_thread.start()
 
@@ -2325,8 +2635,36 @@ class ZipGUI(QMainWindow):
         )
         self.add_progress_label.setText("Archive file addition failed.")
     
+    def cancel_add_to_archive(self):
+        """Cancel the add to archive process"""
+        if self.confirm_cancel("添加到归档"):
+            self.log_cancel("Add to Archive")
+            # Stop the worker
+            if self.add_to_zip_worker:
+                self.add_to_zip_worker.stop()
+        
+    def on_add_to_archive_canceled(self):
+        """Handle add to archive canceled"""
+        # 使用强制线程清理方法
+        self._force_cleanup_add_thread()
+        
+        # Update progress and status
+        self.add_progress.setValue(0)
+        self.add_progress_label.setText("Add to archive canceled")
+        
+        # Show cancel notification
+        self._show_info_bar(
+            title='Canceled',
+            content='Add to archive canceled by user',
+            duration=2000
+        )
+    
     def _force_cleanup_add_thread(self):
         """强制清理添加到归档的线程，确保完全终止"""
+        # Reset button states
+        self.add_button.setEnabled(True)
+        self.add_cancel_button.setEnabled(False)
+        
         if self.add_to_zip_worker_thread:
             if self.add_to_zip_worker_thread.isRunning():
                 # 先尝试正常退出
@@ -2408,6 +2746,10 @@ class ZipGUI(QMainWindow):
 
         self.contents_listbox.clear()
         self.contents_listbox.addItem("Listing contents...")
+        
+        # Enable cancel button and disable list button during operation
+        self.list_button.setEnabled(False)
+        self.list_cancel_button.setEnabled(True)
 
         # Reset password protection status
         self.is_password_protected = False
@@ -2423,6 +2765,7 @@ class ZipGUI(QMainWindow):
         self.list_zip_worker.finished.connect(self.on_list_zip_finished)
         self.list_zip_worker.conversion_error.connect(self.on_list_archive_error)
         self.list_zip_worker.password_required.connect(self.on_password_required)
+        self.list_zip_worker.canceled.connect(self.on_list_archive_canceled)
         self.list_zip_worker_thread.started.connect(self.list_zip_worker.run)
         self.list_zip_worker_thread.start()
 
@@ -2611,8 +2954,36 @@ class ZipGUI(QMainWindow):
         # Update password status for other errors
         self.update_password_status_list(False, "Error Listing Contents")
     
+    def cancel_list_archive_contents(self):
+        """Cancel the list archive contents process"""
+        if self.confirm_cancel("列出内容"):
+            self.log_cancel("List Contents")
+            # Stop the worker
+            if self.list_zip_worker:
+                self.list_zip_worker.stop()
+        
+    def on_list_archive_canceled(self):
+        """Handle list archive contents canceled"""
+        # 使用强制线程清理方法
+        self._force_cleanup_list_thread()
+        
+        # Update listbox and status
+        self.contents_listbox.clear()
+        self.contents_listbox.addItem("List contents canceled")
+        
+        # Show cancel notification
+        self._show_info_bar(
+            title='Canceled',
+            content='List contents canceled by user',
+            duration=2000
+        )
+    
     def _force_cleanup_list_thread(self):
         """强制清理列出归档内容的线程，确保完全终止"""
+        # Reset button states
+        self.list_button.setEnabled(True)
+        self.list_cancel_button.setEnabled(False)
+        
         if self.list_zip_worker_thread:
             if self.list_zip_worker_thread.isRunning():
                 # 先尝试正常退出

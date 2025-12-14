@@ -3,8 +3,8 @@
 from concurrent.futures import thread
 from importlib import reload
 import sys
-
 import os
+import threading
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -16,12 +16,25 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QSizePolicy,
     QGroupBox,
-    QDialog
+    QDialog,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QFrame,
+    QStackedWidget
 )
 from PySide6.QtGui import QIcon, QPainter, QPixmap, QPalette
 from PySide6.QtCore import QSize, Qt, QSettings, QPropertyAnimation, QEasingCurve, QTimer
 import multiprocessing
-from qfluentwidgets import Theme, setTheme,qconfig,SystemThemeListener
+from qfluentwidgets import (
+    Theme, setTheme, qconfig, SystemThemeListener,
+    FluentWindow, NavigationItemPosition,
+    CardWidget, PushButton, IconWidget,
+    BodyLabel, CaptionLabel, SubtitleLabel, TitleLabel, LargeTitleLabel,
+    FluentIcon as FIF, setFont, TransparentToolButton, SegmentedWidget,
+    setCustomStyleSheet
+)
+from qfluentwidgets.components.widgets.card_widget import SimpleCardWidget
  # Keep for freeze_support, but remove direct Process usage
 from settings.update_settings_gui import UpdateDialog
 from settings.settings_gui import SettingsDialog
@@ -55,7 +68,303 @@ def create_placeholder_icon(path: str, color: str, text: str):
         return True
     return False
 
-class IconButtonsWindow(QWidget):
+
+class AppCard(CardWidget):
+    """Application card widget"""
+    
+    def __init__(self, icon_path, title, content, app_type, parent=None):
+        super().__init__(parent)
+        self.icon_path = icon_path
+        self.title = title
+        self.content = content
+        self.app_type = app_type
+        
+        self.init_ui()
+    
+    def init_ui(self):
+        """Initialize UI components"""
+        # Icon widget
+        self.icon_widget = IconWidget(self.icon_path)
+        self.icon_widget.setFixedSize(48, 48)
+        
+        # Text labels
+        self.title_label = BodyLabel(self.title, self)
+        self.content_label = CaptionLabel(self.content, self)
+        
+        # Buttons
+        self.open_button = PushButton('Open', self)
+        self.open_button.setFixedWidth(120)
+        self.more_button = TransparentToolButton(FIF.MORE, self)
+        self.more_button.setFixedSize(32, 32)
+        
+        # Layouts
+        self.h_box_layout = QHBoxLayout(self)
+        self.v_box_layout = QVBoxLayout()
+        
+        # Set fixed height
+        self.setFixedHeight(73)
+        
+        # Configure layouts
+        self.h_box_layout.setContentsMargins(20, 11, 11, 11)
+        self.h_box_layout.setSpacing(15)
+        
+        self.v_box_layout.setContentsMargins(0, 0, 0, 0)
+        self.v_box_layout.setSpacing(0)
+        
+        # Add components to layouts
+        self.h_box_layout.addWidget(self.icon_widget)
+        
+        self.v_box_layout.addWidget(self.title_label, 0, Qt.AlignVCenter)
+        self.v_box_layout.addWidget(self.content_label, 0, Qt.AlignVCenter)
+        self.h_box_layout.addLayout(self.v_box_layout)
+        
+        self.h_box_layout.addStretch(1)
+        self.h_box_layout.addWidget(self.open_button, 0, Qt.AlignRight)
+        self.h_box_layout.addWidget(self.more_button, 0, Qt.AlignRight)
+        
+        # Connect signals
+        self.open_button.clicked.connect(self.on_open_clicked)
+    
+    def on_open_clicked(self):
+        """Handle open button clicked event"""
+        if self.app_type == 'image':
+            run_image_app()
+        elif self.app_type == 'arc':
+            run_zip_app()
+
+class HomeInterface(QFrame):
+    """Home interface showing app cards"""
+    
+    def __init__(self, icon_paths, parent=None):
+        super().__init__(parent)
+        self.icon_paths = icon_paths
+        self.setObjectName("home_interface")
+        self.init_ui()
+    
+    def init_ui(self):
+        """Initialize UI components"""
+        # Layouts
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(40, 35, 40, 35)
+        main_layout.setSpacing(25)
+        
+        # Title
+        title_label = LargeTitleLabel("Converter")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(title_label)
+        
+        # Image Converter card
+        image_card = AppCard(
+            self.icon_paths['app_icon_path'],
+            "Image Converter",
+            "Convert PNG images to ICNS format for macOS applications",
+            "image"
+        )
+        main_layout.addWidget(image_card)
+        
+        # Archive Converter card
+        archive_card = AppCard(
+            self.icon_paths['zip_icon_path'],
+            "Archive Converter",
+            "Create and extract ZIP, RAR, and 7Z archive files",
+            "arc"
+        )
+        main_layout.addWidget(archive_card)
+        
+        # Add stretch to push content to top
+        main_layout.addStretch(1)
+
+
+class TaskInterface(QFrame):
+    """Task management interface"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("task_interface")
+        self.init_ui()
+    
+    def init_ui(self):
+        """Initialize UI components"""
+        from qfluentwidgets import setCustomStyleSheet
+        
+        # Layouts
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(20)
+        
+        # Title
+        title_label = SubtitleLabel("Task Manager")
+        main_layout.addWidget(title_label)
+        
+        # Task list
+        self.task_list = QListWidget()
+        self.task_list.setObjectName("task_list")
+        from con import CON
+        setCustomStyleSheet(self.task_list, CON.qss_combo, CON.qss_combo)
+        main_layout.addWidget(self.task_list, 1)
+        
+        # Task controls
+        controls_layout = QHBoxLayout()
+        
+        # Clear completed tasks button
+        self.clear_tasks_button = PushButton("Clear Completed")
+        self.clear_tasks_button.setObjectName("clear_tasks_button")
+        self.clear_tasks_button.setIconSize(QSize(16, 16))
+        from con import CON
+        setCustomStyleSheet(self.clear_tasks_button, CON.qss, CON.qss)
+        controls_layout.addWidget(self.clear_tasks_button)
+        
+        # Add stretch to push button to left
+        controls_layout.addStretch(1)
+        
+        main_layout.addLayout(controls_layout)
+
+
+class SettingsInterface(QFrame):
+    """Settings interface"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("settings_interface")
+        self.init_ui()
+        self.load_settings()
+        self._connect_settings_signals()
+    
+    def init_ui(self):
+        """Initialize UI components"""
+        # Layouts
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
+        
+        # Create SegmentedWidget and QStackedWidget
+        self.segmented_widget = SegmentedWidget(self)
+        setCustomStyleSheet(self.segmented_widget, CON.qss_seg, CON.qss_seg)
+        self.stacked_widget = QStackedWidget(self)
+        
+        # General page
+        general_page = QWidget()
+        general_layout = QVBoxLayout(general_page)
+        general_layout.setContentsMargins(15, 15, 15, 15)
+        general_layout.setSpacing(15)
+        
+        from settings.general_settings import GeneralSettingsWidget
+        self.general_widget = GeneralSettingsWidget()
+        self.general_widget.setObjectName("general_widget")
+        general_layout.addWidget(self.general_widget)
+        general_layout.addStretch()
+        
+        self.stacked_widget.addWidget(general_page)
+        
+        # Debug page
+        debug_page = QWidget()
+        debug_layout = QVBoxLayout(debug_page)
+        debug_layout.setContentsMargins(15, 15, 15, 15)
+        debug_layout.setSpacing(15)
+        
+        from debug.debug_gui import DebugSettingsWidget
+        self.debug_widget = DebugSettingsWidget()
+        self.debug_widget.setObjectName("debug_widget")
+        debug_layout.addWidget(self.debug_widget)
+        debug_layout.addStretch()
+        
+        self.stacked_widget.addWidget(debug_page)
+        
+        # Update page
+        update_page = QWidget()
+        update_layout = QVBoxLayout(update_page)
+        update_layout.setContentsMargins(15, 15, 15, 15)
+        update_layout.setSpacing(15)
+        
+        from settings.update_settings_gui import UpdateDialog
+        self.update_group = UpdateDialog()
+        self.update_group.setObjectName("update_group")
+        update_layout.addWidget(self.update_group)
+        update_layout.addStretch()
+        
+        self.stacked_widget.addWidget(update_page)
+        
+        # Add tab items
+        self.add_sub_interface(general_page, "general_page", "General")
+        self.add_sub_interface(debug_page, "debug_page", "Debug")
+        self.add_sub_interface(update_page, "update_page", "Update")
+        
+        # Connect tab change signal
+        self.stacked_widget.currentChanged.connect(self.on_current_index_changed)
+        self.stacked_widget.setCurrentIndex(0)
+        self.segmented_widget.setCurrentItem("general_page")
+        
+        # Add to main layout
+        main_layout.addWidget(self.segmented_widget, 0, Qt.AlignmentFlag.AlignHCenter)
+        main_layout.addWidget(self.stacked_widget, 1)
+    
+    def add_sub_interface(self, widget: QWidget, object_name: str, text: str):
+        """Add sub-page to SegmentedWidget and QStackedWidget"""
+        widget.setObjectName(object_name)
+        self.segmented_widget.addItem(
+            routeKey=object_name,
+            text=text,
+            onClick=lambda: self.stacked_widget.setCurrentWidget(widget)
+        )
+    
+    def on_current_index_changed(self, index):
+        """Handle current page change"""
+        widget = self.stacked_widget.widget(index)
+        if widget:
+            self.segmented_widget.setCurrentItem(widget.objectName())
+    
+    def load_settings(self):
+        """Load settings from QSettings"""
+        settings = QSettings("MyCompany", "ConverterApp")
+        # Theme settings - always set to System Default (index 0)
+        settings.setValue("theme", 0) # Force save System Default
+        
+        # Load General settings (includes Image Converter settings)
+        if hasattr(self, 'general_widget'):
+            self.general_widget.load_settings()
+        
+        # Debug settings are now handled by the DebugSettingsWidget itself
+    
+    def _connect_settings_signals(self):
+        """Connect all settings controls' signals to real-time saving"""
+        # Connect general widget settings
+        if hasattr(self, 'general_widget'):
+            self.general_widget.settings_changed.connect(self.on_settings_changed)
+        
+        # Connect debug widget auto-save signals (already handled in DebugSettingsWidget)
+        # Debug settings are now handled by the DebugSettingsWidget itself
+        
+        # Connect update dialog settings
+        # Update settings related signal connections have been removed, handled internally by UpdateDialog
+    
+    def on_settings_changed(self):
+        """Handle any settings change and trigger auto-save"""
+        self.save_settings_async()
+    
+    def save_settings_async(self):
+        """Asynchronously save settings in a separate thread"""
+        def save_thread():
+            settings = QSettings("MyCompany", "ConverterApp")
+            # Theme settings - always System Default
+            settings.setValue("theme", 0)
+            
+            # Save General settings
+            if hasattr(self, 'general_widget'):
+                self.general_widget.save_settings()
+            
+            # Debug settings are now handled by the DebugSettingsWidget itself
+            
+            # Image converter settings are now saved by the general widget
+            # No separate image converter widget exists anymore
+            
+            settings.sync() # Ensure settings are written to disk
+        
+        # Start separate thread to execute save operation
+        threading.Thread(target=save_thread).start()
+
+
+class MainWindow(FluentWindow):
+    """Main application window"""
     
     def _load_qss_file(self, filename):
         """Load QSS content from external file"""
@@ -84,13 +393,11 @@ class IconButtonsWindow(QWidget):
     def __init__(self, q_app: QApplication):
         super().__init__()
         self._q_app = q_app # Store QApplication instance
-        self.setWindowTitle("Converter")
-        # Load theme setting immediately
         self.settings = QSettings("MyCompany", "ConverterApp")
         self.theme_setting = self.settings.value("theme", 0, type=int)
         self.themeListener = SystemThemeListener(self)
         
-        self.path= os.path.dirname(os.path.abspath(__file__))
+        self.path = os.path.dirname(os.path.abspath(__file__))
         # Define paths for icon files
         self.app_icon_path = os.path.join(self.path,"AppIcon.png")
         self.appd_icon_path = os.path.join(self.path,"AppIcond.png")
@@ -113,15 +420,94 @@ class IconButtonsWindow(QWidget):
             print("Note: zipd.png file not found. Will try to create a PNG placeholder icon.")
             create_placeholder_icon(self.zipd_icon_path, "dimgray", "ZipD")
 
-        self.init_ui()
+        # Icon paths dictionary for home interface
+        self.icon_paths = {
+            'app_icon_path': self.app_icon_path,
+            'appd_icon_path': self.appd_icon_path,
+            'zip_icon_path': self.zip_icon_path,
+            'zipd_icon_path': self.zipd_icon_path
+        }
+        
+        # Initialize interfaces
+        self.init_interfaces()
+        
+        # Initialize window
+        self.init_window()
+        self.init_navigation()
+        
+        # Initialize task manager
+        self.init_task_manager()
+        
+        # Apply theme
         setTheme(Theme.AUTO)
         self.themeListener.start()
         qconfig.themeChanged.connect(self._onThemeChanged)
-        # Apply theme based on settings or initial system detection
-        self._apply_system_theme_from_settings() 
+        self._apply_system_theme_from_settings()
+    
+    def init_interfaces(self):
+        """Initialize sub-interfaces"""
+        # Create home interface with app cards
+        self.home_interface = HomeInterface(self.icon_paths)
+        
+        # Create task interface for task management
+        self.task_interface = TaskInterface()
+        
+        # Create settings interface
+        self.settings_interface = SettingsInterface()
+    
+    def init_window(self):
+        """Initialize window properties"""
+        self.setWindowTitle("Converter")
+        self.setWindowIcon(QIcon(self.app_icon_path))
+        self.resize(900, 700)
+    
+    def init_navigation(self):
+        """Initialize navigation items"""
+        self.addSubInterface(
+            self.home_interface, 
+            FIF.HOME, 
+            'Home'
+        )
+        
+        self.addSubInterface(
+            self.task_interface, 
+            FIF.HISTORY, 
+            'Task Manager'
+        )
+        
+        self.addSubInterface(
+            self.settings_interface, 
+            FIF.SETTING, 
+            'Settings',
+            NavigationItemPosition.BOTTOM
+        )
     def closeEvent(self, event):
         """窗口关闭事件"""
-        # 停止监听器线程
+        # Check if task mode is enabled and if any sub-windows are open
+        task_mode_enabled = self.settings.value("task_mode", False, type=bool)
+        if task_mode_enabled:
+            has_open_windows = False
+            # Get all top level widgets
+            for widget in QApplication.instance().topLevelWidgets():
+                # Check if there are any image or arc windows open
+                if widget is not self:
+                    window_title = widget.windowTitle()
+                    if "Image Converter" in window_title or "Archive File Processing Tool" in window_title:
+                        has_open_windows = True
+                        break
+            
+            if has_open_windows:
+                # Show modal dialog explaining why closing is not allowed
+                QMessageBox.information(
+                    self,
+                    "Cannot Close",
+                    "Task Mode is enabled and sub-windows are open. Please close all sub-windows first.",
+                    QMessageBox.StandardButton.Ok
+                )
+                event.ignore()
+                return
+        
+        # Stop listener thread
         if hasattr(self, 'themeListener'):
             self.themeListener.terminate()
             self.themeListener.deleteLater()
@@ -168,8 +554,59 @@ class IconButtonsWindow(QWidget):
             self._settings_dialog.apply_theme(is_dark_mode)
     
     def init_ui(self):
-        # Create main layout
-        main_layout = QVBoxLayout()
+        # Create main horizontal layout for sidebar and content
+        main_horizontal_layout = QHBoxLayout()
+        
+        # --- Task Sidebar ---
+        # Create sidebar widget
+        from qfluentwidgets import PushButton, setCustomStyleSheet
+        
+        # Keep using QWidget as the container
+        self.sidebar_widget = QWidget()
+        self.sidebar_widget.setObjectName("sidebar_widget")
+        self.sidebar_layout = QVBoxLayout(self.sidebar_widget)
+        
+        # Sidebar title
+        sidebar_title = QLabel("Task Manager")
+        sidebar_title.setObjectName("sidebar_title")
+        sidebar_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.sidebar_layout.addWidget(sidebar_title)
+        
+        # Task list
+        self.task_list = QListWidget()
+        self.task_list.setObjectName("task_list")
+        from con import CON
+        setCustomStyleSheet(self.task_list, CON.qss_combo, CON.qss_combo)
+        self.sidebar_layout.addWidget(self.task_list)
+        
+        # Sidebar control buttons
+        sidebar_controls = QHBoxLayout()
+        
+        # Clear completed tasks button
+        self.clear_tasks_button = PushButton("Clear Completed")
+        self.clear_tasks_button.setObjectName("clear_tasks_button")
+        self.clear_tasks_button.setIconSize(QSize(16, 16))
+        setCustomStyleSheet(self.clear_tasks_button, CON.qss, CON.qss)
+        sidebar_controls.addWidget(self.clear_tasks_button)
+        
+        # Collapse/Expand button
+        self.toggle_sidebar_button = PushButton("Collapse")
+        self.toggle_sidebar_button.setObjectName("toggle_sidebar_button")
+        self.toggle_sidebar_button.setIconSize(QSize(16, 16))
+        self.toggle_sidebar_button.clicked.connect(self.toggle_sidebar)
+        setCustomStyleSheet(self.toggle_sidebar_button, CON.qss, CON.qss)
+        sidebar_controls.addWidget(self.toggle_sidebar_button)
+        
+        self.sidebar_layout.addLayout(sidebar_controls)
+        
+        # Add sidebar to main horizontal layout
+        self.sidebar_widget.setFixedWidth(250)
+        main_horizontal_layout.addWidget(self.sidebar_widget)
+        
+        # --- Main Content ---
+        # Create main content widget with vertical layout
+        content_widget = QWidget()
+        main_layout = QVBoxLayout(content_widget)
         
         main_layout.setSpacing(25)  # Increased spacing for better visual separation
         main_layout.setContentsMargins(40, 35, 40, 35)  # Better margins
@@ -258,14 +695,201 @@ class IconButtonsWindow(QWidget):
         settings_button_layout.addWidget(settings_button)
         settings_button_layout.addStretch()
         main_layout.addLayout(settings_button_layout)
-
-        # Set the main layout for the window
-        self.setLayout(main_layout)
+        
+        # Add content widget to main horizontal layout
+        main_horizontal_layout.addWidget(content_widget, 1)  # Give content stretch priority
+        
+        # Add task count indicator (visible when sidebar is collapsed)
+        self.task_count_indicator = QLabel("0")
+        self.task_count_indicator.setObjectName("task_count_indicator")
+        self.task_count_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.task_count_indicator.setStyleSheet("""
+            background-color: #0078d4;
+            color: white;
+            border-radius: 12px;
+            padding: 5px 10px;
+            font-weight: bold;
+        """)
+        self.task_count_indicator.setFixedSize(30, 30)
+        self.task_count_indicator.hide()  # Initially hidden
+        
+        # Set the main horizontal layout for the window
+        self.setLayout(main_horizontal_layout)
+        
+        # Initialize task manager
+        self.init_task_manager()
 
     def show_settings(self):
         settings_dialog = SettingsDialog(self)
         self._settings_dialog = settings_dialog  # Save dialog reference
         settings_dialog.show() # Use show() instead of exec() to keep dialog non-modal
+    
+    def toggle_sidebar(self):
+        """Toggle sidebar visibility"""
+        if self.sidebar_widget.isVisible():
+            # Hide sidebar and show task count indicator
+            self.sidebar_widget.hide()
+            self.task_count_indicator.show()
+            self.toggle_sidebar_button.setText("Expand")
+        else:
+            # Show sidebar and hide task count indicator
+            self.sidebar_widget.show()
+            self.task_count_indicator.hide()
+            self.toggle_sidebar_button.setText("Collapse")
+    
+    def init_task_manager(self):
+        """Initialize task manager and connect signals"""
+        # Import task manager
+        from support.task_manager import TaskManager
+        
+        # Create task manager instance
+        self.task_manager = TaskManager()
+        
+        # Connect task manager signals to UI updates
+        self.task_manager.task_added.connect(self._on_task_added)
+        self.task_manager.task_updated.connect(self._on_task_updated)
+        self.task_manager.task_completed.connect(self._on_task_completed)
+        self.task_manager.task_failed.connect(self._on_task_failed)
+        self.task_manager.progress_updated.connect(self._on_task_progress_updated)
+        
+        # Connect task interface control buttons
+        self.task_interface.clear_tasks_button.clicked.connect(self._clear_completed_tasks)
+        
+        # Start task file monitor
+        self._start_task_monitor()
+    
+    def _start_task_monitor(self):
+        """Start task file monitor to check for new or updated tasks"""
+        # Create a timer to check task files every 1 second
+        self.task_monitor_timer = QTimer(self)
+        self.task_monitor_timer.timeout.connect(self._check_task_files)
+        self.task_monitor_timer.start(1000)  # Check every 1 second
+        
+        # Create task directory if it doesn't exist
+        self.task_dir = os.path.expanduser("~/.converter/tasks")
+        os.makedirs(self.task_dir, exist_ok=True)
+    
+    def _check_task_files(self):
+        """Check for new or updated task files"""
+        import json
+        
+        # Get all task files in the directory
+        try:
+            task_files = [f for f in os.listdir(self.task_dir) if f.startswith("task_") and f.endswith(".json")]
+            
+            for task_file in task_files:
+                task_file_path = os.path.join(self.task_dir, task_file)
+                task_id = task_file[5:-5]  # Extract task_id from filename
+                
+                # Read task info from file
+                with open(task_file_path, "r") as f:
+                    task_info = json.load(f)
+                
+                # Check if task already exists in task manager
+                if task_id in self.task_manager.tasks:
+                    # Update existing task
+                    self._update_existing_task(task_id, task_info)
+                else:
+                    # Add new task
+                    self._add_new_task(task_id, task_info)
+        
+        except Exception as e:
+            print(f"Error checking task files: {e}")
+    
+    def _add_new_task(self, task_id, task_info):
+        """Add a new task to task manager"""
+        # Create task using task manager's add_task method
+        self.task_manager.add_task(
+            task_info["task_type"],
+            task_info["input_path"],
+            task_info["output_path"]
+        )
+    
+    def _update_existing_task(self, task_id, task_info):
+        """Update an existing task in task manager"""
+        # Update task progress
+        self.task_manager.tasks[task_id].progress = task_info["progress"]
+        self.task_manager.tasks[task_id].status = task_info["status"]
+        
+        # Emit progress updated signal
+        self.task_manager.progress_updated.emit(task_id, task_info["progress"])
+        
+        # If task is completed or failed, emit appropriate signal
+        if task_info["status"] == "completed":
+            self.task_manager.task_completed.emit(task_id, task_info)
+        elif task_info["status"] == "failed":
+            self.task_manager.task_failed.emit(task_id, task_info, task_info.get("error", "Unknown error"))
+    
+    def _on_task_added(self, task_id, task_info):
+        """Handle new task added"""
+        # Add task to list
+        task_item = QListWidgetItem(f"{task_info['task_type'].capitalize()} - {os.path.basename(task_info['input_path'])}")
+        task_item.setData(Qt.ItemDataRole.UserRole, task_id)
+        self.task_interface.task_list.addItem(task_item)
+        self._update_task_count()
+    
+    def _on_task_updated(self, task_id, task_info):
+        """Handle task updated"""
+        # Update task in list
+        for i in range(self.task_interface.task_list.count()):
+            item = self.task_interface.task_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == task_id:
+                item.setText(f"{task_info['task_type'].capitalize()} - {os.path.basename(task_info['input_path'])} - {task_info['status']} ({task_info['progress']}%)")
+                break
+    
+    def _on_task_completed(self, task_id, task_info):
+        """Handle task completed"""
+        # Update task in list
+        self._on_task_updated(task_id, task_info)
+        
+        # Send system notification
+        from support.notification import send_notification
+        send_notification(
+            "Task Completed",
+            f"{task_info['task_type'].capitalize()} conversion completed: {os.path.basename(task_info['input_path'])}"
+        )
+    
+    def _on_task_failed(self, task_id, task_info, error):
+        """Handle task failed"""
+        # Update task in list
+        self._on_task_updated(task_id, task_info)
+        
+        # Send system notification
+        from support.notification import send_notification
+        send_notification(
+            "Task Failed",
+            f"{task_info['task_type'].capitalize()} conversion failed: {os.path.basename(task_info['input_path'])}"
+        )
+    
+    def _on_task_progress_updated(self, task_id, progress):
+        """Handle task progress updated"""
+        # Update task in list
+        for i in range(self.task_interface.task_list.count()):
+            item = self.task_interface.task_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == task_id:
+                # Get current text and update progress
+                current_text = item.text()
+                if " - " in current_text:
+                    parts = current_text.split(" - ")
+                    if len(parts) >= 3:
+                        # Update only the progress part
+                        parts[2] = f"running ({progress}%)"
+                        item.setText(" - ".join(parts))
+                break
+    
+    def _clear_completed_tasks(self):
+        """Clear completed tasks from list"""
+        # Clear completed tasks from task manager
+        self.task_manager.clear_completed_tasks()
+        
+        # Clear all items from list
+        self.task_interface.task_list.clear()
+        self._update_task_count()
+    
+    def _update_task_count(self):
+        """Update task count indicator (no longer needed in FluentWindow)"""
+        # Task count indicator is no longer needed in FluentWindow
+        pass
 
 class AnimatedAppDialog(QDialog):
     def __init__(self, parent=None, app_type=""):
@@ -422,14 +1046,21 @@ def run_image_app():
         app = QApplication.instance()
         main_window = None
         for widget in app.topLevelWidgets():
-            if isinstance(widget, IconButtonsWindow):
+            if isinstance(widget, MainWindow):
                 main_window = widget
                 break
         
         if main_window:
-            # Create and show the animation dialog
-            dialog = ImageAppDialog(main_window)
-            dialog.show()
+            # Check if task mode is enabled
+            task_mode_enabled = main_window.settings.value("task_mode", False, type=bool)
+            
+            if task_mode_enabled:
+                # In task mode, run directly in the same process
+                run_image()
+            else:
+                # Create and show the animation dialog
+                dialog = ImageAppDialog(main_window)
+                dialog.show()
         else:
             # Fallback to multiprocessing if no main window found
             multiprocessing.Process(target=run_image).start()
@@ -446,14 +1077,21 @@ def run_zip_app():
         app = QApplication.instance()
         main_window = None
         for widget in app.topLevelWidgets():
-            if isinstance(widget, IconButtonsWindow):
+            if isinstance(widget, MainWindow):
                 main_window = widget
                 break
         
         if main_window:
-            # Create and show the animation dialog
-            dialog = ZipAppDialog(main_window)
-            dialog.show()
+            # Check if task mode is enabled
+            task_mode_enabled = main_window.settings.value("task_mode", False, type=bool)
+            
+            if task_mode_enabled:
+                # In task mode, run directly in the same process
+                run_zip()
+            else:
+                # Create and show the animation dialog
+                dialog = ZipAppDialog(main_window)
+                dialog.show()
         else:
             # Fallback to multiprocessing if no main window found
             multiprocessing.Process(target=run_zip).start()
@@ -481,7 +1119,7 @@ if __name__ == "__main__":
     from support.toggle import theme_manager
     theme_manager.start()
     setTheme(Theme.AUTO)
-    window = IconButtonsWindow(q_app=app)
+    window = MainWindow(q_app=app)
     window.show()
     # Connect to palette changes for real-time theme switching ONLY if setting is System Default
     app.paletteChanged.connect(lambda: window._apply_system_theme(app.palette().color(QPalette.ColorRole.Window).lightnessF() < 0.5))
