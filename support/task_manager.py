@@ -213,6 +213,23 @@ class TaskManager(QObject):
                     return True
         return False
     
+    def retry_task(self, task_id):
+        """Retry a failed or cancelled task"""
+        with self.lock:
+            if task_id in self.tasks:
+                old_task = self.tasks[task_id]
+                if old_task.status in [TaskStatus.FAILED, TaskStatus.CANCELLED]:
+                    new_task = Task(
+                        old_task.task_type,
+                        old_task.input_path,
+                        old_task.output_path,
+                        **old_task.metadata
+                    )
+                    self.tasks[new_task.task_id] = new_task
+                    self.task_queue.append(new_task)
+                    return new_task.task_id
+        return None
+    
     def clear_completed_tasks(self):
         """Clear all completed tasks"""
         with self.lock:

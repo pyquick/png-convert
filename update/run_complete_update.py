@@ -19,7 +19,7 @@ def main():
     print("🔄 开始检查更新...")
     
     # 获取当前版本
-    current_version = "2.1.0A4"  # 从settings/update_settings_gui.py获取
+    current_version = "2.1.0A6"  # 从settings/update_settings_gui.py获取
     
     # 创建更新管理器
     update_manager = UpdateManager(current_version)

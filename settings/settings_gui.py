@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPalette
 from PySide6.QtCore import Qt, QSettings, QPropertyAnimation, QEasingCurve, Signal, Slot
 from qfluentwidgets import SegmentedWidget, setCustomStyleSheet
-from .update_settings_gui import UpdateDialog
+from .update_settings_gui import UpdateSettingsWidget
 from con import CON
 
 class SettingsDialog(QDialog):
@@ -133,7 +133,7 @@ class SettingsDialog(QDialog):
         update_layout.setContentsMargins(15, 15, 15, 15)
         update_layout.setSpacing(15)
         
-        self.update_group = UpdateDialog()
+        self.update_group = UpdateSettingsWidget()
         self.update_group.setObjectName("update_group")
         update_layout.addWidget(self.update_group)
         update_layout.addStretch()

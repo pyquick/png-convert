@@ -39,7 +39,7 @@ try:
     print('🔄 Starting to check for updates...')
     
     # Get current version
-    current_version = '2.1.0A4'
+    current_version = '2.1.0A6'
     print(f'📍 Current version: {current_version}')
     
     # Create update manager

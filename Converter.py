@@ -23,20 +23,19 @@ from PySide6.QtWidgets import (
     QFrame,
     QStackedWidget
 )
-from PySide6.QtGui import QIcon, QPainter, QPixmap, QPalette
-from PySide6.QtCore import QSize, Qt, QSettings, QPropertyAnimation, QEasingCurve, QTimer
+from PySide6.QtGui import QIcon, QPainter, QPixmap, QPalette, QColor
+from PySide6.QtCore import QSize, Qt, QSettings, QPropertyAnimation, QEasingCurve, QTimer, Signal
 import multiprocessing
 from qfluentwidgets import (
-    Theme, setTheme, qconfig, SystemThemeListener,
+    HeaderCardWidget, ImageLabel, Theme, setTheme, qconfig, SystemThemeListener,
     FluentWindow, NavigationItemPosition,
-    CardWidget, PushButton, IconWidget,
+    CardWidget, PushButton, PrimaryPushButton, IconWidget,
     BodyLabel, CaptionLabel, SubtitleLabel, TitleLabel, LargeTitleLabel,
     FluentIcon as FIF, setFont, TransparentToolButton, SegmentedWidget,
-    setCustomStyleSheet
+    setCustomStyleSheet, ElevatedCardWidget, ProgressBar, FlowLayout,
+    ScrollArea
 )
 from qfluentwidgets.components.widgets.card_widget import SimpleCardWidget
- # Keep for freeze_support, but remove direct Process usage
-from settings.update_settings_gui import UpdateDialog
 from settings.settings_gui import SettingsDialog
 from con import CON # Import CON instance for theme settings
 # Encoding settings have been moved to debug_logger for handling
@@ -74,56 +73,46 @@ class AppCard(CardWidget):
     
     def __init__(self, icon_path, title, content, app_type, parent=None):
         super().__init__(parent)
-        self.icon_path = icon_path
         self.title = title
         self.content = content
         self.app_type = app_type
-        
-        self.init_ui()
-    
-    def init_ui(self):
-        """Initialize UI components"""
-        # Icon widget
-        self.icon_widget = IconWidget(self.icon_path)
-        self.icon_widget.setFixedSize(48, 48)
-        
-        # Text labels
+        self.icon_path = icon_path
+        self.icon_widget = ImageLabel(icon_path, self)
         self.title_label = BodyLabel(self.title, self)
         self.content_label = CaptionLabel(self.content, self)
-        
-        # Buttons
-        self.open_button = PushButton('Open', self)
-        self.open_button.setFixedWidth(120)
-        self.more_button = TransparentToolButton(FIF.MORE, self)
-        self.more_button.setFixedSize(32, 32)
-        
-        # Layouts
+        self.icon_widget.scaledToHeight(68)
+        self.icon_widget.setFixedSize(48, 48) 
+        self.content_label.setTextColor(QColor("#606060"), QColor("#d2d2d2"))
+        self.setFixedHeight(73)
         self.h_box_layout = QHBoxLayout(self)
         self.v_box_layout = QVBoxLayout()
-        
-        # Set fixed height
-        self.setFixedHeight(73)
-        
+       
+       
         # Configure layouts
         self.h_box_layout.setContentsMargins(20, 11, 11, 11)
         self.h_box_layout.setSpacing(15)
-        
         self.v_box_layout.setContentsMargins(0, 0, 0, 0)
         self.v_box_layout.setSpacing(0)
-        
+
+
+        self.open_button = PrimaryPushButton('Open', self)
+        self.open_button.setFixedWidth(120)
+        self.more_button = TransparentToolButton(FIF.MORE, self)
+        self.more_button.setFixedSize(32, 32)
+
         # Add components to layouts
         self.h_box_layout.addWidget(self.icon_widget)
         
-        self.v_box_layout.addWidget(self.title_label, 0, Qt.AlignVCenter)
-        self.v_box_layout.addWidget(self.content_label, 0, Qt.AlignVCenter)
+        self.v_box_layout.addWidget(self.title_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.v_box_layout.addWidget(self.content_label, 0, Qt.AlignmentFlag.AlignVCenter)
         self.h_box_layout.addLayout(self.v_box_layout)
         
         self.h_box_layout.addStretch(1)
-        self.h_box_layout.addWidget(self.open_button, 0, Qt.AlignRight)
-        self.h_box_layout.addWidget(self.more_button, 0, Qt.AlignRight)
+        self.h_box_layout.addWidget(self.open_button, 0, Qt.AlignmentFlag.AlignRight)
+        self.h_box_layout.addWidget(self.more_button, 0, Qt.AlignmentFlag.AlignRight)
         
-        # Connect signals
         self.open_button.clicked.connect(self.on_open_clicked)
+    
     
     def on_open_clicked(self):
         """Handle open button clicked event"""
@@ -131,6 +120,182 @@ class AppCard(CardWidget):
             run_image_app()
         elif self.app_type == 'arc':
             run_zip_app()
+
+
+class AppCardTask(CardWidget):
+    """Task card widget for task manager interface"""
+    
+    task_cancelled = Signal(str)
+    task_retried = Signal(str)
+    task_removed = Signal(str)
+    
+    def __init__(self, task_id, task_type, task_info, parent=None):
+        super().__init__(parent)
+        self.task_id = task_id
+        self.task_type = task_type
+        self.task_info = task_info
+        self.setup_ui()
+        self.setup_connections()
+    
+    def setup_ui(self):
+        """Initialize UI components"""
+        self.setFixedHeight(120)
+        self.setFixedWidth(280)
+        self.setBorderRadius(12)
+        
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(15, 12, 15, 12)
+        main_layout.setSpacing(12)
+        
+        icon_layout = QVBoxLayout()
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setSpacing(4)
+        
+        if self.task_type == "image":
+            task_icon = FIF.PHOTO
+        else:
+            task_icon = FIF.FOLDER
+        self.icon_widget = IconWidget(task_icon, self)
+        self.icon_widget.setFixedSize(40, 40)
+        icon_layout.addWidget(self.icon_widget, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        status_badges = {
+            "pending": ("Pending", "#9e9e9e"),
+            "running": ("Running", "#2196f3"),
+            "completed": ("Completed", "#4caf50"),
+            "failed": ("Failed", "#f44336"),
+            "cancelled": ("Cancelled", "#ff9800")
+        }
+        status = self.task_info.get("status", "pending")
+        status_text, status_color = status_badges.get(status, status_badges["pending"])
+        
+        self.status_badge = BodyLabel(status_text)
+        self.status_badge.setStyleSheet(f"""
+            BodyLabel {{
+                background-color: {status_color}20;
+                color: {status_color};
+                padding: 2px 8px;
+                border-radius: 10px;
+                font-size: 10px;
+                font-weight: bold;
+            }}
+        """)
+        icon_layout.addWidget(self.status_badge, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        main_layout.addLayout(icon_layout)
+        
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(6)
+        
+        input_path = self.task_info.get("input_path", "Unknown")
+        filename = os.path.basename(input_path) if input_path else "Unknown"
+        self.title_label = BodyLabel(filename)
+        self.title_label.setTextColor(QColor("#333333"), QColor("#e0e0e0"))
+        self.title_label.setFixedWidth(160)
+        content_layout.addWidget(self.title_label)
+        
+        self.status_label = CaptionLabel(self.get_status_text())
+        self.status_label.setTextColor(QColor("#666666"), QColor("#a0a0a0"))
+        self.status_label.setFixedWidth(160)
+        content_layout.addWidget(self.status_label)
+        
+        self.progress_bar = ProgressBar()
+        self.progress_bar.setFixedHeight(4)
+        self.progress_bar.setFixedWidth(160)
+        self.progress_bar.setValue(self.task_info.get("progress", 0))
+        content_layout.addWidget(self.progress_bar)
+        
+        main_layout.addLayout(content_layout)
+        
+        button_layout = QVBoxLayout()
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(8)
+        button_layout.addStretch(1)
+        
+        self.cancel_button = TransparentToolButton(FIF.CANCEL, self)
+        self.cancel_button.setFixedSize(28, 28)
+        self.cancel_button.setToolTip("Cancel Task")
+        button_layout.addWidget(self.cancel_button, 0, Qt.AlignmentFlag.AlignRight)
+        
+        self.retry_button = TransparentToolButton(FIF.RETURN, self)
+        self.retry_button.setFixedSize(28, 28)
+        self.retry_button.setToolTip("Retry Task")
+        self.retry_button.setVisible(False)
+        button_layout.addWidget(self.retry_button, 0, Qt.AlignmentFlag.AlignRight)
+        
+        self.remove_button = TransparentToolButton(FIF.DELETE, self)
+        self.remove_button.setFixedSize(28, 28)
+        self.remove_button.setToolTip("Remove Task")
+        button_layout.addWidget(self.remove_button, 0, Qt.AlignmentFlag.AlignRight)
+        
+        button_layout.addStretch(1)
+        
+        main_layout.addLayout(button_layout)
+    
+    def get_status_text(self):
+        """Get status display text"""
+        status = self.task_info.get("status", "pending")
+        if status == "pending":
+            return "Waiting in queue..."
+        elif status == "running":
+            progress = self.task_info.get("progress", 0)
+            return f"Processing... {progress}%"
+        elif status == "completed":
+            return "Task completed successfully"
+        elif status == "failed":
+            error = self.task_info.get("error", "Unknown error")
+            return f"Failed: {error}"
+        elif status == "cancelled":
+            return "Task was cancelled"
+        return "Unknown status"
+    
+    def setup_connections(self):
+        """Setup button connections"""
+        self.cancel_button.clicked.connect(lambda: self.task_cancelled.emit(self.task_id))
+        self.retry_button.clicked.connect(lambda: self.task_retried.emit(self.task_id))
+        self.remove_button.clicked.connect(lambda: self.task_removed.emit(self.task_id))
+    
+    def update_task(self, task_info):
+        """Update task information and UI"""
+        self.task_info = task_info
+        
+        status_badges = {
+            "pending": ("Pending", "#9e9e9e"),
+            "running": ("Running", "#2196f3"),
+            "completed": ("Completed", "#4caf50"),
+            "failed": ("Failed", "#f44336"),
+            "cancelled": ("Cancelled", "#ff9800")
+        }
+        status = task_info.get("status", "pending")
+        status_text, status_color = status_badges.get(status, status_badges["pending"])
+        
+        self.status_badge.setText(status_text)
+        self.status_badge.setStyleSheet(f"""
+            BodyLabel {{
+                background-color: {status_color}20;
+                color: {status_color};
+                padding: 2px 8px;
+                border-radius: 10px;
+                font-size: 10px;
+                font-weight: bold;
+            }}
+        """)
+        
+        self.status_label.setText(self.get_status_text())
+        progress = task_info.get("progress", 0)
+        self.progress_bar.setValue(progress)
+        
+        if status == "running":
+            self.cancel_button.setVisible(True)
+            self.retry_button.setVisible(False)
+        elif status in ["failed", "cancelled"]:
+            self.cancel_button.setVisible(False)
+            self.retry_button.setVisible(True)
+        else:
+            self.cancel_button.setVisible(False)
+            self.retry_button.setVisible(False)
+
 
 class HomeInterface(QFrame):
     """Home interface showing app cards"""
@@ -155,69 +320,118 @@ class HomeInterface(QFrame):
         
         # Image Converter card
         image_card = AppCard(
-            self.icon_paths['app_icon_path'],
-            "Image Converter",
-            "Convert PNG images to ICNS format for macOS applications",
-            "image"
+            icon_path=self.icon_paths['app_icon_path'],
+            title="Image Converter",
+            content="Convert PNG images to ICNS format for macOS applications",
+            app_type="image"
         )
+        image_card.setBorderRadius(35)
         main_layout.addWidget(image_card)
-        
+
         # Archive Converter card
         archive_card = AppCard(
-            self.icon_paths['zip_icon_path'],
-            "Archive Converter",
-            "Create and extract ZIP, RAR, and 7Z archive files",
-            "arc"
+            icon_path=self.icon_paths['zip_icon_path'],
+            title="Archive Converter",
+            content="Create and extract ZIP, RAR, and 7Z archive files",
+            app_type="arc"
         )
         main_layout.addWidget(archive_card)
+        archive_card.setBorderRadius(35)
         
         # Add stretch to push content to top
         main_layout.addStretch(1)
 
 
-class TaskInterface(QFrame):
+class TaskInterface(ScrollArea):
     """Task management interface"""
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("task_interface")
+        self.setWidgetResizable(True)
+        self.task_cards = {}
         self.init_ui()
     
     def init_ui(self):
         """Initialize UI components"""
         from qfluentwidgets import setCustomStyleSheet
         
-        # Layouts
-        main_layout = QVBoxLayout(self)
+        container_widget = QWidget()
+        container_widget.setObjectName("task_container")
+        self.setWidget(container_widget)
+        
+        main_layout = QVBoxLayout(container_widget)
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(20)
         
-        # Title
         title_label = SubtitleLabel("Task Manager")
         main_layout.addWidget(title_label)
         
-        # Task list
-        self.task_list = QListWidget()
-        self.task_list.setObjectName("task_list")
-        from con import CON
-        setCustomStyleSheet(self.task_list, CON.qss_combo, CON.qss_combo)
-        main_layout.addWidget(self.task_list, 1)
+        self.task_container = QWidget()
+        self.task_flow_layout = FlowLayout(self.task_container)
+        self.task_flow_layout.setContentsMargins(10, 10, 10, 10)
+        self.task_flow_layout.setSpacing(15)
         
-        # Task controls
+        main_layout.addWidget(self.task_container, 1)
+        
         controls_layout = QHBoxLayout()
         
-        # Clear completed tasks button
-        self.clear_tasks_button = PushButton("Clear Completed")
+        self.clear_tasks_button = PrimaryPushButton("Clear Completed")
         self.clear_tasks_button.setObjectName("clear_tasks_button")
-        self.clear_tasks_button.setIconSize(QSize(16, 16))
-        from con import CON
-        setCustomStyleSheet(self.clear_tasks_button, CON.qss, CON.qss)
+        self.clear_tasks_button.setFixedHeight(40)
         controls_layout.addWidget(self.clear_tasks_button)
         
-        # Add stretch to push button to left
         controls_layout.addStretch(1)
         
         main_layout.addLayout(controls_layout)
+        
+        task_count_label = CaptionLabel("Tasks will appear here when you start conversions")
+        task_count_label.setTextColor(QColor("#888888"), QColor("#666666"))
+        main_layout.addWidget(task_count_label, 0, Qt.AlignmentFlag.AlignCenter)
+    
+    def add_task_card(self, task_id, task_type, task_info):
+        """Add a new task card to the interface"""
+        if task_id in self.task_cards:
+            return
+        
+        task_card = AppCardTask(task_id, task_type, task_info, self.task_container)
+        self.task_cards[task_id] = task_card
+        self.task_flow_layout.addWidget(task_card)
+        
+        task_card.task_cancelled.connect(self._on_task_cancelled)
+        task_card.task_retried.connect(self._on_task_retried)
+        task_card.task_removed.connect(self._on_task_removed)
+    
+    def update_task_card(self, task_id, task_info):
+        """Update an existing task card"""
+        if task_id in self.task_cards:
+            self.task_cards[task_id].update_task(task_info)
+    
+    def remove_task_card(self, task_id):
+        """Remove a task card from the interface"""
+        if task_id in self.task_cards:
+            task_card = self.task_cards.pop(task_id)
+            self.task_flow_layout.removeWidget(task_card)
+            task_card.deleteLater()
+    
+    def clear_all_cards(self):
+        """Clear all task cards"""
+        for task_id in list(self.task_cards.keys()):
+            self.remove_task_card(task_id)
+    
+    def _on_task_cancelled(self, task_id):
+        """Handle task cancellation"""
+        if hasattr(self.parent(), 'task_manager'):
+            self.parent().task_manager.cancel_task(task_id)
+    
+    def _on_task_retried(self, task_id):
+        """Handle task retry"""
+        if hasattr(self.parent(), 'task_manager'):
+            self.parent().task_manager.retry_task(task_id)
+    
+    def _on_task_removed(self, task_id):
+        """Handle task removal"""
+        self.remove_task_card(task_id)
 
 
 class SettingsInterface(QFrame):
@@ -276,8 +490,8 @@ class SettingsInterface(QFrame):
         update_layout.setContentsMargins(15, 15, 15, 15)
         update_layout.setSpacing(15)
         
-        from settings.update_settings_gui import UpdateDialog
-        self.update_group = UpdateDialog()
+        from settings.update_settings_gui import UpdateSettingsWidget
+        self.update_group = UpdateSettingsWidget()
         self.update_group.setObjectName("update_group")
         update_layout.addWidget(self.update_group)
         update_layout.addStretch()
@@ -488,7 +702,7 @@ class MainWindow(FluentWindow):
         if task_mode_enabled:
             has_open_windows = False
             # Get all top level widgets
-            for widget in QApplication.instance().topLevelWidgets():
+            for widget in self._q_app.topLevelWidgets():
                 # Check if there are any image or arc windows open
                 if widget is not self:
                     window_title = widget.windowTitle()
@@ -822,24 +1036,15 @@ class MainWindow(FluentWindow):
     
     def _on_task_added(self, task_id, task_info):
         """Handle new task added"""
-        # Add task to list
-        task_item = QListWidgetItem(f"{task_info['task_type'].capitalize()} - {os.path.basename(task_info['input_path'])}")
-        task_item.setData(Qt.ItemDataRole.UserRole, task_id)
-        self.task_interface.task_list.addItem(task_item)
+        self.task_interface.add_task_card(task_id, task_info['task_type'], task_info)
         self._update_task_count()
     
     def _on_task_updated(self, task_id, task_info):
         """Handle task updated"""
-        # Update task in list
-        for i in range(self.task_interface.task_list.count()):
-            item = self.task_interface.task_list.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == task_id:
-                item.setText(f"{task_info['task_type'].capitalize()} - {os.path.basename(task_info['input_path'])} - {task_info['status']} ({task_info['progress']}%)")
-                break
+        self.task_interface.update_task_card(task_id, task_info)
     
     def _on_task_completed(self, task_id, task_info):
         """Handle task completed"""
-        # Update task in list
         self._on_task_updated(task_id, task_info)
         
         # Send system notification
@@ -863,27 +1068,18 @@ class MainWindow(FluentWindow):
     
     def _on_task_progress_updated(self, task_id, progress):
         """Handle task progress updated"""
-        # Update task in list
-        for i in range(self.task_interface.task_list.count()):
-            item = self.task_interface.task_list.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == task_id:
-                # Get current text and update progress
-                current_text = item.text()
-                if " - " in current_text:
-                    parts = current_text.split(" - ")
-                    if len(parts) >= 3:
-                        # Update only the progress part
-                        parts[2] = f"running ({progress}%)"
-                        item.setText(" - ".join(parts))
+        for task_id_key in self.task_interface.task_cards:
+            if task_id_key == task_id:
+                task_info = self.task_manager.tasks.get(task_id, {})
+                if task_info:
+                    task_info['progress'] = progress
+                    self.task_interface.update_task_card(task_id, task_info)
                 break
     
     def _clear_completed_tasks(self):
         """Clear completed tasks from list"""
-        # Clear completed tasks from task manager
         self.task_manager.clear_completed_tasks()
-        
-        # Clear all items from list
-        self.task_interface.task_list.clear()
+        self.task_interface.clear_all_cards()
         self._update_task_count()
     
     def _update_task_count(self):
@@ -1044,6 +1240,8 @@ def run_image_app():
     try:
         # Get the main window instance
         app = QApplication.instance()
+        if app is None:
+            return
         main_window = None
         for widget in app.topLevelWidgets():
             if isinstance(widget, MainWindow):
@@ -1075,6 +1273,8 @@ def run_zip_app():
     try:
         # Get the main window instance
         app = QApplication.instance()
+        if app is None:
+            return
         main_window = None
         for widget in app.topLevelWidgets():
             if isinstance(widget, MainWindow):
