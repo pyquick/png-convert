@@ -31,7 +31,7 @@ a = Analysis(
         'support',
         'update',
         'PIL._tkinter_finder',
-        'qfluentwidgets',
+        'UIkit',
     ],
     hookspath=[],
     hooksconfig={},

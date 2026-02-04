@@ -365,83 +365,40 @@ def create_archive(output_path, source_paths, archive_format, progress_callback=
             if not success:
                 raise RuntimeError(f"Failed to create password-protected ZIP archive")
         else:
-            # Create a temporary directory with the archive name (without extension)
-            archive_name = os.path.splitext(os.path.basename(output_path))[0]
-            temp_dir = tempfile.mkdtemp()
-            wrapper_dir = os.path.join(temp_dir, archive_name)
+            # Select processing method based on format
+            if progress_callback:
+                progress_callback(f"Creating {archive_format} archive...", 40)
             
-            # Create the wrapper directory - ensure it doesn't already exist
-            try:
-                os.makedirs(wrapper_dir, exist_ok=False)
-            except FileExistsError:
-                # If directory already exists, remove it and create a new one
-                if os.path.exists(wrapper_dir):
-                    shutil.rmtree(wrapper_dir)
-                os.makedirs(wrapper_dir)
+            success = False
+            if archive_format == "zip":
+                # Use CLI tool for ZIP creation
+                success = _create_zip_with_cli(output_path, source_paths, progress_callback, password)
+            elif archive_format in ["tar", "tar.gz", "tar.bz2", "tar.xz", "zipx"]:
+                # Use CLI tool for processing
+                success = _create_tar_with_cli(output_path, source_paths, archive_format, progress_callback)
+            elif archive_format in ["bz2", "xz", "lzma", "gz"]:
+                # These formats can only compress single files, so need to create tar first, then compress
+                success = _create_single_file_compression(output_path, source_paths, archive_format, progress_callback)
+            elif archive_format == "cab":
+                # Use cabextract related tools for CAB creation
+                success = _create_cab_with_cli(output_path, source_paths, progress_callback)
+            elif archive_format in ["arj", "lzh"]:
+                # Use unar/lsar for processing
+                success = _create_with_unar(output_path, source_paths, archive_format, progress_callback)
+            elif archive_format == "rar":
+                # Use rar CLI tool
+                success = _create_rar_with_cli(output_path, source_paths, progress_callback, password)
+            elif archive_format == "7z":
+                # Use 7zz CLI tool
+                success = _create_7z_with_cli(output_path, source_paths, progress_callback, password)
+            elif archive_format == "iso":
+                # Use system command
+                success = _create_iso_with_system(output_path, source_paths, progress_callback)
+            else:
+                raise ValueError(f"Unsupported archive format for creation: {archive_format}")
             
-            try:
-                # Copy all source files to the wrapper directory
-                total_files = _count_files_in_sources(source_paths)
-                copied_files = 0
-                
-                for source_path in source_paths:
-                    if os.path.isfile(source_path):
-                        shutil.copy2(source_path, wrapper_dir)
-                        copied_files += 1
-                    elif os.path.isdir(source_path):
-                        # For directories, recursively copy and count files
-                        dest_dir = os.path.join(wrapper_dir, os.path.basename(source_path))
-                        shutil.copytree(source_path, dest_dir)
-                        # Count files in directory
-                        for root, dirs, files in os.walk(source_path):
-                            copied_files += len(files)
-                    
-                    # Update progress - copy phase accounts for 40%
-                    if progress_callback and total_files > 0:
-                        progress = min(40, (copied_files / total_files) * 40)
-                        progress_callback(f"Copying files to wrapper directory... ({copied_files}/{total_files})", progress)
-                
-                # Use wrapper directory as source path
-                wrapped_source_path = wrapper_dir
-                
-                # Select processing method based on format
-                if progress_callback:
-                    progress_callback(f"Creating {archive_format} archive...", 40)
-                    
-                success = False
-                if archive_format == "zip":
-                    # Use CLI tool for ZIP creation
-                    success = _create_zip_with_cli(output_path, [wrapped_source_path], progress_callback, password)
-                elif archive_format in ["tar", "tar.gz", "tar.bz2", "tar.xz", "zipx"]:
-                    # Use CLI tool for processing
-                    success = _create_tar_with_cli(output_path, [wrapped_source_path], archive_format, progress_callback)
-                elif archive_format in ["bz2", "xz", "lzma", "gz"]:
-                    # These formats can only compress single files, so need to create tar first, then compress
-                    success = _create_single_file_compression(output_path, [wrapped_source_path], archive_format, progress_callback)
-                elif archive_format == "cab":
-                    # Use cabextract related tools for CAB creation
-                    success = _create_cab_with_cli(output_path, [wrapped_source_path], progress_callback)
-                elif archive_format in ["arj", "lzh"]:
-                    # Use unar/lsar for processing
-                    success = _create_with_unar(output_path, [wrapped_source_path], archive_format, progress_callback)
-                elif archive_format == "rar":
-                    # Use rar CLI tool
-                    success = _create_rar_with_cli(output_path, [wrapped_source_path], progress_callback, password)
-                elif archive_format == "7z":
-                    # Use 7zz CLI tool
-                    success = _create_7z_with_cli(output_path, [wrapped_source_path], progress_callback, password)
-                elif archive_format == "iso":
-                    # Use system command
-                    success = _create_iso_with_system(output_path, [wrapped_source_path], progress_callback)
-                else:
-                    raise ValueError(f"Unsupported archive format for creation: {archive_format}")
-                
-                if not success:
-                    raise RuntimeError(f"Failed to create {archive_format} archive")
-
-            finally:
-                # Clean up temporary directory
-                shutil.rmtree(temp_dir)
+            if not success:
+                raise RuntimeError(f"Failed to create {archive_format} archive")
 
         if progress_callback:
             progress_callback(f"Archive created: {output_path}", 100)
@@ -638,7 +595,7 @@ def _create_zip_with_cli(output_path, source_paths, progress_callback=None, pass
         if progress_callback:
             progress_callback(f"Creating ZIP archive with CLI tool...", 50)
         
-        result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=2, progress_callback=progress_callback)
+        result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=500000, progress_callback=progress_callback)
         
         if result.returncode != 0:
             raise RuntimeError(f"ZIP creation failed: {result.stderr}")
@@ -769,7 +726,7 @@ def _create_rar_with_cli(output_path, source_paths, progress_callback=None, pass
         output_path_abs = os.path.abspath(output_path)
         cmd[cmd.index(output_path)] = output_path_abs
         
-        result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=2, progress_callback=progress_callback)
+        result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=500000, progress_callback=progress_callback)
         
         if result.returncode != 0:
             raise RuntimeError(f"RAR creation failed: {result.stderr}")
@@ -913,7 +870,7 @@ def _create_7z_with_cli(output_path, source_paths, progress_callback=None, passw
         output_path_abs = os.path.abspath(output_path)
         cmd[cmd.index(output_path)] = output_path_abs
         
-        result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=2, progress_callback=progress_callback)
+        result = _run_command_with_timeout(cmd, cwd=work_dir, timeout=500000, progress_callback=progress_callback)
         
         if result.returncode != 0:
             raise RuntimeError(f"7z creation failed: {result.stderr}")

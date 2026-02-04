@@ -11,12 +11,12 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayo
                                QTabWidget, QWidget, QGroupBox, QListWidget, QListWidgetItem,
                                QFileDialog, QCheckBox, QComboBox, QFrame, QMessageBox, QMenu)
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPalette, QPixmap
-from qfluentwidgets import *
+from UIkit import *
 
 from con import CON
 from support.toggle import ThemeManager
 from support.GUI.arc_support import BatchDropZoneWidget
-from support.signal_transmission import get_signal_manager
+
 # Add the current directory to Python path to import convertzip module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from support.archive_manager import create_archive, extract_archive, add_to_archive, list_archive_contents, SUPPORTED_ARCHIVE_FORMATS, batch_extract_archives
@@ -495,9 +495,8 @@ class ZipGUI(QMainWindow):
         self.themeListener = SystemThemeListener(self)
         self.init_variables()
         
-        # Initialize signal transmission manager
-        self.signal_manager = get_signal_manager()
-        self._connect_signal_signals()
+        
+        
         
         self.setup_ui()
         self._apply_theme(initial_dark_mode)
@@ -512,7 +511,7 @@ class ZipGUI(QMainWindow):
     
     def setup_task_mode_info_bar(self, parent_layout):
         """Setup task mode status info bar"""
-        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        from UIkit import InfoBar, InfoBarPosition, FluentIcon
         
         self.task_mode_info_bar = None
         self._update_task_mode_status()
@@ -522,7 +521,7 @@ class ZipGUI(QMainWindow):
     
     def _update_task_mode_status(self):
         """Update task mode status info bar"""
-        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        from UIkit import InfoBar, InfoBarPosition, FluentIcon
         
         task_mode_enabled = self._is_task_mode_enabled()
         
@@ -645,25 +644,13 @@ class ZipGUI(QMainWindow):
             self._password_dialog = None
             return None
     
-    def _connect_signal_signals(self):
-        """Connect signal manager signals"""
-        self.signal_manager.signal_sent.connect(self._on_signal_sent)
-        self.signal_manager.signal_received.connect(self._on_signal_received)
-        self.signal_manager.transmission_confirmed.connect(self._on_transmission_confirmed)
-        self.signal_manager.transmission_failed.connect(self._on_transmission_failed)
+    
     
     def _on_signal_sent(self, task_id, json_data):
         """Handle signal sent"""
         print(f"ZipGUI: Signal sent for task {task_id}")
     
-    def _on_signal_received(self, task_id, signal_data):
-        """Handle signal received"""
-        print(f"ZipGUI: Signal received for task {task_id}")
-        
-        # Check if this is a task creation signal for this component
-        if signal_data.get("type") == "arc" and signal_data.get("task_id") == self.current_task_id:
-            # Confirm signal reception
-            self.signal_manager.confirm_signal(task_id)
+    
     
     def _on_transmission_confirmed(self, task_id):
         """Handle transmission confirmed"""
@@ -1761,7 +1748,7 @@ class ZipGUI(QMainWindow):
         
         if self.create_archive_format in ['zip', 'rar', '7z']:
             # Ask user if they want to add password protection
-            from qfluentwidgets import MessageBox, FluentIcon
+            from UIkit import MessageBox, FluentIcon
             box = MessageBox(
                 'Password Protection',
                 f'Do you want to add password protection to the {self.create_archive_format.upper()} archive?',
@@ -2325,7 +2312,7 @@ class ZipGUI(QMainWindow):
     
     def _show_batch_extract_failures(self, failed_files):
         """Show detailed information about failed extractions"""
-        from qfluentwidgets import MessageBox
+        from UIkit import MessageBox
         
         # Create detailed failure message
         failure_details = "Failed to extract the following archives:\n\n"

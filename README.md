@@ -4,7 +4,7 @@ This repository contains tools for converting PNG images to ICNS format and proc
 
 ## Requirements
 
-- Python 3.11, 3.12, or 3.13 (recommended)
+- Python 3.11, 3.12, or 3.13 (recommended) 
 - PIL (Pillow) library
 - Tkinter (usually included with Python)
 - Nuitka (for building standalone applications)
@@ -79,7 +79,7 @@ This will create a standalone application in the `dist` folder using Nuitka with
 
 Install build requirements:
 ```
-python3.13 -m pip install Pillow nuitka
+python3.14 -m pip install Pillow nuitka
 ```
 
 The build script will automatically:
@@ -200,7 +200,7 @@ If you encounter issues with the build process, you can use the simple Converter
 
 Or run directly with Python 3.13:
 ```
-python3.13 Converter.py
+python3.14 Converter.py
 ```
 
 For ZIP file operations, you can use either the command line:

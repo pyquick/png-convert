@@ -8,7 +8,8 @@ import sys
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QFont
-from qfluentwidgets import (
+
+from UIkit import (
     SettingCardGroup, SwitchSettingCard, PushSettingCard, PrimaryPushSettingCard,
     FluentIcon, BodyLabel, CaptionLabel, TextBrowser, InfoBar, InfoBarPosition,
     setCustomStyleSheet, HeaderCardWidget, SingleDirectionScrollArea
@@ -27,7 +28,7 @@ class DebugStatusCard(HeaderCardWidget):
         super().__init__(parent)
         self.setTitle('Debug Status')
         
-        from qfluentwidgets import IconWidget, HyperlinkLabel
+        from UIkit import IconWidget, HyperlinkLabel
         
         # Create status icon
         self.statusIcon = IconWidget(FluentIcon.INFO, self)
@@ -61,7 +62,7 @@ class DebugStatusCard(HeaderCardWidget):
     def update_status(self, debug_enabled, enhanced_logging):
         """Update status display based on debug settings"""
         if debug_enabled:
-            from qfluentwidgets import InfoBarIcon
+            from UIkit import InfoBarIcon
             self.statusIcon.setIcon(InfoBarIcon.SUCCESS)
             status_text = " Debug mode is ENABLED"
             if enhanced_logging:
@@ -102,7 +103,7 @@ class DebugStatusCard(HeaderCardWidget):
 
 
 class DebugSettingsWidget(QWidget):
-    """Debug settings widget using qfluentwidgets SettingCard components"""
+    """Debug settings widget using UIkit SettingCard components"""
     
     def __init__(self, parent=None):
         super().__init__(parent)

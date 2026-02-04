@@ -23,14 +23,14 @@ from PySide6.QtGui import QPixmap, QIcon, QFont, QImage, QPalette
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread
 from PySide6.QtCore import QSettings
 from darkdetect import isDark
-import qfluentwidgets
+
 from support.toggle import theme_manager
-from qfluentwidgets import *
+from UIkit import *
 # Add the current directory to Python path to import convert module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from support import convert
 from support.GUI.image_support import DropZoneWidget, DirectoryDropLineEdit, PreviewTab, ThumbnailGridWidget
-from support.signal_transmission import get_signal_manager
+
 
 from con import CON
 
@@ -358,8 +358,8 @@ class ICNSConverterGUI(QMainWindow):
         self.init_variables()
         
         # Initialize signal transmission manager
-        self.signal_manager = get_signal_manager()
-        self._connect_signal_signals()
+    
+        
         
         self.setup_ui()
         self.center_window()
@@ -540,25 +540,14 @@ class ICNSConverterGUI(QMainWindow):
         if not hasattr(self, 'conversion_history'):
             self.conversion_history = []
     
-    def _connect_signal_signals(self):
-        """Connect signal manager signals"""
-        self.signal_manager.signal_sent.connect(self._on_signal_sent)
-        self.signal_manager.signal_received.connect(self._on_signal_received)
-        self.signal_manager.transmission_confirmed.connect(self._on_transmission_confirmed)
-        self.signal_manager.transmission_failed.connect(self._on_transmission_failed)
+    
     
     def _on_signal_sent(self, task_id, json_data):
         """Handle signal sent"""
         print(f"ICNSConverterGUI: Signal sent for task {task_id}")
     
-    def _on_signal_received(self, task_id, signal_data):
-        """Handle signal received"""
-        print(f"ICNSConverterGUI: Signal received for task {task_id}")
-        
-        # Check if this is a task creation signal for this component
-        if signal_data.get("type") == "image" and signal_data.get("task_id") == self.current_task_id:
-            # Confirm signal reception
-            self.signal_manager.confirm_signal(task_id)
+    
+     
     
     def _on_transmission_confirmed(self, task_id):
         """Handle transmission confirmed"""
@@ -684,7 +673,7 @@ class ICNSConverterGUI(QMainWindow):
         
     def setup_task_mode_info_bar(self, parent_layout):
         """Setup task mode status info bar"""
-        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        from UIkit import InfoBar, InfoBarPosition, FluentIcon
         
         self.task_mode_info_bar = None
         self._update_task_mode_status()
@@ -700,7 +689,7 @@ class ICNSConverterGUI(QMainWindow):
     
     def _update_task_mode_status(self):
         """Update task mode status info bar"""
-        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        from UIkit import InfoBar, InfoBarPosition, FluentIcon
         
         task_mode_enabled = self._is_task_mode_enabled()
         
@@ -734,14 +723,14 @@ class ICNSConverterGUI(QMainWindow):
     
     def setup_task_mode_info_bar_batch(self, parent_layout):
         """Setup task mode status info bar for batch converter"""
-        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        from UIkit import InfoBar, InfoBarPosition, FluentIcon
         
         self.task_mode_info_bar_batch = None
         self._update_task_mode_status_batch()
     
     def _update_task_mode_status_batch(self):
         """Update task mode status info bar for batch converter"""
-        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        from UIkit import InfoBar, InfoBarPosition, FluentIcon
         
         task_mode_enabled = self._is_task_mode_enabled()
         
@@ -1659,7 +1648,7 @@ class ICNSConverterGUI(QMainWindow):
     
     def _show_clear_history_popup(self):
         """Show popup to confirm clearing history"""
-        from qfluentwidgets import MessageBox, FluentIcon
+        from UIkit import MessageBox, FluentIcon
         
         # Create confirmation dialog
         box = MessageBox(
@@ -1681,7 +1670,7 @@ class ICNSConverterGUI(QMainWindow):
         self.update_history_display()
         
         # Show success info bar
-        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        from UIkit import InfoBar, InfoBarPosition, FluentIcon
         InfoBar.success(
             title='History Cleared',
             content='All conversion history has been successfully cleared.',

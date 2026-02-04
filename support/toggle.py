@@ -1,9 +1,9 @@
 from termios import INPCK
 from PySide6.QtWidgets import QWidget
 import darkdetect
-from qfluentwidgets import setTheme, setThemeColor, Theme
-from qframelesswindow import QMainWindow
-from qframelesswindow.utils import getSystemAccentColor
+from UIkit import setTheme, setThemeColor, Theme
+from UIWindow import QMainWindow
+from UIWindow.utils import getSystemAccentColor
 from darkdetect import isDark
 from PySide6.QtCore import QThread, QTimer
 import threading
@@ -16,7 +16,7 @@ import gc
 
 # 创建一个锁来保护对CON对象的访问
 _con_lock = threading.Lock()
-from qfluentwidgets import *
+from UIkit import *
 
 class ThemeManager(QObject):
     def __init__(self):

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QPixmap, QFont, QPainter, QColor
 from PySide6.QtCore import Qt, QSize, Signal
-from qfluentwidgets import *
+from UIkit import *
 
 
 class DropZoneWidget(QFrame):

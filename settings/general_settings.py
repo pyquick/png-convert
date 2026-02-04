@@ -4,7 +4,7 @@ General Settings Widget
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 from PySide6.QtCore import Qt, Signal, QSettings
-from qfluentwidgets import (
+from UIkit import (
     SettingCardGroup, SwitchSettingCard, PushSettingCard, PrimaryPushSettingCard,
     FluentIcon, BodyLabel, CaptionLabel, PasswordLineEdit, InfoBar, InfoBarPosition,
     setCustomStyleSheet, ExpandGroupSettingCard, SingleDirectionScrollArea
@@ -26,7 +26,7 @@ class GitHubSettingCard(ExpandGroupSettingCard):
             parent
         )
         
-        from qfluentwidgets import ComboBox, PushButton
+        from UIkit import ComboBox, PushButton
         
         self.pat_input = PasswordLineEdit()
         self.pat_input.setPlaceholderText("ghp_xxxxxxxxxxxxxxxxxxxx")

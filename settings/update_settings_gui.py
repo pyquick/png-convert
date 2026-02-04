@@ -8,11 +8,11 @@ import os
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
 from PySide6.QtCore import QSettings, Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QFont
-from qfluentwidgets import *
+from UIkit import *
 from darkdetect import isDark
 from update.update_manager import UpdateManager
 from update.download_update import download_and_apply_update
-from qframelesswindow.utils import getSystemAccentColor
+from UIWindow.utils import getSystemAccentColor
 from con import CON
 
 

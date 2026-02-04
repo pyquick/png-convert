@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QIcon, QPainter, QPixmap, QPalette, QColor
 from PySide6.QtCore import QSize, Qt, QSettings, QPropertyAnimation, QEasingCurve, QTimer, Signal
 import multiprocessing
-from qfluentwidgets import (
+from UIkit import (
     HeaderCardWidget, ImageLabel, Theme, setTheme, qconfig, SystemThemeListener,
     FluentWindow, NavigationItemPosition,
     CardWidget, PushButton, PrimaryPushButton, IconWidget,
@@ -35,10 +35,9 @@ from qfluentwidgets import (
     setCustomStyleSheet, ElevatedCardWidget, ProgressBar, FlowLayout,
     ScrollArea
 )
-from qfluentwidgets.components.widgets.card_widget import SimpleCardWidget
+from UIkit.components.widgets.card_widget import SimpleCardWidget
 from settings.settings_gui import SettingsDialog
 from con import CON # Import CON instance for theme settings
-from support.signal_transmission import get_signal_manager
 # Encoding settings have been moved to debug_logger for handling
 # --- Helper function to create placeholder icons ---
 # Since we cannot directly generate .icns files, we create PNG files as examples.
@@ -495,7 +494,7 @@ class MainWindow(FluentWindow):
         
         # --- Task Sidebar ---
         # Create sidebar widget
-        from qfluentwidgets import PushButton, setCustomStyleSheet
+        from UIkit import PushButton, setCustomStyleSheet
         
         # Keep using QWidget as the container
         self.sidebar_widget = QWidget()
@@ -757,7 +756,7 @@ class ImageAppDialog(AnimatedAppDialog):
         layout.addWidget(subtitle)
         
         # Loading indicator
-        from qfluentwidgets import IndeterminateProgressBar
+        from UIkit import IndeterminateProgressBar
         progress = IndeterminateProgressBar()
         layout.addWidget(progress)
         
@@ -799,7 +798,7 @@ class ZipAppDialog(AnimatedAppDialog):
         layout.addWidget(subtitle)
         
         # Loading indicator
-        from qfluentwidgets import IndeterminateProgressBar
+        from UIkit import IndeterminateProgressBar
         progress = IndeterminateProgressBar()
         layout.addWidget(progress)
         
