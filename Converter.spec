@@ -37,16 +37,6 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'PyQt5',
-        'PyQt5.QtCore',
-        'PyQt5.QtGui',
-        'PyQt5.QtWidgets',
-        'PyQt5.QtSvg',
-        'PyQt5.QtPrintSupport',
-        'PyQt5.QtWebEngineWidgets',
-        'PyQt5.QtWebChannel',
-        'PyQt5.QtWebSockets',
-        'PyQt5.QtMultimedia',
         'tkinter',
         # WebEngine modules (not used)
         'QtWebEngineCore',
@@ -55,7 +45,6 @@ a = Analysis(
         'PySide6.QtWebEngineCore',
         'PySide6.QtWebEngineWidgets',
         'PySide6.QtWebEngine',
-        
         # Multimedia modules (not used)
         'QtMultimedia',
         'QtMultimediaWidgets',
@@ -275,5 +264,5 @@ app = BUNDLE(
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '11.7',
     },
-    version='2.1.0A7',
+    version='2.1.0A8',
 )

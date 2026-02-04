@@ -164,7 +164,7 @@ class DownloadThread(QThread):
 class UpdateSettingsWidget(QWidget):
     """Update settings widget using qfluentwidgets SettingCard components"""
     
-    __version__ = "2.1.0A7"
+    __version__ = "2.1.0A8"
     
     def __init__(self, parent=None):
         super().__init__(parent)
