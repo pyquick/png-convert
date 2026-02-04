@@ -10,7 +10,7 @@ class UpdateManager:
         self.current_version = self._parse_version(current_version)
 
     def _parse_version(self, version_str: str) -> tuple:
-        # Handles versions like 2.1.0A6 and pre-release like 2.1.0A6RC1, 2.1.0A6A1, 2.1.0A6D1, 2.1.0A6RC1
+        # Handles versions like 2.1.0A7 and pre-release like 2.1.0A7RC1, 2.1.0A7A1, 2.1.0A7D1, 2.1.0A7RC1
         parts = version_str.split('.')
         if len(parts) != 3:
             raise ValueError(f"Invalid version string: {version_str}")
