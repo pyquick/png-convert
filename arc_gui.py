@@ -16,6 +16,7 @@ from qfluentwidgets import *
 from con import CON
 from support.toggle import ThemeManager
 from support.GUI.arc_support import BatchDropZoneWidget
+from support.signal_transmission import get_signal_manager
 # Add the current directory to Python path to import convertzip module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from support.archive_manager import create_archive, extract_archive, add_to_archive, list_archive_contents, SUPPORTED_ARCHIVE_FORMATS, batch_extract_archives
@@ -493,6 +494,11 @@ class ZipGUI(QMainWindow):
         
         self.themeListener = SystemThemeListener(self)
         self.init_variables()
+        
+        # Initialize signal transmission manager
+        self.signal_manager = get_signal_manager()
+        self._connect_signal_signals()
+        
         self.setup_ui()
         self._apply_theme(initial_dark_mode)
         self.center_window() # Center the window after UI setup
@@ -503,6 +509,50 @@ class ZipGUI(QMainWindow):
         
         # Load settings
         self.load_settings()
+    
+    def setup_task_mode_info_bar(self, parent_layout):
+        """Setup task mode status info bar"""
+        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        
+        self.task_mode_info_bar = None
+        self._update_task_mode_status()
+        
+        # Note: In PySide6, QSettings doesn't have valueChanged signal
+        # We rely on manual updates when settings are changed externally
+    
+    def _update_task_mode_status(self):
+        """Update task mode status info bar"""
+        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        
+        task_mode_enabled = self._is_task_mode_enabled()
+        
+        if task_mode_enabled:
+            # Show task mode enabled info bar
+            if self.task_mode_info_bar:
+                self.task_mode_info_bar.close()
+            
+            self.task_mode_info_bar = InfoBar(
+                icon=FluentIcon.DICTIONARY,  # Using a relevant icon
+                title="Task Mode Enabled",
+                content="Archive tasks will be managed by Task Manager. Progress updates are handled centrally.",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=False,
+                duration=0,  # 持续显示
+                position=InfoBarPosition.TOP,
+                parent=self.main_widget
+            )
+            self.task_mode_info_bar.show()
+        else:
+            # Hide task mode info bar
+            if self.task_mode_info_bar:
+                self.task_mode_info_bar.close()
+                self.task_mode_info_bar = None
+    
+    def _on_settings_changed(self, key, value):
+        """Handle settings changes"""
+        if key == "task_mode":
+            self._update_task_mode_status()
+    
     def closeEvent(self, event):
         """Window close event"""
         # Stop listener thread
@@ -531,6 +581,9 @@ class ZipGUI(QMainWindow):
         
         # Task mode setting
         self.task_mode = False
+        
+        # Task mode variables
+        self.current_task_id = None
         
         # Variables for Extract ZIP tab
         self.extract_zip_path = ""
@@ -591,12 +644,51 @@ class ZipGUI(QMainWindow):
             # User canceled
             self._password_dialog = None
             return None
-
+    
+    def _connect_signal_signals(self):
+        """Connect signal manager signals"""
+        self.signal_manager.signal_sent.connect(self._on_signal_sent)
+        self.signal_manager.signal_received.connect(self._on_signal_received)
+        self.signal_manager.transmission_confirmed.connect(self._on_transmission_confirmed)
+        self.signal_manager.transmission_failed.connect(self._on_transmission_failed)
+    
+    def _on_signal_sent(self, task_id, json_data):
+        """Handle signal sent"""
+        print(f"ZipGUI: Signal sent for task {task_id}")
+    
+    def _on_signal_received(self, task_id, signal_data):
+        """Handle signal received"""
+        print(f"ZipGUI: Signal received for task {task_id}")
+        
+        # Check if this is a task creation signal for this component
+        if signal_data.get("type") == "arc" and signal_data.get("task_id") == self.current_task_id:
+            # Confirm signal reception
+            self.signal_manager.confirm_signal(task_id)
+    
+    def _on_transmission_confirmed(self, task_id):
+        """Handle transmission confirmed"""
+        print(f"ZipGUI: Transmission confirmed for task {task_id}")
+        
+        # If this is our current task, start conversion
+        if task_id == self.current_task_id:
+            self.on_task_transmission_confirmed(task_id)
+    
+    def _on_transmission_failed(self, task_id, error_message):
+        """Handle transmission failed"""
+        print(f"ZipGUI: Transmission failed for task {task_id}: {error_message}")
+        
+        # If this is our current task, handle failure
+        if task_id == self.current_task_id:
+            self.on_task_transmission_failed(task_id, error_message)
+    
     def setup_ui(self):
         self.main_widget = QWidget(self)
         self.setCentralWidget(self.main_widget)
         self.main_layout = QVBoxLayout(self.main_widget)
         
+        # Task Mode Status Info Bar
+        self.setup_task_mode_info_bar(self.main_layout)
+
         # Initialize status bar
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")
@@ -637,18 +729,12 @@ class ZipGUI(QMainWindow):
         
         # Load task mode setting
         self.task_mode = settings.value("task_mode", False, type=bool)
-        if hasattr(self, 'task_mode_check'):
-            self.task_mode_check.setChecked(self.task_mode)
     
     def save_settings(self):
         """Save settings to QSettings"""
         settings = QSettings("MyCompany", "ConverterApp")
         
-        # Save task mode setting
-        if hasattr(self, 'task_mode_check'):
-            settings.setValue("task_mode", self.task_mode_check.isChecked())
-        else:
-            settings.setValue("task_mode", self.task_mode)
+        # Task mode setting removed - now controlled globally
         
         settings.sync()
 
@@ -773,10 +859,7 @@ class ZipGUI(QMainWindow):
         # Add GroupBox to main layout
         tab_sizer.addWidget(sources_box, 1) # Give sources box more stretch
 
-        # Task mode control
-        self.task_mode_check = CheckBox("Enable Task Mode")
-        self.task_mode_check.setChecked(False)
-        tab_sizer.addWidget(self.task_mode_check)
+        # Task mode control removed - now controlled globally
         
         # Progress bar
         self.create_progress_label = QLabel("")
@@ -1626,7 +1709,21 @@ class ZipGUI(QMainWindow):
             duration=2000
         )
 
+    def _is_task_mode_enabled(self):
+        """Check if task mode is enabled"""
+        settings = QSettings("MyCompany", "ConverterApp")
+        return settings.value("task_mode", False, type=bool)
+    
     def update_create_progress(self, message, progress):
+        # Check if task mode is enabled
+        if self._is_task_mode_enabled():
+            # Task mode: don't update progress bar, just update label for basic feedback
+            self.create_progress_label.setText(f"Archive task: {message}")
+            print(f"[Create Task Progress] {message}")  # Console feedback
+            # Keep progress bar at current value (don't update)
+            return
+        
+        # Normal mode: update both progress bar and label
         self.create_progress_label.setText(message)
         print(f"[Create Progress] {message}")  # Print progress information to console
         if progress >= 0:
@@ -1739,6 +1836,43 @@ class ZipGUI(QMainWindow):
         self.create_zip_worker_thread.started.connect(self.create_zip_worker.run)
         self.create_zip_worker_thread.start()
 
+    def on_task_transmission_confirmed(self, task_id):
+        """Handle task transmission confirmed - start actual archive creation"""
+        if task_id == self.current_task_id:
+            # Check if task mode is enabled for consistent messaging
+            if self._is_task_mode_enabled():
+                self.create_progress_label.setText("Task transmission confirmed - starting...")
+            else:
+                self.create_progress_label.setText("Transmission confirmed - starting archive creation...")
+            
+            # Start the actual archive creation process
+            password = getattr(self.create_zip_worker, 'password', None) if hasattr(self, 'create_zip_worker') else None
+            
+            self.create_zip_worker = CreateZipWorker(self.create_output_path, self.create_sources, self.create_archive_format, password)
+            self.create_zip_worker_thread = QThread()
+            self.create_zip_worker.moveToThread(self.create_zip_worker_thread)
+
+            self.create_zip_worker.finished.connect(self.on_create_archive_finished)
+            self.create_zip_worker.progress_updated.connect(self.update_create_progress)
+            self.create_zip_worker.conversion_error.connect(self.on_create_archive_error)
+            self.create_zip_worker.canceled.connect(self.on_create_archive_canceled)
+            self.create_zip_worker_thread.started.connect(self.create_zip_worker.run)
+            self.create_zip_worker_thread.start()
+    
+    def on_task_transmission_failed(self, task_id, error_message):
+        """Handle task transmission failed"""
+        if task_id == self.current_task_id:
+            self.create_progress_label.setText("Task creation failed")
+            self.create_button.setEnabled(True)
+            self.create_cancel_button.setEnabled(False)
+            
+            # Show error message to user
+            self._show_info_bar(
+                title='Task Creation Failed',
+                content=f"Failed to create task: {error_message}",
+                duration=3000
+            )
+
     def on_create_archive_finished(self):
         # 使用强制线程清理方法
         self._force_cleanup_create_thread()
@@ -1748,15 +1882,22 @@ class ZipGUI(QMainWindow):
         if self.create_zip_worker and hasattr(self.create_zip_worker, 'password') and self.create_zip_worker.password:
             archive_info += " (Password Protected)"
         
-        # Show success notification at the top
-        self._show_info_bar(
-            title='Success',
-            content=archive_info,
-            duration=2000
-        )
-        
-        # Update archive status display
-        self.update_archive_status(archive_info, True)
+        # Check if task mode is enabled - skip UI notifications in task mode
+        if not self._is_task_mode_enabled():
+            # Normal mode: show success notifications
+            # Show success notification at the top
+            self._show_info_bar(
+                title='Success',
+                content=archive_info,
+                duration=2000
+            )
+            
+            # Update archive status display
+            self.update_archive_status(archive_info, True)
+        else:
+            # Task mode: don't show success notifications
+            self.create_progress_label.setText("Archive task completed")
+            print(f"Archive created successfully (task mode): {os.path.basename(self.create_output_path)}")
 
     def on_create_archive_error(self, error_message):
         # 使用强制线程清理方法
@@ -1765,17 +1906,24 @@ class ZipGUI(QMainWindow):
         # Update archive status
         archive_info = f"Archive creation failed: {str(error_message)}"
         
-        self._show_popup(
-            target=self.create_progress,
-            icon=InfoBarIcon.ERROR,
-            title='Error',
-            content=f'Error creating archive: {str(error_message)}',
-            duration=3000
-        )
-        self.create_progress_label.setText("Archive creation failed.")
-        
-        # Update archive status display
-        self.update_archive_status(archive_info, False)
+        # Check if task mode is enabled - skip error notifications in task mode
+        if not self._is_task_mode_enabled():
+            # Normal mode: show error notifications
+            self._show_popup(
+                target=self.create_progress,
+                icon=InfoBarIcon.ERROR,
+                title='Error',
+                content=f'Error creating archive: {str(error_message)}',
+                duration=3000
+            )
+            self.create_progress_label.setText("Archive creation failed.")
+            
+            # Update archive status display
+            self.update_archive_status(archive_info, False)
+        else:
+            # Task mode: don't show error notifications
+            self.create_progress_label.setText("Archive task failed")
+            print(f"Archive creation failed (task mode): {error_message}")
     
     def cancel_create_archive(self):
         """Cancel the archive creation process"""
@@ -2265,6 +2413,15 @@ class ZipGUI(QMainWindow):
             print(f"Warning: Could not auto-set extract destination: {e}")
 
     def update_extract_progress(self, message, progress):
+        # Check if task mode is enabled
+        if self._is_task_mode_enabled():
+            # Task mode: don't update progress bar, just update label for basic feedback
+            self.extract_progress_label.setText(f"Extract task: {message}")
+            print(f"[Extract Task Progress] {message}")  # Console feedback
+            # Keep progress bar at current value (don't update)
+            return
+        
+        # Normal mode: update both progress bar and label
         self.extract_progress_label.setText(message)
         print(f"[Extract Progress] {message}")  # Print progress information to console
         if progress >= 0:
@@ -2547,6 +2704,15 @@ class ZipGUI(QMainWindow):
                 self.update_add_files_list(selected_files)
 
     def update_add_progress(self, message, progress):
+        # Check if task mode is enabled
+        if self._is_task_mode_enabled():
+            # Task mode: don't update progress bar, just update label for basic feedback
+            self.add_progress_label.setText(f"Add task: {message}")
+            print(f"[Add Task Progress] {message}")  # Console feedback
+            # Keep progress bar at current value (don't update)
+            return
+        
+        # Normal mode: update both progress bar and label
         self.add_progress_label.setText(message)
         print(f"[Add Progress] {message}")  # Print progress information to console
         if progress >= 0:

@@ -30,6 +30,7 @@ from qfluentwidgets import *
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from support import convert
 from support.GUI.image_support import DropZoneWidget, DirectoryDropLineEdit, PreviewTab, ThumbnailGridWidget
+from support.signal_transmission import get_signal_manager
 
 from con import CON
 
@@ -355,6 +356,11 @@ class ICNSConverterGUI(QMainWindow):
         self.setMinimumSize(1200, 400)
         #self.layout().setSizeConstraint(QLayout.SetFixedSize)
         self.init_variables()
+        
+        # Initialize signal transmission manager
+        self.signal_manager = get_signal_manager()
+        self._connect_signal_signals()
+        
         self.setup_ui()
         self.center_window()
 
@@ -449,8 +455,6 @@ class ICNSConverterGUI(QMainWindow):
             self.icns_method_combo.setCurrentText(str(self.icns_method))
         if hasattr(self, 'overwrite_confirm_check'):
             self.overwrite_confirm_check.setChecked(bool(self.overwrite_confirm))
-        if hasattr(self, 'task_mode_check'):
-            self.task_mode_check.setChecked(bool(self.task_mode))
         
         print(f"Settings loaded: min_size={self.min_size}, max_size={self.max_size}, output_format={self.output_format}, task_mode={self.task_mode}")
         
@@ -477,11 +481,7 @@ class ICNSConverterGUI(QMainWindow):
         settings.setValue("image_converter/remember_path", self.remember_path)
         settings.setValue("image_converter/completion_notify", self.completion_notify)
         
-        # Save task mode setting
-        if hasattr(self, 'task_mode_check'):
-            settings.setValue("task_mode", self.task_mode_check.isChecked())
-        else:
-            settings.setValue("task_mode", self.task_mode)
+        # Task mode setting removed - now controlled globally
         
         # Save remembered paths if setting is enabled
         if self.remember_path:
@@ -528,6 +528,9 @@ class ICNSConverterGUI(QMainWindow):
         self.batch_canceled = False
         self.batch_results = []  # Store conversion results
         
+        # Task mode variables
+        self.current_task_id = None
+        
         # Only reset interface behavior settings if explicitly requested
         if reset_all or not hasattr(self, 'auto_preview'):
             # Interface behavior settings - prioritize reading from launcher settings
@@ -536,6 +539,42 @@ class ICNSConverterGUI(QMainWindow):
         # History tracking
         if not hasattr(self, 'conversion_history'):
             self.conversion_history = []
+    
+    def _connect_signal_signals(self):
+        """Connect signal manager signals"""
+        self.signal_manager.signal_sent.connect(self._on_signal_sent)
+        self.signal_manager.signal_received.connect(self._on_signal_received)
+        self.signal_manager.transmission_confirmed.connect(self._on_transmission_confirmed)
+        self.signal_manager.transmission_failed.connect(self._on_transmission_failed)
+    
+    def _on_signal_sent(self, task_id, json_data):
+        """Handle signal sent"""
+        print(f"ICNSConverterGUI: Signal sent for task {task_id}")
+    
+    def _on_signal_received(self, task_id, signal_data):
+        """Handle signal received"""
+        print(f"ICNSConverterGUI: Signal received for task {task_id}")
+        
+        # Check if this is a task creation signal for this component
+        if signal_data.get("type") == "image" and signal_data.get("task_id") == self.current_task_id:
+            # Confirm signal reception
+            self.signal_manager.confirm_signal(task_id)
+    
+    def _on_transmission_confirmed(self, task_id):
+        """Handle transmission confirmed"""
+        print(f"ICNSConverterGUI: Transmission confirmed for task {task_id}")
+        
+        # If this is our current task, start conversion
+        if task_id == self.current_task_id:
+            self.on_task_transmission_confirmed(task_id)
+    
+    def _on_transmission_failed(self, task_id, error_message):
+        """Handle transmission failed"""
+        print(f"ICNSConverterGUI: Transmission failed for task {task_id}: {error_message}")
+        
+        # If this is our current task, handle failure
+        if task_id == self.current_task_id:
+            self.on_task_transmission_failed(task_id, error_message)
     
     def _load_launcher_settings_for_interface(self):
         """Load interface behavior settings from launcher settings (QSettings) with fallback to defaults"""
@@ -643,6 +682,91 @@ class ICNSConverterGUI(QMainWindow):
         # Connect drop signals to update preview tab
         self._connect_preview_signals()
         
+    def setup_task_mode_info_bar(self, parent_layout):
+        """Setup task mode status info bar"""
+        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        
+        self.task_mode_info_bar = None
+        self._update_task_mode_status()
+        
+        # Note: In PySide6, QSettings doesn't have valueChanged signal
+        # We rely on manual updates when settings are changed externally
+    
+    def _is_task_mode_enabled(self):
+        """Check if task mode is enabled"""
+        if not hasattr(self, 'settings'):
+            self.settings = QSettings("MyCompany", "ConverterApp")
+        return self.settings.value("task_mode", False, type=bool)
+    
+    def _update_task_mode_status(self):
+        """Update task mode status info bar"""
+        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        
+        task_mode_enabled = self._is_task_mode_enabled()
+        
+        if task_mode_enabled:
+            # Show task mode enabled info bar
+            if self.task_mode_info_bar:
+                self.task_mode_info_bar.close()
+            
+            self.task_mode_info_bar = InfoBar(
+                icon=FluentIcon.DICTIONARY,  # Using a relevant icon
+                title="Task Mode Enabled",
+                content="Tasks will be managed by Task Manager. Progress updates are handled centrally.",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=False,
+                duration=0,  # 持续显示
+                position=InfoBarPosition.TOP,
+                parent=self.converter_tab
+            )
+            self.task_mode_info_bar.show()
+        else:
+            # Hide task mode info bar
+            if self.task_mode_info_bar:
+                self.task_mode_info_bar.close()
+                self.task_mode_info_bar = None
+    
+    def _on_settings_changed(self, key, value):
+        """Handle settings changes"""
+        if key == "task_mode":
+            self._update_task_mode_status()
+            self._update_task_mode_status_batch()
+    
+    def setup_task_mode_info_bar_batch(self, parent_layout):
+        """Setup task mode status info bar for batch converter"""
+        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        
+        self.task_mode_info_bar_batch = None
+        self._update_task_mode_status_batch()
+    
+    def _update_task_mode_status_batch(self):
+        """Update task mode status info bar for batch converter"""
+        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        
+        task_mode_enabled = self._is_task_mode_enabled()
+        
+        if task_mode_enabled:
+            # Show task mode enabled info bar
+            if self.task_mode_info_bar_batch:
+                self.task_mode_info_bar_batch.close()
+            
+            self.task_mode_info_bar_batch = InfoBar(
+                icon=FluentIcon.DICTIONARY,  # Using a relevant icon
+                title="Task Mode Enabled",
+                content="Batch tasks will be managed by Task Manager. Individual file progress is handled centrally.",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=False,
+                duration=0,  # 持续显示
+                position=InfoBarPosition.TOP,
+                parent=self.batch_converter_tab
+            )
+            self.task_mode_info_bar_batch.show()
+        else:
+            # Hide task mode info bar
+            if self.task_mode_info_bar_batch:
+                self.task_mode_info_bar_batch.close()
+                self.task_mode_info_bar_batch = None
+        
     def _connect_preview_signals(self):
         """Connect signals to update preview tab"""
         # Connect drop zone signals to preview tab
@@ -665,6 +789,9 @@ class ICNSConverterGUI(QMainWindow):
     def setup_converter_tab(self):
         """Setup the main converter tab content"""
         converter_layout = QVBoxLayout(self.converter_tab)
+
+        # Task Mode Status Info Bar
+        self.setup_task_mode_info_bar(converter_layout)
 
         # Main content area: Left Panel (Input/Output) and Right Side (Options/Preview)
         main_content_h_layout = QHBoxLayout()
@@ -774,11 +901,7 @@ class ICNSConverterGUI(QMainWindow):
         progress_group_layout.setContentsMargins(10, 25, 10, 10)
         left_layout.addWidget(progress_group_box, 0) # No stretch for progress, compact
 
-        # Task mode control
-        self.task_mode_check = CheckBox("Enable Task Mode")
-        self.task_mode_check.setChecked(False)
-        progress_group_layout.addWidget(self.task_mode_check)
-        progress_group_layout.addSpacing(10)
+        # Task mode control removed - now controlled globally
 
         self.progress_label = QLabel("Ready")
         self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -837,6 +960,9 @@ class ICNSConverterGUI(QMainWindow):
     def setup_batch_converter_tab(self):
         """Setup the batch converter tab content"""
         batch_layout = QVBoxLayout(self.batch_converter_tab)
+
+        # Task Mode Status Info Bar for batch tab
+        self.setup_task_mode_info_bar_batch(batch_layout)
 
         # Title for batch converter
         batch_title_label = QLabel("Batch Image Converter")
@@ -2475,37 +2601,6 @@ class ICNSConverterGUI(QMainWindow):
             )
             return
             
-        # Check if task mode is enabled
-        settings = QSettings("MyCompany", "ConverterApp")
-        task_mode_enabled = settings.value("task_mode", False, type=bool)
-        
-        if task_mode_enabled:
-            # Create a simple task notification file
-            import json
-            import uuid
-            import time
-            
-            task_id = str(uuid.uuid4())
-            task_info = {
-                "task_id": task_id,
-                "task_type": "image",
-                "input_path": self.input_path,
-                "output_path": self.output_path,
-                "status": "pending",
-                "progress": 0,
-                "timestamp": time.time()
-            }
-            
-            # Write task info to a temporary file
-            task_dir = os.path.expanduser("~/.converter/tasks")
-            os.makedirs(task_dir, exist_ok=True)
-            task_file = os.path.join(task_dir, f"task_{task_id}.json")
-            with open(task_file, "w") as f:
-                json.dump(task_info, f)
-            
-            # Store task_id for later updates
-            self.current_task_id = task_id
-        
         self.converting = True
         self.convert_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
@@ -2527,6 +2622,51 @@ class ICNSConverterGUI(QMainWindow):
         self._thread.started.connect(self._worker.run)
         self._thread.start()
 
+    def on_task_transmission_confirmed(self, task_id):
+        """Handle task transmission confirmed - start actual conversion"""
+        if task_id == self.current_task_id:
+            # Check if task mode is enabled for consistent messaging
+            if self._is_task_mode_enabled():
+                self.progress_label.setText("Task transmission confirmed - starting...")
+            else:
+                self.progress_label.setText("Transmission confirmed - starting conversion...")
+            
+            # Start the actual conversion process
+            self._worker = ConversionWorker(
+                self.input_path, self.output_path, self.output_format,
+                self.min_size,
+                self.max_size,
+                self.quality
+            )
+            self._thread = QThread() 
+            self._worker.moveToThread(self._thread)
+            
+            self._worker.finished.connect(self.on_conversion_finished)
+            self._worker.progress_updated.connect(self.update_progress)
+            self._worker.conversion_error.connect(self.on_conversion_error)
+            self._thread.started.connect(self._worker.run)
+            self._thread.start()
+    
+    def on_task_transmission_failed(self, task_id, error_message):
+        """Handle task transmission failed"""
+        if task_id == self.current_task_id:
+            self.converting = False
+            self.convert_button.setEnabled(True)
+            self.cancel_button.setEnabled(False)
+            self.progress_label.setText("Task creation failed")
+            
+            # Show error message to user
+            PopupTeachingTip.create(
+                target=self.convert_button,
+                icon=InfoBarIcon.ERROR,
+                title='Task Creation Failed',
+                content=f"Failed to create task: {error_message}",
+                isClosable=True,
+                tailPosition=TeachingTipTailPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+    
     def on_cancel_conversion(self):
         """Cancel the ongoing conversion process"""
         if not self.converting:
@@ -2562,29 +2702,36 @@ class ICNSConverterGUI(QMainWindow):
         if self.remember_path:
             self.add_to_history(self.input_path, self.output_path, str(self.output_format))
         
-        # Show top success notification
-        InfoBar.success(
-            title='Conversion Successful',
-            content=f"Your {str(self.output_format).upper()} file has been created successfully!",
-            orient=Qt.Orientation.Horizontal,
-            isClosable=True,
-            position=InfoBarPosition.TOP,
-            duration=2000,
-            parent=self
-        )
-        
-        # Auto-open file if auto_preview is enabled
-        if self.auto_preview:
-            self.on_open_converted_file()
-        
-        # Show completion notification based on settings
-        if self.completion_notify:
-            self.show_success_view()
+        # Check if task mode is enabled - skip UI notifications in task mode
+        if not self._is_task_mode_enabled():
+            # Normal mode: show success notifications
+            # Show top success notification
+            InfoBar.success(
+                title='Conversion Successful',
+                content=f"Your {str(self.output_format).upper()} file has been created successfully!",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=2000,
+                parent=self
+            )
+            
+            # Auto-open file if auto_preview is enabled
+            if self.auto_preview:
+                self.on_open_converted_file()
+            
+            # Show completion notification based on settings
+            if self.completion_notify:
+                self.show_success_view()
+            else:
+                # If completion notification is disabled, just show a simple status message
+                self.progress.setValue(100)
+                self.progress_label.setText("Conversion completed successfully!")
+                self.status_bar.showMessage(f"Conversion completed: {os.path.basename(self.output_path)}")
         else:
-            # If completion notification is disabled, just show a simple status message
-            self.progress.setValue(100)
-            self.progress_label.setText("Conversion completed successfully!")
-            self.status_bar.showMessage(f"Conversion completed: {os.path.basename(self.output_path)}")
+            # Task mode: don't show completion notifications
+            self.progress_label.setText("Task completed")
+            print(f"Conversion completed (task mode): {os.path.basename(self.output_path)}")
         
         # Auto-reset after conversion completion
         self._reset_after_conversion()
@@ -2639,17 +2786,24 @@ class ICNSConverterGUI(QMainWindow):
             except Exception as e:
                 print(f"Error updating task status: {e}")
         
-        PopupTeachingTip.create(
-            target=self.convert_button,
-            icon=InfoBarIcon.ERROR,
-            title='ERROR',
-            content=f"Conversion Failed,{error_message}",
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.TOP,
-            duration=2000,
-            parent=self
-        )
-        self.progress_label.setText("Conversion Failed")
+        # Check if task mode is enabled - skip error notifications in task mode
+        if not self._is_task_mode_enabled():
+            # Normal mode: show error notifications
+            PopupTeachingTip.create(
+                target=self.convert_button,
+                icon=InfoBarIcon.ERROR,
+                title='ERROR',
+                content=f"Conversion Failed,{error_message}",
+                isClosable=True,
+                tailPosition=TeachingTipTailPosition.TOP,
+                duration=2000,
+                parent=self
+            )
+            self.progress_label.setText("Conversion Failed")
+        else:
+            # Task mode: don't show error notifications
+            self.progress_label.setText("Task failed")
+            print(f"Conversion failed (task mode): {error_message}")
 
     # Batch conversion callback methods
     def on_batch_files_dropped(self, file_paths):
@@ -2847,6 +3001,17 @@ class ICNSConverterGUI(QMainWindow):
             
     def on_batch_progress(self, overall_progress, message=None):
         """Update batch overall progress"""
+        # Check if task mode is enabled
+        if self._is_task_mode_enabled():
+            # Task mode: don't update progress bar, just update label for basic feedback
+            if message:
+                self.batch_progress_label.setText(f"Batch task: {message}")
+            else:
+                self.batch_progress_label.setText(f"Batch task processing: {overall_progress}%")
+            # Keep progress bar at current value (don't update)
+            return
+        
+        # Normal mode: update both progress bar and label
         self.batch_progress.setValue(overall_progress)
         if message:
             self.batch_progress_label.setText(message)
@@ -2855,6 +3020,14 @@ class ICNSConverterGUI(QMainWindow):
         
     def on_batch_file_progress(self, current_index, total_count, current_file, percentage):
         """Update current file progress"""
+        # Check if task mode is enabled
+        if self._is_task_mode_enabled():
+            # Task mode: don't update progress bar, just update label for basic feedback
+            self.current_file_label.setText(f"Batch task processing: {current_file} ({current_index}/{total_count})")
+            # Keep progress bar at current value (don't update)
+            return
+        
+        # Normal mode: update both progress bar and label
         self.current_file_progress.setValue(percentage)
         self.current_file_label.setText(f"Processing {current_file} ({current_index}/{total_count})")
         
@@ -2903,19 +3076,27 @@ class ICNSConverterGUI(QMainWindow):
         
         # Update statistics label
         total_files = success_count + failed_count
-        self.batch_progress_label.setText(f"Completed: {total_files} files")
-            
-        # Get output directory path
-        output_dir = self.get_batch_output_directory()
-            
-        # Show batch success view (even if there were some failures, we still show the results)
-        self.show_batch_success_view(
-            total_files=total_files,
-            success_count=success_count,
-            failed_count=failed_count,
-            output_dir=output_dir,
-            format_name=self.batch_format_combo.currentText()
-        )
+        
+        # Check if task mode is enabled - skip UI notifications in task mode
+        if not self._is_task_mode_enabled():
+            # Normal mode: show batch completion details
+            self.batch_progress_label.setText(f"Completed: {total_files} files")
+                
+            # Get output directory path
+            output_dir = self.get_batch_output_directory()
+                
+            # Show batch success view (even if there were some failures, we still show the results)
+            self.show_batch_success_view(
+                total_files=total_files,
+                success_count=success_count,
+                failed_count=failed_count,
+                output_dir=output_dir,
+                format_name=self.batch_format_combo.currentText()
+            )
+        else:
+            # Task mode: don't show completion details, just basic status
+            self.batch_progress_label.setText("Batch task completed")
+            print(f"Batch conversion completed (task mode): {success_count} succeeded, {failed_count} failed")
         
         # Auto-reset after batch conversion completion
         self._reset_batch_after_conversion()
@@ -3143,6 +3324,14 @@ class ICNSConverterGUI(QMainWindow):
 
             
     def update_progress(self, message, percentage):
+        # Check if task mode is enabled
+        if self._is_task_mode_enabled():
+            # Task mode: don't update progress bar, just update label for basic feedback
+            self.progress_label.setText(f"Task processing: {message}")
+            # Keep progress bar at current value (don't update)
+            return
+        
+        # Normal mode: update both progress bar and label
         self.progress_label.setText(message)
         self.progress.setValue(percentage)
         

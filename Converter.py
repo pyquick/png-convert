@@ -38,6 +38,7 @@ from qfluentwidgets import (
 from qfluentwidgets.components.widgets.card_widget import SimpleCardWidget
 from settings.settings_gui import SettingsDialog
 from con import CON # Import CON instance for theme settings
+from support.signal_transmission import get_signal_manager
 # Encoding settings have been moved to debug_logger for handling
 # --- Helper function to create placeholder icons ---
 # Since we cannot directly generate .icns files, we create PNG files as examples.
@@ -122,181 +123,6 @@ class AppCard(CardWidget):
             run_zip_app()
 
 
-class AppCardTask(CardWidget):
-    """Task card widget for task manager interface"""
-    
-    task_cancelled = Signal(str)
-    task_retried = Signal(str)
-    task_removed = Signal(str)
-    
-    def __init__(self, task_id, task_type, task_info, parent=None):
-        super().__init__(parent)
-        self.task_id = task_id
-        self.task_type = task_type
-        self.task_info = task_info
-        self.setup_ui()
-        self.setup_connections()
-    
-    def setup_ui(self):
-        """Initialize UI components"""
-        self.setFixedHeight(120)
-        self.setFixedWidth(280)
-        self.setBorderRadius(12)
-        
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(15, 12, 15, 12)
-        main_layout.setSpacing(12)
-        
-        icon_layout = QVBoxLayout()
-        icon_layout.setContentsMargins(0, 0, 0, 0)
-        icon_layout.setSpacing(4)
-        
-        if self.task_type == "image":
-            task_icon = FIF.PHOTO
-        else:
-            task_icon = FIF.FOLDER
-        self.icon_widget = IconWidget(task_icon, self)
-        self.icon_widget.setFixedSize(40, 40)
-        icon_layout.addWidget(self.icon_widget, 0, Qt.AlignmentFlag.AlignCenter)
-        
-        status_badges = {
-            "pending": ("Pending", "#9e9e9e"),
-            "running": ("Running", "#2196f3"),
-            "completed": ("Completed", "#4caf50"),
-            "failed": ("Failed", "#f44336"),
-            "cancelled": ("Cancelled", "#ff9800")
-        }
-        status = self.task_info.get("status", "pending")
-        status_text, status_color = status_badges.get(status, status_badges["pending"])
-        
-        self.status_badge = BodyLabel(status_text)
-        self.status_badge.setStyleSheet(f"""
-            BodyLabel {{
-                background-color: {status_color}20;
-                color: {status_color};
-                padding: 2px 8px;
-                border-radius: 10px;
-                font-size: 10px;
-                font-weight: bold;
-            }}
-        """)
-        icon_layout.addWidget(self.status_badge, 0, Qt.AlignmentFlag.AlignCenter)
-        
-        main_layout.addLayout(icon_layout)
-        
-        content_layout = QVBoxLayout()
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(6)
-        
-        input_path = self.task_info.get("input_path", "Unknown")
-        filename = os.path.basename(input_path) if input_path else "Unknown"
-        self.title_label = BodyLabel(filename)
-        self.title_label.setTextColor(QColor("#333333"), QColor("#e0e0e0"))
-        self.title_label.setFixedWidth(160)
-        content_layout.addWidget(self.title_label)
-        
-        self.status_label = CaptionLabel(self.get_status_text())
-        self.status_label.setTextColor(QColor("#666666"), QColor("#a0a0a0"))
-        self.status_label.setFixedWidth(160)
-        content_layout.addWidget(self.status_label)
-        
-        self.progress_bar = ProgressBar()
-        self.progress_bar.setFixedHeight(4)
-        self.progress_bar.setFixedWidth(160)
-        self.progress_bar.setValue(self.task_info.get("progress", 0))
-        content_layout.addWidget(self.progress_bar)
-        
-        main_layout.addLayout(content_layout)
-        
-        button_layout = QVBoxLayout()
-        button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(8)
-        button_layout.addStretch(1)
-        
-        self.cancel_button = TransparentToolButton(FIF.CANCEL, self)
-        self.cancel_button.setFixedSize(28, 28)
-        self.cancel_button.setToolTip("Cancel Task")
-        button_layout.addWidget(self.cancel_button, 0, Qt.AlignmentFlag.AlignRight)
-        
-        self.retry_button = TransparentToolButton(FIF.RETURN, self)
-        self.retry_button.setFixedSize(28, 28)
-        self.retry_button.setToolTip("Retry Task")
-        self.retry_button.setVisible(False)
-        button_layout.addWidget(self.retry_button, 0, Qt.AlignmentFlag.AlignRight)
-        
-        self.remove_button = TransparentToolButton(FIF.DELETE, self)
-        self.remove_button.setFixedSize(28, 28)
-        self.remove_button.setToolTip("Remove Task")
-        button_layout.addWidget(self.remove_button, 0, Qt.AlignmentFlag.AlignRight)
-        
-        button_layout.addStretch(1)
-        
-        main_layout.addLayout(button_layout)
-    
-    def get_status_text(self):
-        """Get status display text"""
-        status = self.task_info.get("status", "pending")
-        if status == "pending":
-            return "Waiting in queue..."
-        elif status == "running":
-            progress = self.task_info.get("progress", 0)
-            return f"Processing... {progress}%"
-        elif status == "completed":
-            return "Task completed successfully"
-        elif status == "failed":
-            error = self.task_info.get("error", "Unknown error")
-            return f"Failed: {error}"
-        elif status == "cancelled":
-            return "Task was cancelled"
-        return "Unknown status"
-    
-    def setup_connections(self):
-        """Setup button connections"""
-        self.cancel_button.clicked.connect(lambda: self.task_cancelled.emit(self.task_id))
-        self.retry_button.clicked.connect(lambda: self.task_retried.emit(self.task_id))
-        self.remove_button.clicked.connect(lambda: self.task_removed.emit(self.task_id))
-    
-    def update_task(self, task_info):
-        """Update task information and UI"""
-        self.task_info = task_info
-        
-        status_badges = {
-            "pending": ("Pending", "#9e9e9e"),
-            "running": ("Running", "#2196f3"),
-            "completed": ("Completed", "#4caf50"),
-            "failed": ("Failed", "#f44336"),
-            "cancelled": ("Cancelled", "#ff9800")
-        }
-        status = task_info.get("status", "pending")
-        status_text, status_color = status_badges.get(status, status_badges["pending"])
-        
-        self.status_badge.setText(status_text)
-        self.status_badge.setStyleSheet(f"""
-            BodyLabel {{
-                background-color: {status_color}20;
-                color: {status_color};
-                padding: 2px 8px;
-                border-radius: 10px;
-                font-size: 10px;
-                font-weight: bold;
-            }}
-        """)
-        
-        self.status_label.setText(self.get_status_text())
-        progress = task_info.get("progress", 0)
-        self.progress_bar.setValue(progress)
-        
-        if status == "running":
-            self.cancel_button.setVisible(True)
-            self.retry_button.setVisible(False)
-        elif status in ["failed", "cancelled"]:
-            self.cancel_button.setVisible(False)
-            self.retry_button.setVisible(True)
-        else:
-            self.cancel_button.setVisible(False)
-            self.retry_button.setVisible(False)
-
-
 class HomeInterface(QFrame):
     """Home interface showing app cards"""
     
@@ -340,98 +166,6 @@ class HomeInterface(QFrame):
         
         # Add stretch to push content to top
         main_layout.addStretch(1)
-
-
-class TaskInterface(ScrollArea):
-    """Task management interface"""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("task_interface")
-        self.setWidgetResizable(True)
-        self.task_cards = {}
-        self.init_ui()
-    
-    def init_ui(self):
-        """Initialize UI components"""
-        from qfluentwidgets import setCustomStyleSheet
-        
-        container_widget = QWidget()
-        container_widget.setObjectName("task_container")
-        self.setWidget(container_widget)
-        
-        main_layout = QVBoxLayout(container_widget)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(20)
-        
-        title_label = SubtitleLabel("Task Manager")
-        main_layout.addWidget(title_label)
-        
-        self.task_container = QWidget()
-        self.task_flow_layout = FlowLayout(self.task_container)
-        self.task_flow_layout.setContentsMargins(10, 10, 10, 10)
-        self.task_flow_layout.setSpacing(15)
-        
-        main_layout.addWidget(self.task_container, 1)
-        
-        controls_layout = QHBoxLayout()
-        
-        self.clear_tasks_button = PrimaryPushButton("Clear Completed")
-        self.clear_tasks_button.setObjectName("clear_tasks_button")
-        self.clear_tasks_button.setFixedHeight(40)
-        controls_layout.addWidget(self.clear_tasks_button)
-        
-        controls_layout.addStretch(1)
-        
-        main_layout.addLayout(controls_layout)
-        
-        task_count_label = CaptionLabel("Tasks will appear here when you start conversions")
-        task_count_label.setTextColor(QColor("#888888"), QColor("#666666"))
-        main_layout.addWidget(task_count_label, 0, Qt.AlignmentFlag.AlignCenter)
-    
-    def add_task_card(self, task_id, task_type, task_info):
-        """Add a new task card to the interface"""
-        if task_id in self.task_cards:
-            return
-        
-        task_card = AppCardTask(task_id, task_type, task_info, self.task_container)
-        self.task_cards[task_id] = task_card
-        self.task_flow_layout.addWidget(task_card)
-        
-        task_card.task_cancelled.connect(self._on_task_cancelled)
-        task_card.task_retried.connect(self._on_task_retried)
-        task_card.task_removed.connect(self._on_task_removed)
-    
-    def update_task_card(self, task_id, task_info):
-        """Update an existing task card"""
-        if task_id in self.task_cards:
-            self.task_cards[task_id].update_task(task_info)
-    
-    def remove_task_card(self, task_id):
-        """Remove a task card from the interface"""
-        if task_id in self.task_cards:
-            task_card = self.task_cards.pop(task_id)
-            self.task_flow_layout.removeWidget(task_card)
-            task_card.deleteLater()
-    
-    def clear_all_cards(self):
-        """Clear all task cards"""
-        for task_id in list(self.task_cards.keys()):
-            self.remove_task_card(task_id)
-    
-    def _on_task_cancelled(self, task_id):
-        """Handle task cancellation"""
-        if hasattr(self.parent(), 'task_manager'):
-            self.parent().task_manager.cancel_task(task_id)
-    
-    def _on_task_retried(self, task_id):
-        """Handle task retry"""
-        if hasattr(self.parent(), 'task_manager'):
-            self.parent().task_manager.retry_task(task_id)
-    
-    def _on_task_removed(self, task_id):
-        """Handle task removal"""
-        self.remove_task_card(task_id)
 
 
 class SettingsInterface(QFrame):
@@ -649,9 +383,6 @@ class MainWindow(FluentWindow):
         self.init_window()
         self.init_navigation()
         
-        # Initialize task manager
-        self.init_task_manager()
-        
         # Apply theme
         setTheme(Theme.AUTO)
         self.themeListener.start()
@@ -662,9 +393,6 @@ class MainWindow(FluentWindow):
         """Initialize sub-interfaces"""
         # Create home interface with app cards
         self.home_interface = HomeInterface(self.icon_paths)
-        
-        # Create task interface for task management
-        self.task_interface = TaskInterface()
         
         # Create settings interface
         self.settings_interface = SettingsInterface()
@@ -681,12 +409,6 @@ class MainWindow(FluentWindow):
             self.home_interface, 
             FIF.HOME, 
             'Home'
-        )
-        
-        self.addSubInterface(
-            self.task_interface, 
-            FIF.HISTORY, 
-            'Task Manager'
         )
         
         self.addSubInterface(
@@ -929,9 +651,6 @@ class MainWindow(FluentWindow):
         
         # Set the main horizontal layout for the window
         self.setLayout(main_horizontal_layout)
-        
-        # Initialize task manager
-        self.init_task_manager()
 
     def show_settings(self):
         settings_dialog = SettingsDialog(self)
@@ -950,142 +669,6 @@ class MainWindow(FluentWindow):
             self.sidebar_widget.show()
             self.task_count_indicator.hide()
             self.toggle_sidebar_button.setText("Collapse")
-    
-    def init_task_manager(self):
-        """Initialize task manager and connect signals"""
-        # Import task manager
-        from support.task_manager import TaskManager
-        
-        # Create task manager instance
-        self.task_manager = TaskManager()
-        
-        # Connect task manager signals to UI updates
-        self.task_manager.task_added.connect(self._on_task_added)
-        self.task_manager.task_updated.connect(self._on_task_updated)
-        self.task_manager.task_completed.connect(self._on_task_completed)
-        self.task_manager.task_failed.connect(self._on_task_failed)
-        self.task_manager.progress_updated.connect(self._on_task_progress_updated)
-        
-        # Connect task interface control buttons
-        self.task_interface.clear_tasks_button.clicked.connect(self._clear_completed_tasks)
-        
-        # Start task file monitor
-        self._start_task_monitor()
-    
-    def _start_task_monitor(self):
-        """Start task file monitor to check for new or updated tasks"""
-        # Create a timer to check task files every 1 second
-        self.task_monitor_timer = QTimer(self)
-        self.task_monitor_timer.timeout.connect(self._check_task_files)
-        self.task_monitor_timer.start(1000)  # Check every 1 second
-        
-        # Create task directory if it doesn't exist
-        self.task_dir = os.path.expanduser("~/.converter/tasks")
-        os.makedirs(self.task_dir, exist_ok=True)
-    
-    def _check_task_files(self):
-        """Check for new or updated task files"""
-        import json
-        
-        # Get all task files in the directory
-        try:
-            task_files = [f for f in os.listdir(self.task_dir) if f.startswith("task_") and f.endswith(".json")]
-            
-            for task_file in task_files:
-                task_file_path = os.path.join(self.task_dir, task_file)
-                task_id = task_file[5:-5]  # Extract task_id from filename
-                
-                # Read task info from file
-                with open(task_file_path, "r") as f:
-                    task_info = json.load(f)
-                
-                # Check if task already exists in task manager
-                if task_id in self.task_manager.tasks:
-                    # Update existing task
-                    self._update_existing_task(task_id, task_info)
-                else:
-                    # Add new task
-                    self._add_new_task(task_id, task_info)
-        
-        except Exception as e:
-            print(f"Error checking task files: {e}")
-    
-    def _add_new_task(self, task_id, task_info):
-        """Add a new task to task manager"""
-        # Create task using task manager's add_task method
-        self.task_manager.add_task(
-            task_info["task_type"],
-            task_info["input_path"],
-            task_info["output_path"]
-        )
-    
-    def _update_existing_task(self, task_id, task_info):
-        """Update an existing task in task manager"""
-        # Update task progress
-        self.task_manager.tasks[task_id].progress = task_info["progress"]
-        self.task_manager.tasks[task_id].status = task_info["status"]
-        
-        # Emit progress updated signal
-        self.task_manager.progress_updated.emit(task_id, task_info["progress"])
-        
-        # If task is completed or failed, emit appropriate signal
-        if task_info["status"] == "completed":
-            self.task_manager.task_completed.emit(task_id, task_info)
-        elif task_info["status"] == "failed":
-            self.task_manager.task_failed.emit(task_id, task_info, task_info.get("error", "Unknown error"))
-    
-    def _on_task_added(self, task_id, task_info):
-        """Handle new task added"""
-        self.task_interface.add_task_card(task_id, task_info['task_type'], task_info)
-        self._update_task_count()
-    
-    def _on_task_updated(self, task_id, task_info):
-        """Handle task updated"""
-        self.task_interface.update_task_card(task_id, task_info)
-    
-    def _on_task_completed(self, task_id, task_info):
-        """Handle task completed"""
-        self._on_task_updated(task_id, task_info)
-        
-        # Send system notification
-        from support.notification import send_notification
-        send_notification(
-            "Task Completed",
-            f"{task_info['task_type'].capitalize()} conversion completed: {os.path.basename(task_info['input_path'])}"
-        )
-    
-    def _on_task_failed(self, task_id, task_info, error):
-        """Handle task failed"""
-        # Update task in list
-        self._on_task_updated(task_id, task_info)
-        
-        # Send system notification
-        from support.notification import send_notification
-        send_notification(
-            "Task Failed",
-            f"{task_info['task_type'].capitalize()} conversion failed: {os.path.basename(task_info['input_path'])}"
-        )
-    
-    def _on_task_progress_updated(self, task_id, progress):
-        """Handle task progress updated"""
-        for task_id_key in self.task_interface.task_cards:
-            if task_id_key == task_id:
-                task_info = self.task_manager.tasks.get(task_id, {})
-                if task_info:
-                    task_info['progress'] = progress
-                    self.task_interface.update_task_card(task_id, task_info)
-                break
-    
-    def _clear_completed_tasks(self):
-        """Clear completed tasks from list"""
-        self.task_manager.clear_completed_tasks()
-        self.task_interface.clear_all_cards()
-        self._update_task_count()
-    
-    def _update_task_count(self):
-        """Update task count indicator (no longer needed in FluentWindow)"""
-        # Task count indicator is no longer needed in FluentWindow
-        pass
 
 class AnimatedAppDialog(QDialog):
     def __init__(self, parent=None, app_type=""):
