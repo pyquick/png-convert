@@ -47,7 +47,7 @@ class UpdateDownloader:
         Get the actual download URL from GitHub API
         
         Args:
-            tag_name: Version tag name (e.g., v2.1.0A8)
+            tag_name: Version tag name (e.g., v2.1.0A9)
             
         Returns:
             str: Actual zip file download URL, returns None if extraction fails
@@ -64,13 +64,13 @@ class UpdateDownloader:
                 platform_str = "intel"
             
             # Use GitHub API to get release information
-            api_url = f"https://api.github.com/repos/intsant/Converter/releases/tags/{tag_name}"
+            api_url = f"https://api.github.com/repos/pyquick/Converter/releases/tags/{tag_name}"
             response = requests.get(api_url, timeout=10)
             response.encoding = 'utf-8'
             if response.status_code != 200:
                 print(f"GitHub API request failed: {api_url} (status code: {response.status_code})")
                 # Fallback to manually constructed URL
-                download_url = f"https://github.com/intsant/Converter/releases/download/{tag_name}/Converter_{platform_str}_darwin.zip"
+                download_url = f"https://github.com/pyquick/Converter/releases/download/{tag_name}/Converter_{platform_str}_darwin.zip"
                 return download_url
             
             release_data = response.json()
@@ -87,7 +87,7 @@ class UpdateDownloader:
             
             # If no matching file is found, fallback to manually constructed URL
             print(f"No matching file found {expected_filename}, using manually constructed URL")
-            download_url = f"https://github.com/intsant/Converter/releases/download/{tag_name}/Converter_{platform_str}_darwin.zip"
+            download_url = f"https://github.com/pyquick/Converter/releases/download/{tag_name}/Converter_{platform_str}_darwin.zip"
             
             # Verify if URL is valid - use GET request as HEAD requests might be handled differently by CDN
             try:
@@ -113,7 +113,7 @@ class UpdateDownloader:
             else:
                 platform_str = "intel"
             
-            download_url = f"https://github.com/intsant/Converter/releases/download/{tag_name}/Converter_{platform_str}_darwin.zip"
+            download_url = f"https://github.com/pyquick/Converter/releases/download/{tag_name}/Converter_{platform_str}_darwin.zip"
             return download_url
     
     def download_update(self, tag_name: str, progress_callback=None) -> Dict[str, Any]:
@@ -121,7 +121,7 @@ class UpdateDownloader:
         Download and extract update files
         
         Args:
-            tag_name: Version tag name (e.g., v2.1.0A8)
+            tag_name: Version tag name (e.g., v2.1.0A9)
             progress_callback: Progress callback function
             
         Returns:
@@ -742,8 +742,8 @@ def download_and_apply_update(update_info: Dict[str, Any], progress_callback=Non
 if __name__ == "__main__":
     # Test code
     test_info = {
-        "download_url": "https://github.com/intsant/converter/releases/tag/v2.1.0A8",
-        "latest_version": "2.1.0A8"
+        "download_url": "https://github.com/pyquick/converter/releases/tag/v2.1.0A9",
+        "latest_version": "2.1.0A9"
     }
     
     result = download_and_apply_update(test_info, "./test_update")

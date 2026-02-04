@@ -32,7 +32,7 @@ pkill -f "python.*converter" 2>/dev/null || true
 # Kill Converter.app processes
 echo "🛑 Terminating Converter.app processes..."
 pkill -f "Converter.app" 2>/dev/null || true
-pkill -f "com.intsant.converter" 2>/dev/null || true
+pkill -f "com.pyquick.converter" 2>/dev/null || true
 
 # Wait for processes to fully terminate
 echo "⏳ Waiting for processes to terminate..."
@@ -44,7 +44,7 @@ pkill -9 -f "python.*arc_gui.py" 2>/dev/null || true
 pkill -9 -f "python.*Converter.py" 2>/dev/null || true
 pkill -9 -f "python.*converter" 2>/dev/null || true
 pkill -9 -f "Converter.app" 2>/dev/null || true
-pkill -9 -f "com.intsant.converter" 2>/dev/null || true
+pkill -9 -f "com.pyquick.converter" 2>/dev/null || true
 
 # Wait again
 sleep 2

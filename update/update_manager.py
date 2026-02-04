@@ -10,7 +10,7 @@ class UpdateManager:
         self.current_version = self._parse_version(current_version)
 
     def _parse_version(self, version_str: str) -> tuple:
-        # Handles versions like 2.1.0A8 and pre-release like 2.1.0A8RC1, 2.1.0A8A1, 2.1.0A8D1, 2.1.0A8RC1
+        # Handles versions like 2.1.0A9 and pre-release like 2.1.0A9RC1, 2.1.0A9A1, 2.1.0A9D1, 2.1.0A9RC1
         parts = version_str.split('.')
         if len(parts) != 3:
             raise ValueError(f"Invalid version string: {version_str}")
@@ -46,13 +46,13 @@ class UpdateManager:
     def check_for_updates(self, include_prerelease: bool, prerelease_type: Optional[str] = None) -> dict:
         try:
             from con import CON
-            repo_owner = "intsant"
+            repo_owner = "pyquick"
             repo_name = "converter"
             url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases"
             headers = CON.headers.copy()
             
             # 读取PAT设置
-            settings = QSettings("intsant", "converter")
+            settings = QSettings("pyquick", "converter")
             encrypted_pat = settings.value("general/github_pat", "", type=str)
             
             # 如果有PAT，添加到headers
@@ -227,7 +227,7 @@ class UpdateManager:
             str: 解密后的PAT，如果没有设置则返回空字符串
         """
         try:
-            settings = QSettings("intsant", "converter")
+            settings = QSettings("pyquick", "converter")
             encrypted_pat = settings.value("general/github_pat", "", type=str)
             if encrypted_pat:
                 import os, sys

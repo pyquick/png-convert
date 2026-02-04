@@ -2,7 +2,7 @@ from build_project_base import main_py
 import clean
 import buildzip
 from setup_ccache import setup_ccache
-target="com.intsant.converter"
+target="com.pyquick.converter"
 from patch import enable
 from plistedit import add_utf_info
 if __name__ == "__main__":

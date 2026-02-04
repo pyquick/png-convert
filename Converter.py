@@ -37,6 +37,8 @@ from UIkit import (
 )
 from UIkit.components.widgets.card_widget import SimpleCardWidget
 from settings.settings_gui import SettingsDialog
+from patch import enable
+enable("com.pyquick.converter")
 from con import CON # Import CON instance for theme settings
 # Encoding settings have been moved to debug_logger for handling
 # --- Helper function to create placeholder icons ---

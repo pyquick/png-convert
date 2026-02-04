@@ -250,12 +250,12 @@ app = BUNDLE(
     coll,
     name='Converter.app',
     icon=os.path.join(current_dir, 'AppIcon.icns'),
-    bundle_identifier='com.intsant.converter',
+    bundle_identifier='com.pyquick.converter',
     info_plist={
         'CFBundleDisplayName': 'Converter',
         'CFBundleExecutable': 'Converter',
         'CFBundleIconFile': 'AppIcon.icns',
-        'CFBundleIdentifier': 'com.intsant.converter',
+        'CFBundleIdentifier': 'com.pyquick.converter',
         'CFBundleInfoDictionaryVersion': '6.0',
         'CFBundleName': 'Converter',
         'CFBundlePackageType': 'APPL',
@@ -264,5 +264,5 @@ app = BUNDLE(
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '11.7',
     },
-    version='2.1.0A8',
+    version='2.1.0A9',
 )

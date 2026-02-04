@@ -53,7 +53,7 @@ def compile_gui():
         "--include-package=image_converter", 
         "--include-package=support",
         "--include-package=update",  # 添加update包以确保所有更新功能正常工作
-        "--macos-signed-app-name=com.intsant.converter",
+        "--macos-signed-app-name=com.pyquick.converter",
         "--enable-plugin=pyside6",
         "--prefer-source-code",
         "--output-dir=dist",      # Output directory
@@ -227,7 +227,7 @@ def create_macos_app_bundle(current_dir, dist_path):
     <key>CFBundleIconFile</key>
     <string>AppIcon.icns</string>
     <key>CFBundleIdentifier</key>
-    <string>com.intsant.converter</string>
+    <string>com.pyquick.converter</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
