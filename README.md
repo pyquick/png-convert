@@ -160,6 +160,7 @@ This script will run the application directly with Python without requiring comp
 - List contents of ZIP files
 - Both command-line and GUI interfaces
 - Error handling and user-friendly feedback
+- Enhanced security with path traversal protection
 
 ## Example
 

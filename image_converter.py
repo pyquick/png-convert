@@ -11,7 +11,6 @@ import sys
 import os
 import threading
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -29,300 +28,15 @@ from UIkit import *
 # Add the current directory to Python path to import convert module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from support import convert
-from support.GUI.image_support import DropZoneWidget, DirectoryDropLineEdit, PreviewTab, ThumbnailGridWidget
+from support.GUI.image_support import (
+    DropZoneWidget, DirectoryDropLineEdit, PreviewTab, ThumbnailGridWidget,
+    ConversionWorker, BatchConversionWorker
+)
 
 
 from con import CON
 
-class ConversionWorker(QObject):
-    finished = Signal()
-    progress_updated = Signal(str, int)
-    conversion_error = Signal(str)
-
-    def __init__(self, input_path, output_path, output_format, min_size_param=None, max_size_param=None, quality_param=None):
-        super().__init__()
-        self.input_path = input_path
-        self.output_path = output_path
-        self.output_format = output_format
-        self.quality = int(quality_param) if quality_param is not None else 85
-        self.qss=CON.qss
-        if output_format == "icns":
-            self.min_size = int(min_size_param) if min_size_param is not None else 16
-            self.max_size = int(max_size_param) if max_size_param is not None else None # Keep None for convert.py
-        else:
-            self.min_size = None # Not relevant for non-icns
-            self.max_size = None # Not relevant for non-icns
-        
-
-    def run(self):
-        try:
-            if self.output_format == "icns":
-                # For icns format, use positional arguments with correct order
-                convert.convert_image(
-                    self.input_path,
-                    self.output_path,
-                    self.output_format,
-                    int(self.min_size) if self.min_size is not None else 16, # Explicit conversion to int
-                    int(self.max_size) if self.max_size is not None else None, # Explicit conversion to int
-                    quality=self.quality,
-                    progress_callback=self._update_progress_callback
-                )
-            else:
-                # For non-icns formats, use keyword arguments for clarity and to avoid parameter order issues
-                convert.convert_image(
-                    input_path=self.input_path,
-                    output_path=self.output_path,
-                    output_format=self.output_format,
-                    quality=self.quality,
-                    progress_callback=self._update_progress_callback
-                )
-            self.finished.emit()
-        except Exception as e:
-            error_msg = f"Conversion error: {str(e)}"
-            self.conversion_error.emit(error_msg)
-            print(f"[ERROR] ConversionWorker: {error_msg}")
-
-    def _update_progress_callback(self, *args):
-        """Handle variable number of arguments from progress_callback
-        Can be called with:
-        - (message, percentage)
-        - (current, total, message)
-        - (message, percentage, extra)
-        """
-        # Determine the arguments format
-        if len(args) == 2:
-            # Format: (message, percentage)
-            message, percentage = args
-        elif len(args) == 3:
-            # Format: (current, total, message) or (message, percentage, extra)
-            if isinstance(args[0], (int, float)) and isinstance(args[1], (int, float)):
-                # Format: (current, total, message)
-                current, total, message = args
-                percentage = int((current / total) * 100) if total > 0 else 0
-            else:
-                # Format: (message, percentage, extra)
-                message, percentage, _ = args
-        else:
-            # Unexpected format, use default values
-            message = "Processing..." if args else "Unknown progress"
-            percentage = 0
-        
-        self.progress_updated.emit(message, percentage)
-
-
-class BatchConversionWorker(QObject):
-    finished = Signal()
-    progress_updated = Signal(int, int, str, int)  # current_index, total_count, current_file, percentage
-    file_processed = Signal(str, str, str, bool, str)  # filename, input_path, output_path, success, error_message
-    batch_error = Signal(str)
-    total_progress_updated = Signal(int)  # overall progress percentage
-
-    def __init__(self, input_paths, output_dir, output_format, min_size_param=None, max_size_param=None, quality_param=None, 
-                 preserve_folder_structure=False, prefix="", suffix="", auto_detect_max_size=False):
-        super().__init__()
-        self.input_paths = input_paths
-        self.output_dir = output_dir
-        self.output_format = output_format
-        self.quality = int(quality_param) if quality_param is not None else 85
-        self.is_cancelled = False
-        self.preserve_folder_structure = preserve_folder_structure
-        self.prefix = prefix
-        self.suffix = suffix
-        self.auto_detect_max_size = auto_detect_max_size
-        
-        if output_format == "icns":
-            self.min_size = int(min_size_param) if min_size_param is not None else 16
-            self.max_size = int(max_size_param) if max_size_param is not None else None
-        else:
-            self.min_size = None
-            self.max_size = None
-
-    def cancel(self):
-        """Cancel the batch conversion process"""
-        self.is_cancelled = True
-
-    def run(self):
-        try:
-            total_files = len(self.input_paths)
-            if total_files == 0:
-                self.finished.emit()
-                return
-            
-            # Get common parent directory if preserving folder structure
-            common_parent = None
-            if self.preserve_folder_structure and self.input_paths:
-                # Get all directories
-                directories = [os.path.dirname(path) for path in self.input_paths]
-                if directories:
-                    # Find common parent directory
-                    common_parent = os.path.commonpath(directories)
-            
-            # Calculate optimal number of threads (use CPU cores * 2 for I/O bound tasks)
-            max_workers = min(16, os.cpu_count() * 2)
-            
-            # Track processed files and progress
-            processed_files = 0
-            
-            # Create a list to hold conversion tasks
-            conversion_tasks = []
-            
-            # Prepare all conversion tasks
-            for i, input_path in enumerate(self.input_paths):
-                filename = os.path.basename(input_path)
-                name_without_ext = os.path.splitext(filename)[0]
-                
-                # Apply prefix and suffix
-                output_filename = f"{self.prefix}{name_without_ext}{self.suffix}.{self.output_format.lower()}"
-                
-                # Determine output path based on folder structure option
-                if self.preserve_folder_structure and common_parent:
-                    # Get relative path from common parent
-                    relative_dir = os.path.relpath(os.path.dirname(input_path), common_parent)
-                    output_path = os.path.join(self.output_dir, relative_dir, output_filename)
-                    # Create directories if they don't exist
-                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                else:
-                    # Create "converted" subdirectory in the output directory
-                    converted_dir = os.path.join(self.output_dir, "converted")
-                    os.makedirs(converted_dir, exist_ok=True)
-                    output_path = os.path.join(converted_dir, output_filename)
-                
-                # Add to conversion tasks
-                conversion_tasks.append({
-                    'index': i,
-                    'input_path': input_path,
-                    'output_path': output_path,
-                    'filename': filename,
-                    'total_files': total_files
-                })
-            
-            # Use ThreadPoolExecutor for concurrent conversion
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all tasks
-                future_to_task = {}
-                for task in conversion_tasks:
-                    if self.is_cancelled:
-                        error_msg = "Batch conversion was cancelled"
-                        self.batch_error.emit(error_msg)
-                        print(f"[ERROR] BatchConversionWorker: {error_msg}")
-                        return
-                    
-                    try:
-                        future = executor.submit(self._convert_single_file, task)
-                        future_to_task[future] = task
-                    except Exception as e:
-                        error_msg = f"Error submitting task for {task['filename']}: {str(e)}"
-                        self.batch_error.emit(error_msg)
-                        print(f"[ERROR] BatchConversionWorker: {error_msg}")
-                        # Continue with other tasks instead of failing completely
-                
-                # Process completed tasks
-                for future in as_completed(future_to_task):
-                    if self.is_cancelled:
-                        error_msg = "Batch conversion was cancelled"
-                        self.batch_error.emit(error_msg)
-                        print(f"[ERROR] BatchConversionWorker: {error_msg}")
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        return
-                    
-                    task = future_to_task[future]
-                    try:
-                        success, message = future.result()
-                        # Signal that this file was processed
-                        self.file_processed.emit(task['filename'], task['input_path'], task['output_path'], success, message if not success else "")
-                    except Exception as e:
-                        # Signal that this file failed
-                        error_msg = f"Error processing {task['filename']}: {str(e)}"
-                        self.file_processed.emit(task['filename'], task['input_path'], task['output_path'], False, error_msg)
-                        print(f"[ERROR] BatchConversionWorker: {error_msg}")
-                    
-                    # Update processed count and overall progress
-                    processed_files += 1
-                    overall_progress = int((processed_files / total_files) * 100)
-                    self.total_progress_updated.emit(overall_progress)
-            
-            # Final progress update
-            self.total_progress_updated.emit(100)
-            self.finished.emit()
-            
-        except Exception as e:
-            error_msg = f"Batch conversion error: {str(e)}"
-            self.batch_error.emit(error_msg)
-            print(f"[ERROR] BatchConversionWorker: {error_msg}")
-    
-    def _convert_single_file(self, task):
-        """Convert a single file (thread-safe)"""
-        if self.is_cancelled:
-            raise Exception("Batch conversion was cancelled")
-        
-        # Update file-specific progress
-        self.progress_updated.emit(task['index']+1, task['total_files'], task['filename'], 0)
-        
-        # Create a progress callback for this specific file
-        def progress_callback(*args):
-            """Handle variable number of arguments from progress_callback
-            Can be called with:
-            - (message, percentage)
-            - (current, total, message)
-            - (message, percentage, extra)
-            """
-            # Determine the arguments format
-            if len(args) == 2:
-                # Format: (message, percentage)
-                message, percentage = args
-            elif len(args) == 3:
-                # Format: (current, total, message) or (message, percentage, extra)
-                if isinstance(args[0], (int, float)) and isinstance(args[1], (int, float)):
-                    # Format: (current, total, message)
-                    current, total, message = args
-                    percentage = int((current / total) * 100) if total > 0 else 0
-                else:
-                    # Format: (message, percentage, extra)
-                    message, percentage, _ = args
-            else:
-                # Unexpected format, use default values
-                message = "Processing..." if args else "Unknown progress"
-                percentage = 0
-            
-            # Update the file-specific progress
-            self.progress_updated.emit(task['index']+1, task['total_files'], task['filename'], percentage)
-        
-        # Perform the conversion
-        if self.output_format == "icns":
-            # Auto-detect max size if enabled
-            current_max_size = int(self.max_size) if self.max_size is not None else None
-            if self.auto_detect_max_size:
-                try:
-                    # Get image dimensions
-                    width, height = convert.get_image_info(task['input_path'])
-                    # Use the minimum of width and height as the max size (since ICNS uses square sizes)
-                    current_max_size = min(width, height)
-                except Exception as e:
-                    # Fall back to default if auto-detect fails
-                    print(f"[WARNING] Failed to auto-detect max size for {task['filename']}: {str(e)}")
-                    current_max_size = int(self.max_size) if self.max_size is not None else None
-            
-            success, message = convert.convert_image(
-                task['input_path'],
-                task['output_path'],
-                self.output_format,
-                int(self.min_size) if self.min_size is not None else 16,
-                current_max_size,
-                quality=self.quality,
-                progress_callback=progress_callback
-            )
-        else:
-            # For non-icns formats, use keyword arguments for clarity and to avoid parameter order issues
-            success, message = convert.convert_image(
-                input_path=task['input_path'],
-                output_path=task['output_path'],
-                output_format=self.output_format,
-                quality=self.quality,
-                progress_callback=progress_callback
-            )
-        
-        return success, message
-
+# ConversionWorker and BatchConversionWorker are now imported from support.GUI.image_support
 
 class ICNSConverterGUI(QMainWindow):
 
@@ -382,10 +96,119 @@ class ICNSConverterGUI(QMainWindow):
         
         
     def closeEvent(self, e):
+        # Stop all worker threads before closing
+        self._stop_all_workers()
+        
         # Stop listener thread
-        self.listener.terminate()
-        self.listener.deleteLater()
+        if hasattr(self, 'listener') and self.listener:
+            try:
+                self.listener.terminate()
+                self.listener.deleteLater()
+            except Exception as ex:
+                print(f"[WARNING] Error stopping listener: {ex}")
+        
         super().closeEvent(e)
+    
+    def _stop_all_workers(self):
+        """Stop all running worker threads safely"""
+        # Stop conversion worker
+        self._stop_conversion_worker()
+        
+        # Stop batch conversion worker
+        self._stop_batch_worker()
+    
+    def _stop_conversion_worker(self):
+        """Stop the conversion worker thread safely"""
+        try:
+            # Stop the worker if it exists
+            if hasattr(self, '_worker') and self._worker:
+                try:
+                    # Disconnect signals to prevent callbacks after stop
+                    try:
+                        self._worker.finished.disconnect()
+                    except:
+                        pass
+                    try:
+                        self._worker.progress_updated.disconnect()
+                    except:
+                        pass
+                    try:
+                        self._worker.conversion_error.disconnect()
+                    except:
+                        pass
+                except Exception as ex:
+                    print(f"[WARNING] Error disconnecting worker signals: {ex}")
+            
+            # Stop the thread if it's running
+            if hasattr(self, '_thread') and self._thread:
+                try:
+                    if self._thread.isRunning():
+                        self._thread.quit()
+                        # Wait with timeout to avoid blocking indefinitely
+                        if not self._thread.wait(2000):  # 2 second timeout
+                            print("[WARNING] Conversion thread did not stop in time, forcing termination")
+                            self._thread.terminate()
+                            self._thread.wait(1000)
+                except Exception as ex:
+                    print(f"[WARNING] Error stopping conversion thread: {ex}")
+                finally:
+                    # Clean up references
+                    self._worker = None
+                    self._thread = None
+        except Exception as ex:
+            print(f"[ERROR] Error in _stop_conversion_worker: {ex}")
+    
+    def _stop_batch_worker(self):
+        """Stop the batch conversion worker thread safely"""
+        try:
+            # Cancel the worker if it exists
+            if hasattr(self, 'batch_worker') and self.batch_worker:
+                try:
+                    # Cancel the batch conversion
+                    self.batch_worker.cancel()
+                    
+                    # Disconnect signals
+                    try:
+                        self.batch_worker.total_progress_updated.disconnect()
+                    except:
+                        pass
+                    try:
+                        self.batch_worker.progress_updated.disconnect()
+                    except:
+                        pass
+                    try:
+                        self.batch_worker.file_processed.disconnect()
+                    except:
+                        pass
+                    try:
+                        self.batch_worker.finished.disconnect()
+                    except:
+                        pass
+                    try:
+                        self.batch_worker.batch_error.disconnect()
+                    except:
+                        pass
+                except Exception as ex:
+                    print(f"[WARNING] Error disconnecting batch worker signals: {ex}")
+            
+            # Stop the thread if it's running
+            if hasattr(self, 'batch_thread') and self.batch_thread:
+                try:
+                    if self.batch_thread.isRunning():
+                        self.batch_thread.quit()
+                        # Wait with timeout
+                        if not self.batch_thread.wait(3000):  # 3 second timeout for batch
+                            print("[WARNING] Batch thread did not stop in time, forcing termination")
+                            self.batch_thread.terminate()
+                            self.batch_thread.wait(1000)
+                except Exception as ex:
+                    print(f"[WARNING] Error stopping batch thread: {ex}")
+                finally:
+                    # Clean up references
+                    self.batch_worker = None
+                    self.batch_thread = None
+        except Exception as ex:
+            print(f"[ERROR] Error in _stop_batch_worker: {ex}")
 
     def _apply_theme(self, is_dark_mode):
         if is_dark_mode:
@@ -2503,10 +2326,8 @@ class ICNSConverterGUI(QMainWindow):
         self.progress_label.setText("Canceling conversion...")
         self.cancel_button.setEnabled(False)
         
-        # Stop the worker thread safely
-        if hasattr(self, '_thread') and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait()
+        # Stop the worker thread safely using the dedicated method
+        self._stop_conversion_worker()
         
         # Update UI state
         self.converting = False
@@ -2517,9 +2338,22 @@ class ICNSConverterGUI(QMainWindow):
     
     def on_conversion_finished(self):
         self.converting = False
-        if hasattr(self, '_thread') and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait()
+        
+        # Stop the thread safely with timeout
+        if hasattr(self, '_thread') and self._thread:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    if not self._thread.wait(2000):  # 2 second timeout
+                        print("[WARNING] Thread did not stop in time, forcing termination")
+                        self._thread.terminate()
+                        self._thread.wait(1000)
+            except Exception as ex:
+                print(f"[WARNING] Error stopping thread: {ex}")
+            finally:
+                # Clean up references but keep for potential reuse
+                self._worker = None
+                self._thread = None
         
         # Reset button states
         self.convert_button.setEnabled(True)
@@ -2578,9 +2412,22 @@ class ICNSConverterGUI(QMainWindow):
         self.converting = False
         self.convert_button.setEnabled(True)
         self.cancel_button.setEnabled(False) # Reset cancel button state
-        if hasattr(self, '_thread') and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait()
+        
+        # Stop the thread safely with timeout
+        if hasattr(self, '_thread') and self._thread:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    if not self._thread.wait(2000):  # 2 second timeout
+                        print("[WARNING] Thread did not stop in time, forcing termination")
+                        self._thread.terminate()
+                        self._thread.wait(1000)
+            except Exception as ex:
+                print(f"[WARNING] Error stopping thread: {ex}")
+            finally:
+                # Clean up references
+                self._worker = None
+                self._thread = None
         
         # Show error notifications
         PopupTeachingTip.create(
@@ -2772,9 +2619,12 @@ class ICNSConverterGUI(QMainWindow):
         
     def stop_batch_conversion(self):
         """Stop batch conversion process"""
-        if hasattr(self, 'batch_worker') and self.batch_converting:
-            self.batch_worker.cancel()
-            self.on_batch_stopped()
+        if hasattr(self, 'batch_worker') and self.batch_worker and self.batch_converting:
+            try:
+                self.batch_worker.cancel()
+            except Exception as ex:
+                print(f"[WARNING] Error canceling batch worker: {ex}")
+        self.on_batch_stopped()
             
     def on_batch_stopped(self):
         """Handle batch conversion stopped"""
@@ -2784,10 +2634,21 @@ class ICNSConverterGUI(QMainWindow):
         self.batch_progress_label.setText("Stopped")
         self.current_file_label.setText("No file processing")
         
-        # Clean up thread
-        if hasattr(self, 'batch_thread') and self.batch_thread.isRunning():
-            self.batch_thread.quit()
-            self.batch_thread.wait()
+        # Clean up thread safely with timeout
+        if hasattr(self, 'batch_thread') and self.batch_thread:
+            try:
+                if self.batch_thread.isRunning():
+                    self.batch_thread.quit()
+                    if not self.batch_thread.wait(3000):  # 3 second timeout for batch
+                        print("[WARNING] Batch thread did not stop in time, forcing termination")
+                        self.batch_thread.terminate()
+                        self.batch_thread.wait(1000)
+            except Exception as ex:
+                print(f"[WARNING] Error stopping batch thread: {ex}")
+            finally:
+                # Clean up references
+                self.batch_worker = None
+                self.batch_thread = None
             
     def on_batch_progress(self, overall_progress, message=None):
         """Update batch overall progress"""
@@ -2825,10 +2686,21 @@ class ICNSConverterGUI(QMainWindow):
         self.start_batch_btn.setEnabled(True)
         self.stop_batch_btn.setEnabled(False)
         
-        # Clean up thread
-        if hasattr(self, 'batch_thread') and self.batch_thread.isRunning():
-            self.batch_thread.quit()
-            self.batch_thread.wait()
+        # Clean up thread safely with timeout
+        if hasattr(self, 'batch_thread') and self.batch_thread:
+            try:
+                if self.batch_thread.isRunning():
+                    self.batch_thread.quit()
+                    if not self.batch_thread.wait(3000):  # 3 second timeout
+                        print("[WARNING] Batch thread did not stop in time, forcing termination")
+                        self.batch_thread.terminate()
+                        self.batch_thread.wait(1000)
+            except Exception as ex:
+                print(f"[WARNING] Error stopping batch thread: {ex}")
+            finally:
+                # Clean up references
+                self.batch_worker = None
+                self.batch_thread = None
             
         # Get statistics from results list
         success_count = 0
@@ -2887,7 +2759,7 @@ class ICNSConverterGUI(QMainWindow):
         self.batch_converting = False
         self.start_batch_btn.setEnabled(True)
         self.stop_batch_btn.setEnabled(False)
-        
+
         PopupTeachingTip.create(
             target=self.start_batch_btn,
             icon=InfoBarIcon.ERROR,
@@ -2898,11 +2770,22 @@ class ICNSConverterGUI(QMainWindow):
             duration=5000,
             parent=self
         )
-        
-        # Clean up thread
-        if hasattr(self, 'batch_thread') and self.batch_thread.isRunning():
-            self.batch_thread.quit()
-            self.batch_thread.wait()
+
+        # Clean up thread safely with timeout
+        if hasattr(self, 'batch_thread') and self.batch_thread:
+            try:
+                if self.batch_thread.isRunning():
+                    self.batch_thread.quit()
+                    if not self.batch_thread.wait(3000):  # 3 second timeout
+                        print("[WARNING] Batch thread did not stop in time, forcing termination")
+                        self.batch_thread.terminate()
+                        self.batch_thread.wait(1000)
+            except Exception as ex:
+                print(f"[WARNING] Error stopping batch thread: {ex}")
+            finally:
+                # Clean up references
+                self.batch_worker = None
+                self.batch_thread = None
             
     def clear_batch_results(self):
         """Clear batch conversion results"""
