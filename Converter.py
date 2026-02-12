@@ -33,9 +33,12 @@ from UIkit import (
     BodyLabel, CaptionLabel, SubtitleLabel, TitleLabel, LargeTitleLabel,
     FluentIcon as FIF, setFont, TransparentToolButton, SegmentedWidget,
     setCustomStyleSheet, ElevatedCardWidget, ProgressBar, FlowLayout,
-    ScrollArea
+    ScrollArea, HyperlinkButton
 )
+from UIkit.components.settings.setting_card import SettingCard, PushSettingCard
+from UIkit.components.settings.setting_card_group import SettingCardGroup
 from UIkit.components.widgets.card_widget import SimpleCardWidget
+from settings import update_settings_gui
 from settings.settings_gui import SettingsDialog
 from patch import enable
 enable("com.pyquick.converter")
@@ -185,65 +188,44 @@ class SettingsInterface(QFrame):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
-        
+
         # Create SegmentedWidget and QStackedWidget
         self.segmented_widget = SegmentedWidget(self)
         setCustomStyleSheet(self.segmented_widget, CON.qss_seg, CON.qss_seg)
         self.stacked_widget = QStackedWidget(self)
-        
-        # General page
-        general_page = QWidget()
-        general_layout = QVBoxLayout(general_page)
-        general_layout.setContentsMargins(15, 15, 15, 15)
-        general_layout.setSpacing(15)
-        
+
+        # General page - use scroll area for better space usage
         from settings.general_settings import GeneralSettingsWidget
         self.general_widget = GeneralSettingsWidget()
         self.general_widget.setObjectName("general_widget")
-        general_layout.addWidget(self.general_widget)
-        general_layout.addStretch()
-        
-        self.stacked_widget.addWidget(general_page)
-        
+
+        self.stacked_widget.addWidget(self.general_widget)
+
         # Debug page
-        debug_page = QWidget()
-        debug_layout = QVBoxLayout(debug_page)
-        debug_layout.setContentsMargins(15, 15, 15, 15)
-        debug_layout.setSpacing(15)
-        
         from debug.debug_gui import DebugSettingsWidget
         self.debug_widget = DebugSettingsWidget()
         self.debug_widget.setObjectName("debug_widget")
-        debug_layout.addWidget(self.debug_widget)
-        debug_layout.addStretch()
-        
-        self.stacked_widget.addWidget(debug_page)
-        
+
+        self.stacked_widget.addWidget(self.debug_widget)
+
         # Update page
-        update_page = QWidget()
-        update_layout = QVBoxLayout(update_page)
-        update_layout.setContentsMargins(15, 15, 15, 15)
-        update_layout.setSpacing(15)
-        
         from settings.update_settings_gui import UpdateSettingsWidget
         self.update_group = UpdateSettingsWidget()
         self.update_group.setObjectName("update_group")
-        update_layout.addWidget(self.update_group)
-        update_layout.addStretch()
-        
-        self.stacked_widget.addWidget(update_page)
-        
+
+        self.stacked_widget.addWidget(self.update_group)
+
         # Add tab items
-        self.add_sub_interface(general_page, "general_page", "General")
-        self.add_sub_interface(debug_page, "debug_page", "Debug")
-        self.add_sub_interface(update_page, "update_page", "Update")
-        
+        self.add_sub_interface(self.general_widget, "general_page", "General")
+        self.add_sub_interface(self.debug_widget, "debug_page", "Debug")
+        self.add_sub_interface(self.update_group, "update_page", "Update")
+
         # Connect tab change signal
         self.stacked_widget.currentChanged.connect(self.on_current_index_changed)
         self.stacked_widget.setCurrentIndex(0)
         self.segmented_widget.setCurrentItem("general_page")
-        
-        # Add to main layout
+
+        # Add to main layout - give stacked widget more stretch
         main_layout.addWidget(self.segmented_widget, 0, Qt.AlignmentFlag.AlignHCenter)
         main_layout.addWidget(self.stacked_widget, 1)
     
@@ -310,6 +292,209 @@ class SettingsInterface(QFrame):
         
         # Start separate thread to execute save operation
         threading.Thread(target=save_thread).start()
+
+
+class AboutInterface(QFrame):
+    """About page interface with QFluentWidgets SettingCard style"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("about_interface")
+        self.init_ui()
+
+    def init_ui(self):
+        """Initialize UI components with SettingCard style"""
+        # Main scroll area
+        scroll_area = ScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        # Content widget
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(36, 20, 36, 20)
+        content_layout.setSpacing(20)
+        content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # Application Info Group
+        app_group = SettingCardGroup("Application", self)
+
+        # App name and version card
+        app_card = SettingCard(
+            FIF.APPLICATION,
+            "Converter",
+            f"Version {CON.__version__}",
+            self
+        )
+        app_group.addSettingCard(app_card)
+
+        # Description card
+        desc_card = SettingCard(
+            FIF.INFO,
+            "Description",
+            "A powerful file conversion tool supporting image and archive formats.",
+            self
+        )
+        app_group.addSettingCard(desc_card)
+
+        content_layout.addWidget(app_group)
+
+        # Repository Group
+        repo_group = SettingCardGroup("Repository", self)
+
+        # GitHub hyperlink card
+        github_card = self.create_hyperlink_card(
+            "https://github.com/pyquick/Converter",
+            "Open in browser",
+            FIF.GITHUB,
+            "GitHub",
+            "github.com/pyquick/Converter"
+        )
+        repo_group.addSettingCard(github_card)
+
+        content_layout.addWidget(repo_group)
+
+        # License Group
+        license_group = SettingCardGroup("License", self)
+
+        # License type card
+        license_type_card = SettingCard(
+            FIF.DOCUMENT,
+            "License Type",
+            "GPLv3 - GNU General Public License",
+            self
+        )
+        license_group.addSettingCard(license_type_card)
+
+        # View license button card
+        view_license_card = PushSettingCard(
+            "View",
+            FIF.VIEW,
+            "View License",
+            "Read the full GPLv3 license text",
+            self
+        )
+        view_license_card.clicked.connect(self.show_license)
+        license_group.addSettingCard(view_license_card)
+
+        content_layout.addWidget(license_group)
+
+        # Build Info Group
+        build_group = SettingCardGroup("Build Information", self)
+
+        # Last updated card
+        last_updated_card = SettingCard(
+            FIF.CALENDAR,
+            "Last Updated",
+            "N/A",
+            self
+        )
+        build_group.addSettingCard(last_updated_card)
+
+        # Build date card
+        build_date_card = SettingCard(
+            FIF.DATE_TIME,
+            "Build Date",
+            self.get_build_date(),
+            self
+        )
+        build_group.addSettingCard(build_date_card)
+
+        content_layout.addWidget(build_group)
+
+        content_layout.addStretch()
+
+        # Copyright footer
+        copyright_label = CaptionLabel("© 2025-2026 Converter Team. All rights reserved.")
+        copyright_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        content_layout.addWidget(copyright_label)
+
+        # Set content widget to scroll area
+        scroll_area.setWidget(content_widget)
+
+        # Main layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(scroll_area)
+
+    def create_hyperlink_card(self, url, text, icon, title, content):
+        """Create a hyperlink card with HyperlinkButton"""
+        card = SettingCard(icon, title, content, self)
+        link_button = HyperlinkButton(url, text, card)
+        link_button.setFixedWidth(120)
+        card.hBoxLayout.addWidget(link_button, 0, Qt.AlignmentFlag.AlignRight)
+        card.hBoxLayout.addSpacing(16)
+        return card
+
+    def get_build_date(self):
+        """Get build date from git or file timestamp"""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['git', 'log', '-1', '--format=%cd', '--date=short'],
+                capture_output=True,
+                text=True,
+                cwd=os.path.dirname(__file__)
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except:
+            pass
+        return "N/A"
+
+    def show_license(self):
+        """Show GPLv3 license dialog"""
+        license_text = self.get_license_text()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("GPLv3 License")
+        dialog.resize(700, 600)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        from UIkit import TextEdit
+        text_edit = TextEdit()
+        text_edit.setPlainText(license_text)
+        text_edit.setReadOnly(True)
+        layout.addWidget(text_edit)
+
+        close_btn = PushButton("Close")
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(dialog.close)
+        layout.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignCenter)
+
+        dialog.exec()
+
+    def get_license_text(self):
+        """Get GPLv3 license text"""
+        license_path = os.path.join(os.path.dirname(__file__), "LICENSE.txt")
+        if os.path.exists(license_path):
+            try:
+                with open(license_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except:
+                pass
+
+        # Return default GPLv3 summary if file not found
+        return """GNU GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+Copyright (C) 2025-2026 Converter Team
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""
 
 
 class MainWindow(FluentWindow):
@@ -397,6 +582,9 @@ class MainWindow(FluentWindow):
         
         # Create settings interface
         self.settings_interface = SettingsInterface()
+        
+        # Create about interface
+        self.about_interface = AboutInterface()
     
     def init_window(self):
         """Initialize window properties"""
@@ -407,19 +595,26 @@ class MainWindow(FluentWindow):
     def init_navigation(self):
         """Initialize navigation items"""
         self.addSubInterface(
-            self.home_interface, 
-            FIF.HOME, 
+            self.home_interface,
+            FIF.HOME,
             'Home'
         )
-        
+
         self.addSubInterface(
-            self.settings_interface, 
-            FIF.SETTING, 
+            self.settings_interface,
+            FIF.SETTING,
             'Settings',
             NavigationItemPosition.BOTTOM
         )
+
+        self.addSubInterface(
+            self.about_interface,
+            FIF.INFO,
+            'About',
+            NavigationItemPosition.BOTTOM
+        )
     def closeEvent(self, event):
-        """窗口关闭事件"""
+        """Window close event"""
         # Check if task mode is enabled and if any sub-windows are open
         task_mode_enabled = self.settings.value("task_mode", False, type=bool)
         if task_mode_enabled:
@@ -450,8 +645,8 @@ class MainWindow(FluentWindow):
             self.themeListener.deleteLater()
         super().closeEvent(event)
     def _onThemeChanged(self, theme: Theme):
-        """主题变化处理"""
-        # 更新界面以响应主题变化
+        """Theme change handling"""
+        # Update interface to respond to theme changes
         self.update()
         setTheme(Theme.AUTO)
     def _apply_system_theme(self, is_dark_mode): # This method will now be primarily for paletteChanged signal

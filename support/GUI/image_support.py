@@ -17,8 +17,12 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QPixmap, QFont, QPainter, QColor
 from PySide6.QtCore import Qt, QSize, Signal
 
+# Import FluentIcon and IconWidget
+from UIkit import FluentIcon, IconWidget
+
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from Converter import FIF
 from UIkit import *
 from support import convert
 
@@ -284,9 +288,15 @@ class DropZoneWidget(QFrame):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        self.icon_label = QLabel("��")
-        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_label.setStyleSheet("font-size: 24px;")
+        # Create a container for the icon to center it
+        icon_container = QWidget()
+        icon_layout = QHBoxLayout(icon_container)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.icon_label = IconWidget(FluentIcon.FOLDER)
+        self.icon_label.setFixedSize(32, 32)
+        icon_layout.addWidget(self.icon_label)
 
         self.text_label = QLabel("Drag files or folders here\n(Supports: PNG, JPG, JPEG, BMP, GIF, TIFF, ICO, ICNS, WebP, SVG, HEIC, HEIF, AVIF, JXL, PDF, EPS, DDS, EXR)")
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -295,7 +305,7 @@ class DropZoneWidget(QFrame):
 
         self._apply_light_theme_style()
 
-        layout.addWidget(self.icon_label)
+        layout.addWidget(icon_container)
         layout.addWidget(self.text_label)
 
         self.drag_over = False

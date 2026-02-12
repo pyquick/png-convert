@@ -20,7 +20,7 @@ def example_update_workflow():
     print("=== 应用程序更新工作流程示例 ===")
     
     # 1. 初始化更新管理器
-    current_version = "2.1.0A10"  # 从配置文件或代码中获取当前版本
+    current_version = "2.1.0A11"  # 从配置文件或代码中获取当前版本
     manager = UpdateManager(current_version)
     
     print(f"当前应用程序版本: {current_version}")
@@ -82,8 +82,8 @@ def quick_download_example():
     test_update_info = {
         "status": "update_available",
         "message": "测试更新",
-        "download_url": "https://github.com/pyquick/converter/releases/tag/v2.1.0A10",
-        "latest_version": "v2.1.0A10"  # 注意：这里需要完整的tag名称
+        "download_url": "https://github.com/pyquick/converter/releases/tag/v2.1.0A11",
+        "latest_version": "v2.1.0A11"  # 注意：这里需要完整的tag名称
     }
     
     print("开始测试下载功能...")

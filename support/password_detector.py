@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Archive Password Detector
-自动检测ZIP、RAR、7z格式压缩文件的密码保护状态
+Automatically detect password protection status of ZIP, RAR, 7z archive files
 """
 
 import os
@@ -14,15 +14,15 @@ from typing import Optional, Dict, Any
 
 class PasswordDetector:
     """
-    压缩文件密码检测器
+    Archive Password Detector
     
-    支持格式：ZIP、RAR、7z
-    自动根据文件扩展名和文件头检测格式
+    Supported formats: ZIP, RAR, 7z
+    Automatically detect format based on file extension and file header
     """
     
     SUPPORTED_FORMATS = ['zip', 'rar', '7z']
     
-    # 文件格式签名（魔数）
+    # File format signatures (magic numbers)
     FORMAT_SIGNATURES = {
         'zip': [b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08'],
         'rar': [b'Rar!\x1a\x07\x00', b'Rar!\x1a\x07\x01\x00'],
@@ -30,36 +30,36 @@ class PasswordDetector:
     }
     
     def __init__(self):
-        """初始化密码检测器"""
+        """Initialize password detector"""
         self._temp_dir = None
     
     def detect_format(self, file_path: str) -> Optional[str]:
         """
-        检测压缩文件格式
+        Detect archive file format
         
         Args:
-            file_path: 压缩文件路径
+            file_path: Archive file path
             
         Returns:
-            str: 检测到的格式 ('zip', 'rar', '7z') 或 None
+            str: Detected format ('zip', 'rar', '7z') or None
         """
         if not os.path.exists(file_path):
             return None
             
-        # 方法1：通过文件扩展名检测
+        # Method 1: Detect via file extension
         ext_format = self._detect_format_by_extension(file_path)
         
-        # 方法2：通过文件头签名检测（更准确）
+        # Method 2: Detect via file header signature (more accurate)
         signature_format = self._detect_format_by_signature(file_path)
         
-        # 优先使用签名检测，如果失败则使用扩展名检测
+        # Prioritize signature detection, fallback to extension detection if failed
         detected_format = signature_format or ext_format
         
-        # 只返回支持的格式
+        # Only return supported formats
         return detected_format if detected_format in self.SUPPORTED_FORMATS else None
     
     def _detect_format_by_extension(self, file_path: str) -> Optional[str]:
-        """通过文件扩展名检测格式"""
+        """Detect format via file extension"""
         ext = os.path.splitext(file_path)[1].lower()
         
         format_map = {
@@ -71,10 +71,10 @@ class PasswordDetector:
         return format_map.get(ext)
     
     def _detect_format_by_signature(self, file_path: str) -> Optional[str]:
-        """通过文件头签名检测格式"""
+        """Detect format via file header signature"""
         try:
             with open(file_path, 'rb') as f:
-                # 读取文件前20字节
+                # Read first 20 bytes of file
                 header = f.read(20)
                 
                 for format_name, signatures in self.FORMAT_SIGNATURES.items():
@@ -89,17 +89,17 @@ class PasswordDetector:
     
     def is_password_protected(self, file_path: str) -> Dict[str, Any]:
         """
-        检测压缩文件是否受密码保护
+        Detect if archive file is password protected
         
         Args:
-            file_path: 压缩文件路径
+            file_path: Archive file path
             
         Returns:
             dict: 检测结果 {
-                'is_protected': bool,  # 是否受密码保护
-                'format': str,         # 检测到的格式
-                'error': str,          # 错误信息（如果有）
-                'details': dict        # 详细信息
+                'is_protected': bool,  # Whether password protected
+                'format': str,         # Detected format
+                'error': str,          # Error message (if any)
+                'details': dict        # Detailed information
             }
         """
         result = {
@@ -109,20 +109,20 @@ class PasswordDetector:
             'details': {}
         }
         
-        # 检测文件是否存在
+        # Check if file exists
         if not os.path.exists(file_path):
-            result['error'] = f"文件不存在: {file_path}"
+            result['error'] = f"File does not exist: {file_path}"
             return result
         
-        # 检测格式
+        # Detect format
         detected_format = self.detect_format(file_path)
         if not detected_format:
-            result['error'] = f"不支持的压缩格式或无法识别的文件: {file_path}"
+            result['error'] = f"Unsupported archive format or unrecognized file: {file_path}"
             return result
             
         result['format'] = detected_format
         
-        # 根据格式进行密码检测
+        # Perform password detection based on format
         try:
             if detected_format == 'zip':
                 result.update(self._check_zip_password_protection(file_path))
@@ -131,10 +131,10 @@ class PasswordDetector:
             elif detected_format == '7z':
                 result.update(self._check_7z_password_protection(file_path))
             else:
-                result['error'] = f"不支持的格式: {detected_format}"
+                result['error'] = f"Unsupported format: {detected_format}"
                 
         except Exception as e:
-            result['error'] = f"检测失败: {str(e)}"
+            result['error'] = f"Detection failed: {str(e)}"
             
         return result
     
@@ -183,7 +183,7 @@ class PasswordDetector:
         except zipfile.BadZipFile:
             result['error'] = '无效的ZIP文件'
         except Exception as e:
-            result['error'] = f'ZIP检测失败: {str(e)}'
+            result['error'] = f'ZIPDetection failed: {str(e)}'
             
         return result
     
@@ -213,7 +213,7 @@ class PasswordDetector:
                 result['details']['total_files'] = len(rarf.infolist()) if hasattr(rarf, 'infolist') else 'unknown'
                 
         except Exception as e:
-            result['error'] = f'RAR检测失败: {str(e)}'
+            result['error'] = f'RARDetection failed: {str(e)}'
             
         return result
     
@@ -241,7 +241,7 @@ class PasswordDetector:
                             raise
                             
         except Exception as e:
-            result['error'] = f'7Z检测失败: {str(e)}'
+            result['error'] = f'7ZDetection failed: {str(e)}'
             
         return result
     
@@ -250,15 +250,15 @@ class PasswordDetector:
         验证压缩文件密码是否正确
         
         Args:
-            file_path: 压缩文件路径
+            file_path: Archive file path
             password: 待验证的密码
             
         Returns:
             dict: 验证结果 {
                 'is_valid': bool,      # 密码是否正确
                 'format': str,         # 文件格式
-                'error': str,          # 错误信息（如果有）
-                'details': dict        # 详细信息
+                'error': str,          # Error message (if any)
+                'details': dict        # Detailed information
             }
         """
         result = {
@@ -442,7 +442,7 @@ class PasswordDetector:
         获取压缩文件格式信息
         
         Args:
-            file_path: 压缩文件路径
+            file_path: Archive file path
             
         Returns:
             dict: 格式信息
@@ -457,7 +457,7 @@ class PasswordDetector:
         }
         
         if not os.path.exists(file_path):
-            result['error'] = '文件不存在'
+            result['error'] = 'File does not exist'
             return result
             
         # 通过扩展名检测
@@ -485,13 +485,13 @@ password_detector = PasswordDetector()
 
 def detect_password_protection(file_path: str) -> bool:
     """
-    快速检测压缩文件是否受密码保护
+    快速Detect if archive file is password protected
     
     Args:
-        file_path: 压缩文件路径
+        file_path: Archive file path
         
     Returns:
-        bool: 是否受密码保护
+        bool: Whether password protected
     """
     result = password_detector.is_password_protected(file_path)
     return result.get('is_protected', False)
@@ -502,7 +502,7 @@ def verify_archive_password(file_path: str, password: str) -> bool:
     验证压缩文件密码是否正确
     
     Args:
-        file_path: 压缩文件路径
+        file_path: Archive file path
         password: 待验证的密码
         
     Returns:
@@ -517,7 +517,7 @@ def get_archive_format(file_path: str) -> Optional[str]:
     获取压缩文件格式
     
     Args:
-        file_path: 压缩文件路径
+        file_path: Archive file path
         
     Returns:
         str: 文件格式或None
@@ -575,7 +575,7 @@ def test_password_detector():
                 result = password_detector.is_password_protected(protected_archive)
                 print(f"密码保护{fmt.upper()}: {'受密码保护' if result['is_protected'] else '不受密码保护'}")
                 print(f"格式: {result['format']}")
-                print(f"详细信息: {result['details']}")
+                print(f"Detailed information: {result['details']}")
                 if result['error']:
                     print(f"错误: {result['error']}")
                 

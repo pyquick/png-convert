@@ -164,7 +164,7 @@ class DownloadThread(QThread):
 class UpdateSettingsWidget(QWidget):
     """Update settings widget using qfluentwidgets SettingCard components"""
     
-    __version__ = "2.1.0A10"
+    __version__ = "2.1.0A11"
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -204,10 +204,10 @@ class UpdateSettingsWidget(QWidget):
         if self.is_internal_version:
             if self.is_alpha_version:
                 available_channels = ["Stable", "Alpha"]
-                print("Alpha版本：只显示Alpha通道")
+                print("Alpha version: only showing Alpha channel")
             elif self.is_deepdev_version:
                 available_channels = ["Stable", "Deepdev"]
-                print("Deepdev版本：只显示Deepdev通道")
+                print("Deepdev version: only showing Deepdev channel")
         else:
             available_channels = ["Stable", "RC (Release Candidate)", "Beta", "Deepdev", "Alpha"]
        
@@ -315,10 +315,10 @@ class UpdateSettingsWidget(QWidget):
             self.is_internal_version = self.is_alpha_version or self.is_deepdev_version
             
             if self.is_internal_version:
-                print(f"检测到内部版本: {self.__version__} (标签: {current_tag})")
+                print(f"Detected internal version: {self.__version__} (tag: {current_tag})")
             
         except Exception as e:
-            print(f"版本检测失败: {e}")
+            print(f"Version detection failed: {e}")
             self.is_internal_version = False
             self.is_alpha_version = False
             self.is_deepdev_version = False

@@ -749,9 +749,10 @@ class RoundMenu(QMenu):
         self._adjustItemText(item, action)
 
         if action.isEnabled():
-            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled |
+    Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
         else:
-            item.setFlags(Qt.NoItemFlags)
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
 
         self.view.adjustSize()
         self.adjustSize()

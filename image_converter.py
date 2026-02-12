@@ -316,7 +316,7 @@ class ICNSConverterGUI(QMainWindow):
         print(f"Settings saved: min_size={self.min_size}, max_size={self.max_size}, output_format={self.output_format}")
         
     def init_variables(self, reset_all=False):
-        """初始化或重置所有变量
+        """Initialize or reset all variables
         
         Args:
             reset_all (bool): If True, reset all variables including interface behavior settings.
@@ -512,7 +512,7 @@ class ICNSConverterGUI(QMainWindow):
         input_layout = QHBoxLayout()
         input_label = QLabel("Input File:")
         self.input_text = LineEdit()
-        # self.input_text.setReadOnly(True)  # 允许用户手动输入路径
+        # self.input_text.setReadOnly(True)  # Allow users to manually input path
         input_button = PushButton("Browse...")
         # Apply custom style to input button
         setCustomStyleSheet(input_button, CON.qss, CON.qss)
@@ -528,7 +528,7 @@ class ICNSConverterGUI(QMainWindow):
         output_layout = QHBoxLayout()
         output_label = QLabel("Output File:")
         self.output_text = LineEdit()
-        # self.output_text.setReadOnly(True)  # 允许用户手动输入路径
+        # self.output_text.setReadOnly(True)  # Allow users to manually input path
         output_button = PushButton("Browse...")
         # Apply custom style to output button
         setCustomStyleSheet(output_button, CON.qss, CON.qss)
@@ -558,7 +558,7 @@ class ICNSConverterGUI(QMainWindow):
         self.info_text = LineEdit()
         setCustomStyleSheet(self.info_text, self.qss_lie, self.qss_lie)
         self.info_text.setText("No image selected")
-        self.info_text.setReadOnly(True)  # 不允许用户手动输入信息
+        self.info_text.setReadOnly(True)  # Do not allow users to manually input information
         self.info_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         info_group_layout.addWidget(self.info_text)
 
@@ -575,7 +575,7 @@ class ICNSConverterGUI(QMainWindow):
         #scroll_area.setMinimumSize(90,90)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        # 使用更灵活的高度设置，允许根据内容自动调整
+        # Use more flexible height settings, allowing automatic adjustment based on content
         scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # Create TreeWidget for organized settings
@@ -714,8 +714,20 @@ class ICNSConverterGUI(QMainWindow):
         
         # Batch output directory layout with drag-drop support
         batch_output_layout = QHBoxLayout()
-        batch_output_label = QLabel("📁 Output Directory:")
-        self.batch_output_text = DirectoryDropLineEdit()  # 使用新的拖拽支持输入框
+        
+        # Create icon + label container for Output Directory
+        from UIkit import IconWidget, FluentIcon
+        batch_output_icon_container = QWidget()
+        batch_output_icon_layout = QHBoxLayout(batch_output_icon_container)
+        batch_output_icon_layout.setContentsMargins(0, 0, 0, 0)
+        batch_output_icon_layout.setSpacing(5)
+        batch_output_icon = IconWidget(FluentIcon.FOLDER)
+        batch_output_icon.setFixedSize(16, 16)
+        batch_output_icon_layout.addWidget(batch_output_icon)
+        batch_output_label = QLabel("Output Directory:")
+        batch_output_icon_layout.addWidget(batch_output_label)
+        
+        self.batch_output_text = DirectoryDropLineEdit()  # Use new drag-and-drop supported input field
         self.batch_output_text.setPlaceholderText("Same as input files directory")
         setCustomStyleSheet(self.batch_output_text, CON.qss_line, CON.qss_line)
         
@@ -723,7 +735,7 @@ class ICNSConverterGUI(QMainWindow):
         setCustomStyleSheet(batch_output_button, CON.qss, CON.qss)
         batch_output_button.clicked.connect(self.on_browse_batch_output)
         
-        batch_output_layout.addWidget(batch_output_label)
+        batch_output_layout.addWidget(batch_output_icon_container)
         batch_output_layout.addWidget(self.batch_output_text, 1)
         batch_output_layout.addWidget(batch_output_button)
         output_dir_group_layout.addLayout(batch_output_layout)
@@ -776,7 +788,7 @@ class ICNSConverterGUI(QMainWindow):
         # Create scroll area for options
         batch_scroll_area = ScrollArea()
         batch_scroll_area.setWidgetResizable(True)
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         batch_scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         self.batch_options_tree = TreeWidget()
@@ -883,10 +895,14 @@ class ICNSConverterGUI(QMainWindow):
         self.batch_options_tree.clear()
         
         # Create main categories with icons for better visual hierarchy (same as single conversion)
-        basic_item = QTreeWidgetItem(["📋 Basic Options"])
-        processing_item = QTreeWidgetItem(["🎨 Image Processing"])
-        output_item = QTreeWidgetItem(["📤 Output Options"])
-        advanced_item = QTreeWidgetItem(["⚙️ Advanced Settings"])
+        basic_item = QTreeWidgetItem(["Basic Options"])
+        basic_item.setIcon(0, FluentIcon.MENU.qicon())
+        processing_item = QTreeWidgetItem(["Image Processing"])
+        processing_item.setIcon(0, FluentIcon.PALETTE.qicon())
+        output_item = QTreeWidgetItem(["Output Options"])
+        output_item.setIcon(0, FluentIcon.SAVE.qicon())
+        advanced_item = QTreeWidgetItem(["Advanced Settings"])
+        advanced_item.setIcon(0, FluentIcon.SETTING.qicon())
         
         # Add to tree
         self.batch_options_tree.addTopLevelItem(basic_item)
@@ -936,21 +952,30 @@ class ICNSConverterGUI(QMainWindow):
         """Create basic options widgets for batch conversion with responsive layout"""
         # Output Format
         format_widget = QWidget()
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         format_widget.setMinimumHeight(55)
         format_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         format_layout = QHBoxLayout(format_widget)
         format_layout.setContentsMargins(5, 8, 5, 8)
         
-        format_label = QLabel("🗂️ Output Format:")
-        format_label.setMinimumWidth(120)  # Ensure consistent width for labels
+        # Create icon + label for Output Format
+        format_icon_container = QWidget()
+        format_icon_layout = QHBoxLayout(format_icon_container)
+        format_icon_layout.setContentsMargins(0, 0, 0, 0)
+        format_icon_layout.setSpacing(5)
+        format_icon = IconWidget(FluentIcon.VIEW)
+        format_icon.setFixedSize(16, 16)
+        format_icon_layout.addWidget(format_icon)
+        format_label = QLabel("Output Format:")
+        format_icon_layout.addWidget(format_label)
+        format_icon_container.setMinimumWidth(120)  # Ensure consistent width for labels
         
         self.batch_format_combo = ModelComboBox()
         self.batch_format_combo.addItems(convert.SUPPORTED_FORMATS)
         self.batch_format_combo.currentIndexChanged.connect(self.on_batch_format_change)
         setCustomStyleSheet(self.batch_format_combo, CON.qss_combo, CON.qss_combo)
         
-        format_layout.addWidget(format_label)
+        format_layout.addWidget(format_icon_container)
         format_layout.addWidget(self.batch_format_combo, 1)  # Give combo box more stretch
         
         format_item = QTreeWidgetItem()
@@ -958,14 +983,15 @@ class ICNSConverterGUI(QMainWindow):
         self.batch_options_tree.setItemWidget(format_item, 0, format_widget)
         
         # Size Options (grouped in a sub-item)
-        size_item = QTreeWidgetItem(["📏 Size Options"])
+        size_item = QTreeWidgetItem(["Size Options"])
+        size_item.setIcon(0, FluentIcon.ZIP_FOLDER.qicon())
         parent_item.addChild(size_item)
         
         # Minimum Size
         min_size_widget = QWidget()
         min_size_layout = QHBoxLayout(min_size_widget)
         min_size_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         min_size_widget.setMinimumHeight(45)
         min_size_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
@@ -989,7 +1015,7 @@ class ICNSConverterGUI(QMainWindow):
         max_size_widget = QWidget()
         max_size_layout = QHBoxLayout(max_size_widget)
         max_size_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         max_size_widget.setMinimumHeight(45)
         max_size_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
@@ -1013,7 +1039,7 @@ class ICNSConverterGUI(QMainWindow):
         auto_detect_widget = QWidget()
         auto_detect_layout = QHBoxLayout(auto_detect_widget)
         auto_detect_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         auto_detect_widget.setMinimumHeight(45)
         auto_detect_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
@@ -1029,7 +1055,7 @@ class ICNSConverterGUI(QMainWindow):
         # auto_widget = QWidget()
         # auto_layout = QHBoxLayout(auto_widget)
         # auto_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
-        # # 使用更灵活的尺寸策略
+        # # Use more flexible sizing strategy
         # auto_widget.setMinimumHeight(40)
         # auto_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         # 
@@ -1051,10 +1077,10 @@ class ICNSConverterGUI(QMainWindow):
         aspect_widget = QWidget()
         aspect_layout = QHBoxLayout(aspect_widget)
         aspect_layout.setContentsMargins(5, 8, 5, 8)
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         aspect_widget.setMinimumHeight(45)
         aspect_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.batch_keep_aspect_check = CheckBox("📐 Maintain original aspect ratio")
+        self.batch_keep_aspect_check = CheckBox("Maintain original aspect ratio")
         self.batch_keep_aspect_check.setChecked(self.keep_aspect_ratio)
         self.batch_keep_aspect_check.stateChanged.connect(self.on_batch_keep_aspect_changed)
         aspect_layout.addWidget(self.batch_keep_aspect_check)
@@ -1067,13 +1093,24 @@ class ICNSConverterGUI(QMainWindow):
         crop_widget = QWidget()
         crop_layout = QHBoxLayout(crop_widget)
         crop_layout.setContentsMargins(5, 8, 5, 8)
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         crop_widget.setMinimumHeight(45)
         crop_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.batch_auto_crop_check = CheckBox("✂️ Auto-crop non-square to square")
+        
+        # Create icon + checkbox layout
+        crop_icon_layout = QHBoxLayout()
+        crop_icon_layout.setContentsMargins(0, 0, 0, 0)
+        crop_icon_layout.setSpacing(5)
+        crop_icon = IconWidget(FluentIcon.CUT)
+        crop_icon.setFixedSize(16, 16)
+        crop_icon_layout.addWidget(crop_icon)
+        self.batch_auto_crop_check = CheckBox("Auto-crop non-square to square")
         self.batch_auto_crop_check.setChecked(self.auto_crop)
         self.batch_auto_crop_check.stateChanged.connect(self.on_batch_auto_crop_changed)
-        crop_layout.addWidget(self.batch_auto_crop_check)
+        crop_icon_layout.addWidget(self.batch_auto_crop_check)
+        crop_icon_layout.addStretch()
+        
+        crop_layout.addLayout(crop_icon_layout)
         crop_item = QTreeWidgetItem()
         parent_item.addChild(crop_item)
         self.batch_options_tree.setItemWidget(crop_item, 0, crop_widget)
@@ -1082,12 +1119,22 @@ class ICNSConverterGUI(QMainWindow):
         quality_widget = QWidget()
         quality_layout = QHBoxLayout(quality_widget)
         quality_layout.setContentsMargins(5, 8, 5, 8)
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         quality_widget.setMinimumHeight(55)
         quality_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        quality_label = QLabel("🎨 Quality:")
-        quality_label.setMinimumWidth(100)  # Ensure consistent width for labels
-        quality_layout.addWidget(quality_label)
+        
+        # Create icon + label for Quality
+        quality_icon_container = QWidget()
+        quality_icon_layout = QHBoxLayout(quality_icon_container)
+        quality_icon_layout.setContentsMargins(0, 0, 0, 0)
+        quality_icon_layout.setSpacing(5)
+        quality_icon = IconWidget(FluentIcon.PALETTE)
+        quality_icon.setFixedSize(16, 16)
+        quality_icon_layout.addWidget(quality_icon)
+        quality_label = QLabel("Quality:")
+        quality_icon_layout.addWidget(quality_label)
+        quality_icon_container.setMinimumWidth(100)  # Ensure consistent width for labels
+        quality_layout.addWidget(quality_icon_container)
         
         self.batch_quality_slider = Slider(Qt.Orientation.Horizontal)
         self.batch_quality_slider.setRange(1, 100)
@@ -1116,7 +1163,7 @@ class ICNSConverterGUI(QMainWindow):
         preserve_folder_widget = QWidget()
         preserve_folder_layout = QHBoxLayout(preserve_folder_widget)
         preserve_folder_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         preserve_folder_widget.setMinimumHeight(45)
         preserve_folder_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
@@ -1136,7 +1183,7 @@ class ICNSConverterGUI(QMainWindow):
         prefix_widget = QWidget()
         prefix_layout = QHBoxLayout(prefix_widget)
         prefix_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         prefix_widget.setMinimumHeight(45)
         prefix_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
@@ -1155,7 +1202,7 @@ class ICNSConverterGUI(QMainWindow):
         suffix_widget = QWidget()
         suffix_layout = QHBoxLayout(suffix_widget)
         suffix_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         suffix_widget.setMinimumHeight(45)
         suffix_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
@@ -1180,13 +1227,22 @@ class ICNSConverterGUI(QMainWindow):
         method_widget = QWidget()
         method_layout = QHBoxLayout(method_widget)
         method_layout.setContentsMargins(5, 8, 5, 8)
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         method_widget.setMinimumHeight(55)
         method_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
-        method_label = QLabel("⚙️ ICNS method:")
-        method_label.setMinimumWidth(120)  # Ensure consistent width for labels
-        method_layout.addWidget(method_label)
+        # Create icon + label for ICNS method
+        method_icon_container = QWidget()
+        method_icon_layout = QHBoxLayout(method_icon_container)
+        method_icon_layout.setContentsMargins(0, 0, 0, 0)
+        method_icon_layout.setSpacing(5)
+        method_icon = IconWidget(FluentIcon.SETTING)
+        method_icon.setFixedSize(16, 16)
+        method_icon_layout.addWidget(method_icon)
+        method_label = QLabel("ICNS method:")
+        method_icon_layout.addWidget(method_label)
+        method_icon_container.setMinimumWidth(120)  # Ensure consistent width for labels
+        method_layout.addWidget(method_icon_container)
         
         self.batch_icns_method_combo = ModelComboBox()
         self.batch_icns_method_combo.addItems(["iconutil (Recommended)", "Pillow Fallback"])
@@ -1203,10 +1259,20 @@ class ICNSConverterGUI(QMainWindow):
         overwrite_widget = QWidget()
         overwrite_layout = QHBoxLayout(overwrite_widget)
         overwrite_layout.setContentsMargins(5, 8, 5, 8)
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         overwrite_widget.setMinimumHeight(45)
         overwrite_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.batch_overwrite_confirm_check = CheckBox("⚠️ Confirm before overwriting files")
+        # Create icon + checkbox for overwrite confirmation
+        overwrite_icon_layout = QHBoxLayout()
+        overwrite_icon_layout.setContentsMargins(0, 0, 0, 0)
+        overwrite_icon_layout.setSpacing(5)
+        overwrite_icon = IconWidget(FluentIcon.INFO)
+        overwrite_icon.setFixedSize(16, 16)
+        overwrite_icon_layout.addWidget(overwrite_icon)
+        self.batch_overwrite_confirm_check = CheckBox("Confirm before overwriting files")
+        overwrite_icon_layout.addWidget(self.batch_overwrite_confirm_check)
+        overwrite_icon_layout.addStretch()
+        overwrite_layout.addLayout(overwrite_icon_layout)
         self.batch_overwrite_confirm_check.setChecked(self.overwrite_confirm)
         self.batch_overwrite_confirm_check.stateChanged.connect(self.on_batch_overwrite_confirm_changed)
         overwrite_layout.addWidget(self.batch_overwrite_confirm_check)
@@ -1391,9 +1457,12 @@ class ICNSConverterGUI(QMainWindow):
         self.options_tree.clear()
         
         # Create main categories with icons for better visual hierarchy
-        basic_item = QTreeWidgetItem(["📋 Basic Options"])
-        processing_item = QTreeWidgetItem(["🎨 Image Processing"])
-        advanced_item = QTreeWidgetItem(["⚙️ Advanced Settings"])
+        basic_item = QTreeWidgetItem(["Basic Options"])
+        basic_item.setIcon(0, FluentIcon.MENU.qicon())
+        processing_item = QTreeWidgetItem(["Image Processing"])
+        processing_item.setIcon(0, FluentIcon.PALETTE.qicon())
+        advanced_item = QTreeWidgetItem(["Advanced Settings"])
+        advanced_item.setIcon(0, FluentIcon.SETTING.qicon())
         
         # Add to tree
         self.options_tree.addTopLevelItem(basic_item)
@@ -1436,21 +1505,30 @@ class ICNSConverterGUI(QMainWindow):
         """Create basic options widgets with responsive layout"""
         # Output Format
         format_widget = QWidget()
-        # 使用更灵活的尺寸策略而不是固定最小尺寸
+        # Use more flexible sizing strategy而不是固定最小尺寸
         format_widget.setMinimumHeight(55)
         format_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         format_layout = QHBoxLayout(format_widget)
         format_layout.setContentsMargins(5, 8, 5, 8)
         
-        format_label = QLabel("🗂️ Output Format:")
-        format_label.setMinimumWidth(120)  # Ensure consistent width for labels
+        # Create icon + label for Output Format
+        format_icon_container = QWidget()
+        format_icon_layout = QHBoxLayout(format_icon_container)
+        format_icon_layout.setContentsMargins(0, 0, 0, 0)
+        format_icon_layout.setSpacing(5)
+        format_icon = IconWidget(FluentIcon.VIEW)
+        format_icon.setFixedSize(16, 16)
+        format_icon_layout.addWidget(format_icon)
+        format_label = QLabel("Output Format:")
+        format_icon_layout.addWidget(format_label)
+        format_icon_container.setMinimumWidth(120)  # Ensure consistent width for labels
         
         self.format_combo = ModelComboBox()
         self.format_combo.addItems(convert.SUPPORTED_FORMATS)
         self.format_combo.currentIndexChanged.connect(self.on_format_change)
         setCustomStyleSheet(self.format_combo, CON.qss_combo, CON.qss_combo)
         
-        format_layout.addWidget(format_label)
+        format_layout.addWidget(format_icon_container)
         format_layout.addWidget(self.format_combo, 1)  # Give combo box more stretch
         
         format_item = QTreeWidgetItem()
@@ -1458,7 +1536,8 @@ class ICNSConverterGUI(QMainWindow):
         self.options_tree.setItemWidget(format_item, 0, format_widget)
         
         # Size Options (grouped in a sub-item)
-        size_item = QTreeWidgetItem(["📏 Size Options"])
+        size_item = QTreeWidgetItem(["Size Options"])
+        size_item.setIcon(0, FluentIcon.ZIP_FOLDER.qicon())
         parent_item.addChild(size_item)
         
         # Minimum Size
@@ -1527,10 +1606,10 @@ class ICNSConverterGUI(QMainWindow):
         aspect_widget = QWidget()
         aspect_layout = QHBoxLayout(aspect_widget)
         aspect_layout.setContentsMargins(5, 8, 5, 8)
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         aspect_widget.setMinimumHeight(45)
         aspect_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.keep_aspect_check = CheckBox("📐 Maintain original aspect ratio")
+        self.keep_aspect_check = CheckBox("Maintain original aspect ratio")
         self.keep_aspect_check.stateChanged.connect(self.on_keep_aspect_changed)
         aspect_layout.addWidget(self.keep_aspect_check)
         
@@ -1543,9 +1622,18 @@ class ICNSConverterGUI(QMainWindow):
         crop_layout = QHBoxLayout(crop_widget)
         crop_layout.setContentsMargins(5, 8, 5, 8)
         crop_widget.setMinimumSize(300, 45)
-        self.auto_crop_check = CheckBox("✂️ Auto-crop non-square to square")
+        # Create icon + checkbox for auto-crop
+        crop_icon_layout = QHBoxLayout()
+        crop_icon_layout.setContentsMargins(0, 0, 0, 0)
+        crop_icon_layout.setSpacing(5)
+        crop_icon = IconWidget(FluentIcon.CUT)
+        crop_icon.setFixedSize(16, 16)
+        crop_icon_layout.addWidget(crop_icon)
+        self.auto_crop_check = CheckBox("Auto-crop non-square to square")
         self.auto_crop_check.stateChanged.connect(self.on_auto_crop_changed)
-        crop_layout.addWidget(self.auto_crop_check)
+        crop_icon_layout.addWidget(self.auto_crop_check)
+        crop_icon_layout.addStretch()
+        crop_layout.addLayout(crop_icon_layout)
         crop_item = QTreeWidgetItem()
         parent_item.addChild(crop_item)
         self.options_tree.setItemWidget(crop_item, 0, crop_widget)
@@ -1555,9 +1643,19 @@ class ICNSConverterGUI(QMainWindow):
         quality_layout = QHBoxLayout(quality_widget)
         quality_layout.setContentsMargins(5, 8, 5, 8)
         quality_widget.setMinimumSize(300, 55)
-        quality_label = QLabel("🎨 Quality:")
-        quality_label.setMinimumWidth(100)  # Ensure consistent width for labels
-        quality_layout.addWidget(quality_label)
+        
+        # Create icon + label for Quality
+        quality_icon_container = QWidget()
+        quality_icon_layout = QHBoxLayout(quality_icon_container)
+        quality_icon_layout.setContentsMargins(0, 0, 0, 0)
+        quality_icon_layout.setSpacing(5)
+        quality_icon = IconWidget(FluentIcon.PALETTE)
+        quality_icon.setFixedSize(16, 16)
+        quality_icon_layout.addWidget(quality_icon)
+        quality_label = QLabel("Quality:")
+        quality_icon_layout.addWidget(quality_label)
+        quality_icon_container.setMinimumWidth(100)  # Ensure consistent width for labels
+        quality_layout.addWidget(quality_icon_container)
         
         self.quality_slider = Slider(Qt.Orientation.Horizontal)
         self.quality_slider.setRange(1, 100)
@@ -1579,13 +1677,22 @@ class ICNSConverterGUI(QMainWindow):
         method_widget = QWidget()
         method_layout = QHBoxLayout(method_widget)
         method_layout.setContentsMargins(5, 8, 5, 8)
-        # 使用更灵活的尺寸策略
+        # Use more flexible sizing strategy
         method_widget.setMinimumHeight(55)
         method_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
-        method_label = QLabel("⚙️ ICNS method:")
-        method_label.setMinimumWidth(120)  # Ensure consistent width for labels
-        method_layout.addWidget(method_label)
+        # Create icon + label for ICNS method
+        method_icon_container = QWidget()
+        method_icon_layout = QHBoxLayout(method_icon_container)
+        method_icon_layout.setContentsMargins(0, 0, 0, 0)
+        method_icon_layout.setSpacing(5)
+        method_icon = IconWidget(FluentIcon.SETTING)
+        method_icon.setFixedSize(16, 16)
+        method_icon_layout.addWidget(method_icon)
+        method_label = QLabel("ICNS method:")
+        method_icon_layout.addWidget(method_label)
+        method_icon_container.setMinimumWidth(120)  # Ensure consistent width for labels
+        method_layout.addWidget(method_icon_container)
         
         self.icns_method_combo = ModelComboBox()
         self.icns_method_combo.addItems(["iconutil (Recommended)", "Pillow Fallback"])
@@ -1602,9 +1709,19 @@ class ICNSConverterGUI(QMainWindow):
         overwrite_layout = QHBoxLayout(overwrite_widget)
         overwrite_layout.setContentsMargins(5, 8, 5, 8)
         overwrite_widget.setMinimumSize(300, 45)
-        self.overwrite_confirm_check = CheckBox("⚠️ Confirm before overwriting files")
+        
+        # Create icon + checkbox for overwrite confirmation
+        overwrite_icon_layout = QHBoxLayout()
+        overwrite_icon_layout.setContentsMargins(0, 0, 0, 0)
+        overwrite_icon_layout.setSpacing(5)
+        overwrite_icon = IconWidget(FluentIcon.INFO)
+        overwrite_icon.setFixedSize(16, 16)
+        overwrite_icon_layout.addWidget(overwrite_icon)
+        self.overwrite_confirm_check = CheckBox("Confirm before overwriting files")
         self.overwrite_confirm_check.stateChanged.connect(self.on_overwrite_confirm_changed)
-        overwrite_layout.addWidget(self.overwrite_confirm_check)
+        overwrite_icon_layout.addWidget(self.overwrite_confirm_check)
+        overwrite_icon_layout.addStretch()
+        overwrite_layout.addLayout(overwrite_icon_layout)
         
         overwrite_item = QTreeWidgetItem()
         parent_item.addChild(overwrite_item)
@@ -1667,14 +1784,11 @@ class ICNSConverterGUI(QMainWindow):
         title.setObjectName("success_title_label")
         center_layout.addWidget(title)
 
-        checkmark = QLabel("✓")
-        checkmark_font = checkmark.font()
-        checkmark_font.setPointSize(checkmark_font.pointSize() + 30) # Larger checkmark
-        checkmark_font.setBold(True)
-        checkmark.setFont(checkmark_font)
+        # Use FluentIcon for success checkmark
+        checkmark = IconWidget(FluentIcon.ACCEPT)
+        checkmark.setFixedSize(64, 64)
         checkmark.setObjectName("success_checkmark_label")
-        checkmark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        center_layout.addWidget(checkmark)
+        center_layout.addWidget(checkmark, 0, Qt.AlignmentFlag.AlignCenter)
 
         msg = QLabel(f"Your {str(self.output_format).upper()} file has been created successfully!")
         msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1747,15 +1861,11 @@ class ICNSConverterGUI(QMainWindow):
         title.setObjectName("success_title_label")
         center_layout.addWidget(title)
 
-        # Batch checkmark with check symbol
-        checkmark = QLabel("✓")
-        checkmark_font = checkmark.font()
-        checkmark_font.setPointSize(checkmark_font.pointSize() + 30) # Larger checkmark
-        checkmark_font.setBold(True)
-        checkmark.setFont(checkmark_font)
+        # Batch checkmark with FluentIcon
+        checkmark = IconWidget(FluentIcon.ACCEPT)
+        checkmark.setFixedSize(64, 64)
         checkmark.setObjectName("success_checkmark_label")
-        checkmark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        center_layout.addWidget(checkmark)
+        center_layout.addWidget(checkmark, 0, Qt.AlignmentFlag.AlignCenter)
 
         # Dynamic message - will be updated with actual batch stats
         self.batch_success_message = QLabel("Processing batch conversion results...")
@@ -2666,16 +2776,16 @@ class ICNSConverterGUI(QMainWindow):
     def on_batch_file_processed(self, filename, input_path, output_path, success, error_message):
         """Handle individual file processing result"""
         if success:
-            item_text = f"✓ {filename}"
-            item = QListWidgetItem(item_text)
+            item = QListWidgetItem(filename)
+            item.setIcon(FluentIcon.ACCEPT.qicon())
             item.setForeground(Qt.green)
             # Add to history if conversion was successful and remember_path is enabled
             if self.remember_path:
                 format_type = self.batch_format_combo.currentText().lower()
                 self.add_to_history(input_path, output_path, format_type)
         else:
-            item_text = f"✗ {filename}: {error_message}"
-            item = QListWidgetItem(item_text)
+            item = QListWidgetItem(f"{filename}: {error_message}")
+            item.setIcon(FluentIcon.CANCEL.qicon())
             item.setForeground(Qt.red)
         
         self.results_list_widget.addItem(item)
@@ -2709,7 +2819,8 @@ class ICNSConverterGUI(QMainWindow):
         for i in range(self.results_list_widget.count()):
             item = self.results_list_widget.item(i)
             if item:
-                if "✓" in item.text():
+                # Check by icon instead of text
+                if not item.icon().isNull():
                     success_count += 1
                 else:
                     failed_count += 1

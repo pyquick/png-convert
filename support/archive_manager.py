@@ -1,4 +1,5 @@
 import os
+import sys
 import zipfile
 import tarfile
 import platform
@@ -1046,7 +1047,7 @@ def extract_archive(archive_path, extract_to, progress_callback=None, password=N
                 # Use unar as fallback on failure
                 _extract_with_unar(archive_path, extract_to, progress_callback, password)
             except Exception as e:
-                # 检查异常信息是否包含密码相关关键词
+                # Check if exception message contains password-related keywords
                 error_msg = str(e).lower()
                 password_error_keywords = [
                     "password", "encrypted", "authentication", "incorrect", 
@@ -1082,13 +1083,13 @@ def extract_archive(archive_path, extract_to, progress_callback=None, password=N
         if progress_callback:
             progress_callback(f"Archive extracted to: {extract_to}", 100)
         
-        # 为解压出的可执行文件添加执行权限
+        # Add execute permissions for extracted executable files
         try:
             _set_executable_permissions(extract_to, progress_callback)
             if progress_callback:
                 progress_callback("Executable permissions set", 100)
         except Exception as e:
-            # 权限设置失败不应该影响解压结果，只是记录警告
+            # Permission setting failure should not affect extraction result, just log warning
             if progress_callback:
                 progress_callback(f"Warning: Failed to set executable permissions: {str(e)}", 90)
         
@@ -2272,7 +2273,7 @@ def _list_with_lsar(archive_path, progress_callback=None, password=None):
     
     return contents
 
-def add_to_archive(archive_path, file_to_add_path, progress_callback=None):
+def add_to_archive(archive_path, file_to_add_path, progress_callback=None, target_path=None):
     """
     Add a file to an existing archive file.
 
@@ -2280,6 +2281,7 @@ def add_to_archive(archive_path, file_to_add_path, progress_callback=None):
         archive_path (str): Path to the existing archive file.
         file_to_add_path (str): Path to the file to add.
         progress_callback (function): Optional callback for progress updates.
+        target_path (str): Optional target path within archive (e.g., "folder/subfolder").
     """
     try:
         archive_format = _get_archive_type(archive_path)
@@ -2292,13 +2294,13 @@ def add_to_archive(archive_path, file_to_add_path, progress_callback=None):
         # Select processing method based on format
         if archive_format in ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz"]:
             # Use Python built-in libraries
-            _add_with_python(archive_path, file_to_add_path, archive_format, progress_callback)
+            _add_with_python(archive_path, file_to_add_path, archive_format, progress_callback, target_path)
         elif archive_format in ["rar"]:
             # Use CLI tool
-            _add_rar_with_cli(archive_path, file_to_add_path, progress_callback)
+            _add_rar_with_cli(archive_path, file_to_add_path, progress_callback, target_path)
         elif archive_format in ["7z"]:
             # Use 7zz CLI tool
-            _add_7z_with_cli(archive_path, file_to_add_path, progress_callback)
+            _add_7z_with_cli(archive_path, file_to_add_path, progress_callback, target_path)
         else:
             # Other formats don't support adding files
             raise ValueError(f"Adding files to {archive_format} format is not supported")
@@ -2312,12 +2314,17 @@ def add_to_archive(archive_path, file_to_add_path, progress_callback=None):
             progress_callback(f"Error adding to archive: {str(e)}", -1)
         return False
 
-def _add_with_python(archive_path, file_to_add_path, archive_format, progress_callback=None):
+def _add_with_python(archive_path, file_to_add_path, archive_format, progress_callback=None, target_path=None):
     """Add file using Python built-in libraries"""
+    # Determine arcname (path within archive)
+    if target_path:
+        arcname = os.path.join(target_path, os.path.basename(file_to_add_path)).replace("\\", "/")
+    else:
+        arcname = os.path.basename(file_to_add_path)
+    
     if archive_format == "zip":
         with zipfile.ZipFile(archive_path, 'a') as zipf:
-            file_name = os.path.basename(file_to_add_path)
-            zipf.write(file_to_add_path, file_name)
+            zipf.write(file_to_add_path, arcname)
     
     elif archive_format.startswith("tar"):
         # Correct tarfile mode parameter - use write mode instead of append mode
@@ -2347,34 +2354,43 @@ def _add_with_python(archive_path, file_to_add_path, archive_format, progress_ca
             # Add existing files
             for existing_file in existing_files:
                 tarf.add(existing_file, arcname=existing_file)
-            # Add new file
-            file_name = os.path.basename(file_to_add_path)
-            tarf.add(file_to_add_path, arcname=file_name)
+            # Add new file with target path
+            tarf.add(file_to_add_path, arcname=arcname)
     
     if progress_callback:
         progress_callback("File added", 100)
 
-def _add_rar_with_cli(archive_path, file_to_add_path, progress_callback=None):
+def _add_rar_with_cli(archive_path, file_to_add_path, progress_callback=None, target_path=None):
     """Add file to RAR using rar CLI tool"""
     try:
         rar_tool = _get_cli_tool("rar", arch_specific=True)
     except FileNotFoundError:
         raise RuntimeError("RAR tool not available for adding files")
     
-    cmd = [rar_tool, "a", archive_path, file_to_add_path]
+    cmd = [rar_tool, "a"]
+    if target_path:
+        cmd.extend(["-ap", target_path])
+    cmd.extend([archive_path, file_to_add_path])
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
         raise RuntimeError(f"RAR add failed: {result.stderr}")
 
-def _add_7z_with_cli(archive_path, file_to_add_path, progress_callback=None):
+def _add_7z_with_cli(archive_path, file_to_add_path, progress_callback=None, target_path=None):
     """Add file to 7z using 7zz CLI tool"""
     try:
         sevenz_tool = _get_cli_tool("7zz")
     except FileNotFoundError:
         raise RuntimeError("7z tool not available for adding files")
     
-    cmd = [sevenz_tool, "a", archive_path, file_to_add_path]
+    cmd = [sevenz_tool, "a"]
+    if target_path:
+        # 7z uses -w for working directory, but for target path we need to use the full path in the file spec
+        # or use the -spf option to preserve full paths
+        full_target = os.path.join(target_path, os.path.basename(file_to_add_path))
+        cmd.extend([archive_path, full_target])
+    else:
+        cmd.extend([archive_path, file_to_add_path])
     result = _run_command_with_timeout(cmd, timeout=2, progress_callback=progress_callback)
     
     if result.returncode != 0:
@@ -2615,7 +2631,7 @@ def test_archive_functions():
 
 def _set_executable_permissions(extract_to, progress_callback=None):
     """
-    为解压出的可执行文件添加执行权限
+    Add execute permissions for extracted executable files
     
     Args:
         extract_to (str): 解压目标目录
@@ -2688,5 +2704,392 @@ def _set_executable_permissions(extract_to, progress_callback=None):
     if progress_callback and executable_files:
         progress_callback(f"Set executable permissions for {len(executable_files)} files", -1)
 
+
+# ==================== Enhanced Test Suite ====================
+
+def run_comprehensive_tests():
+    """Run comprehensive tests for all archive operations"""
+    import tempfile
+    import os
+    
+    print("=" * 70)
+    print("Archive Manager - Comprehensive Test Suite")
+    print("=" * 70)
+    
+    test_results = {
+        'passed': 0,
+        'failed': 0,
+        'tests': []
+    }
+    
+    def record_test(name, success, message=""):
+        status = "PASS" if success else "FAIL"
+        test_results['tests'].append((name, success, message))
+        if success:
+            test_results['passed'] += 1
+            print(f"  [{status}] {name}")
+        else:
+            test_results['failed'] += 1
+            print(f"  [{status}] {name}: {message}")
+    
+    # Create temporary directory for tests
+    with tempfile.TemporaryDirectory() as tmpdir:
+        print(f"\n[Test Environment]")
+        print(f"  Temp directory: {tmpdir}")
+        
+        # Create test files
+        test_files = []
+        for i in range(3):
+            test_file = os.path.join(tmpdir, f"test_file_{i+1}.txt")
+            with open(test_file, 'w') as f:
+                f.write(f"Test content {i+1}\n" * 100)
+            test_files.append(test_file)
+        
+        print(f"  Created {len(test_files)} test files")
+        
+        # Test 1: ZIP Create
+        print("\n[Archive Creation Tests]")
+        zip_path = os.path.join(tmpdir, "test.zip")
+        try:
+            create_archive(zip_path, test_files, 'zip', None, None)
+            record_test("ZIP Creation", os.path.exists(zip_path), 
+                       f"Size: {os.path.getsize(zip_path)} bytes" if os.path.exists(zip_path) else "File not created")
+        except Exception as e:
+            record_test("ZIP Creation", False, str(e))
+        
+        # Test 2: TAR.GZ Create
+        tar_gz_path = os.path.join(tmpdir, "test.tar.gz")
+        try:
+            create_archive(tar_gz_path, test_files, 'tar.gz', None, None)
+            record_test("TAR.GZ Creation", os.path.exists(tar_gz_path),
+                       f"Size: {os.path.getsize(tar_gz_path)} bytes" if os.path.exists(tar_gz_path) else "File not created")
+        except Exception as e:
+            record_test("TAR.GZ Creation", False, str(e))
+        
+        # Test 3: 7z Create
+        seven_z_path = os.path.join(tmpdir, "test.7z")
+        try:
+            create_archive(seven_z_path, test_files, '7z', None, None)
+            record_test("7z Creation", os.path.exists(seven_z_path),
+                       f"Size: {os.path.getsize(seven_z_path)} bytes" if os.path.exists(seven_z_path) else "File not created")
+        except Exception as e:
+            record_test("7z Creation", False, str(e))
+        
+        # Test 4: ZIP Extract
+        print("\n[Archive Extraction Tests]")
+        extract_dir = os.path.join(tmpdir, "extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+        
+        try:
+            extract_archive(zip_path, extract_dir, None, None)
+            extracted_files = os.listdir(extract_dir)
+            record_test("ZIP Extraction", len(extracted_files) == len(test_files),
+                       f"Extracted {len(extracted_files)} files")
+        except Exception as e:
+            record_test("ZIP Extraction", False, str(e))
+        
+        # Test 5: List Contents
+        print("\n[List Contents Tests]")
+        try:
+            contents = list_archive_contents(zip_path, None)
+            record_test("List ZIP Contents", len(contents) == len(test_files),
+                       f"Found {len(contents)} items")
+        except Exception as e:
+            record_test("List ZIP Contents", False, str(e))
+        
+        # Test 6: Add to Archive
+        print("\n[Add to Archive Tests]")
+        new_file = os.path.join(tmpdir, "new_file.txt")
+        with open(new_file, 'w') as f:
+            f.write("New file content\n")
+        
+        try:
+            add_to_archive(zip_path, new_file, None)
+            contents = list_archive_contents(zip_path, None)
+            record_test("Add to ZIP", len(contents) == len(test_files) + 1,
+                       f"Archive now has {len(contents)} items")
+        except Exception as e:
+            record_test("Add to ZIP", False, str(e))
+        
+        # Test 7: Password Protected 7z
+        print("\n[Password Protection Tests]")
+        password = "test123"
+        protected_path = os.path.join(tmpdir, "protected.7z")
+        
+        try:
+            # Try to create with password (may not be supported by all backends)
+            create_archive(protected_path, test_files, '7z', None, password)
+            record_test("Password-Protected 7z Creation", os.path.exists(protected_path),
+                       "Created with password" if os.path.exists(protected_path) else "Failed")
+            
+            # Try to extract with password
+            if os.path.exists(protected_path):
+                protected_extract = os.path.join(tmpdir, "protected_extract")
+                os.makedirs(protected_extract, exist_ok=True)
+                extract_archive(protected_path, protected_extract, None, password)
+                extracted = os.listdir(protected_extract)
+                record_test("Password-Protected 7z Extraction", len(extracted) == len(test_files),
+                           f"Extracted {len(extracted)} files")
+        except Exception as e:
+            record_test("Password-Protected 7z", False, str(e))
+        
+        # Test 8: Batch Extract
+        print("\n[Batch Operations Tests]")
+        batch_dir = os.path.join(tmpdir, "batch")
+        os.makedirs(batch_dir, exist_ok=True)
+        
+        # Create multiple archives
+        archives = []
+        for i in range(3):
+            arc_path = os.path.join(batch_dir, f"archive_{i+1}.zip")
+            try:
+                create_archive(arc_path, test_files, 'zip', None, None)
+                archives.append(arc_path)
+            except:
+                pass
+        
+        try:
+            batch_result = batch_extract_archives(
+                archives,
+                os.path.join(tmpdir, "batch_extracted"),
+                create_subfolders=True,
+                overwrite_existing=True
+            )
+            record_test("Batch Extract", batch_result.get('error_count', 0) == 0,
+                       f"Success: {batch_result.get('success_count', 0)}, Failed: {batch_result.get('error_count', 0)}")
+        except Exception as e:
+            record_test("Batch Extract", False, str(e))
+        
+        # Test 9: Archive Type Detection
+        print("\n[Archive Type Detection Tests]")
+        test_cases = [
+            (zip_path, "zip"),
+            (tar_gz_path, "tar.gz"),
+            (seven_z_path, "7z"),
+        ]
+        
+        for file_path, expected_type in test_cases:
+            try:
+                detected = _get_archive_type(file_path)
+                record_test(f"Detect {expected_type.upper()}", detected == expected_type,
+                           f"Detected: {detected}")
+            except Exception as e:
+                record_test(f"Detect {expected_type.upper()}", False, str(e))
+    
+    # Print Summary
+    print("\n" + "=" * 70)
+    print("Test Summary")
+    print("=" * 70)
+    total = test_results['passed'] + test_results['failed']
+    print(f"  Total:  {total}")
+    print(f"  Passed: {test_results['passed']}")
+    print(f"  Failed: {test_results['failed']}")
+    print(f"  Rate:   {test_results['passed']/total*100:.1f}%" if total > 0 else "  Rate:   N/A")
+    print("=" * 70)
+    
+    return test_results['failed'] == 0
+
+
+# ==================== CLI Interface ====================
+
+def cli_progress_callback(message, percentage):
+    """CLI progress callback"""
+    if percentage >= 0:
+        print(f"[{percentage:3d}%] {message}")
+    else:
+        print(f"[INFO] {message}")
+
+
+def cli_main():
+    """Command Line Interface for archive_manager"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="Archive Manager CLI - Create and extract archive files",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Show help (default)
+  python archive_manager.py
+  
+  # Run comprehensive tests
+  python archive_manager.py test
+  
+  # Create archive
+  python archive_manager.py create -s file1.txt file2.txt -o output.zip -f zip
+  
+  # Extract archive
+  python archive_manager.py extract -a archive.zip -d ./output
+  
+  # Batch extract
+  python archive_manager.py batch-extract -a *.zip -d ./output
+  
+  # List contents
+  python archive_manager.py list -a archive.zip
+  
+  # Add files to archive
+  python archive_manager.py add -a archive.zip -s newfile.txt
+        """
+    )
+    
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # Test command
+    test_parser = subparsers.add_parser('test', help='Run comprehensive tests')
+    
+    # Create command
+    create_parser = subparsers.add_parser('create', help='Create an archive')
+    create_parser.add_argument('-s', '--sources', nargs='+', required=True,
+                              help='Source files/directories to archive')
+    create_parser.add_argument('-o', '--output', required=True,
+                              help='Output archive path')
+    create_parser.add_argument('-f', '--format', default='zip',
+                              choices=SUPPORTED_ARCHIVE_FORMATS,
+                              help='Archive format (default: zip)')
+    create_parser.add_argument('-p', '--password',
+                              help='Password for encrypted archive')
+    
+    # Extract command
+    extract_parser = subparsers.add_parser('extract', help='Extract an archive')
+    extract_parser.add_argument('-a', '--archive', required=True,
+                               help='Archive file to extract')
+    extract_parser.add_argument('-d', '--dest', required=True,
+                               help='Destination directory')
+    extract_parser.add_argument('-p', '--password',
+                               help='Password for encrypted archive')
+    
+    # Batch extract command
+    batch_parser = subparsers.add_parser('batch-extract', help='Batch extract archives')
+    batch_parser.add_argument('-a', '--archives', nargs='+', required=True,
+                             help='Archive files to extract')
+    batch_parser.add_argument('-d', '--dest', required=True,
+                             help='Destination directory')
+    batch_parser.add_argument('--subfolders', action='store_true',
+                             help='Create subfolders for each archive')
+    batch_parser.add_argument('--overwrite', action='store_true',
+                             help='Overwrite existing files')
+    
+    # List command
+    list_parser = subparsers.add_parser('list', help='List archive contents')
+    list_parser.add_argument('-a', '--archive', required=True,
+                            help='Archive file to list')
+    list_parser.add_argument('-p', '--password',
+                            help='Password for encrypted archive')
+    
+    # Add command
+    add_parser = subparsers.add_parser('add', help='Add files to archive')
+    add_parser.add_argument('-a', '--archive', required=True,
+                           help='Archive file to add to')
+    add_parser.add_argument('-s', '--sources', nargs='+', required=True,
+                           help='Files to add')
+    
+    # Info command
+    info_parser = subparsers.add_parser('info', help='Show supported formats')
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        return 0
+    
+    try:
+        if args.command == 'test':
+            success = run_comprehensive_tests()
+            return 0 if success else 1
+            
+        elif args.command == 'create':
+            print(f"Creating archive: {args.output}")
+            print(f"Format: {args.format}")
+            print(f"Sources: {', '.join(args.sources)}")
+            if args.password:
+                print("Password protection: Yes")
+            
+            create_archive(args.output, args.sources, args.format, 
+                          cli_progress_callback, args.password)
+            print(f"\n[SUCCESS] Archive created: {args.output}")
+            return 0
+            
+        elif args.command == 'extract':
+            print(f"Extracting: {args.archive}")
+            print(f"Destination: {args.dest}")
+            
+            extract_archive(args.archive, args.dest, cli_progress_callback, args.password)
+            print(f"\n[SUCCESS] Archive extracted to: {args.dest}")
+            return 0
+            
+        elif args.command == 'batch-extract':
+            print(f"Batch extracting {len(args.archives)} archives")
+            print(f"Destination: {args.dest}")
+            
+            def batch_progress(current, total, current_file=""):
+                if isinstance(current, str):
+                    print(f"[INFO] {current}")
+                else:
+                    pct = int((current / total) * 100) if total > 0 else 0
+                    print(f"[{pct:3d}%] Processing {current}/{total}: {os.path.basename(str(current_file))}")
+            
+            result = batch_extract_archives(
+                args.archives,
+                args.dest,
+                progress_callback=batch_progress,
+                create_subfolders=args.subfolders,
+                overwrite_existing=args.overwrite
+            )
+            
+            print(f"\n[SUCCESS] Batch extraction complete:")
+            print(f"  Success: {result.get('success_count', 0)}")
+            print(f"  Failed: {result.get('error_count', 0)}")
+            print(f"  Skipped: {result.get('skipped_count', 0)}")
+            return 0
+            
+        elif args.command == 'list':
+            print(f"Listing contents of: {args.archive}")
+            contents = list_archive_contents(args.archive, args.password)
+            
+            print(f"\nArchive contents ({len(contents)} items):")
+            print("-" * 60)
+            for item in contents:
+                if isinstance(item, dict):
+                    name = item.get('name', 'Unknown')
+                    size = item.get('size', 0)
+                    is_dir = item.get('is_dir', False)
+                    type_str = "DIR" if is_dir else "FILE"
+                    size_str = f"{size:>10} bytes" if not is_dir else ""
+                    print(f"[{type_str:4}] {name:50} {size_str}")
+                else:
+                    print(f"       {item}")
+            return 0
+            
+        elif args.command == 'add':
+            print(f"Adding files to: {args.archive}")
+            print(f"Files: {', '.join(args.sources)}")
+            
+            for source in args.sources:
+                add_to_archive(args.archive, source, cli_progress_callback)
+            
+            print(f"\n[SUCCESS] Files added to archive")
+            return 0
+            
+        elif args.command == 'info':
+            print("Archive Manager - Supported Formats")
+            print("=" * 60)
+            print("Supported archive formats:")
+            for fmt in SUPPORTED_ARCHIVE_FORMATS:
+                print(f"  - {fmt}")
+            print("\nCLI Tools:")
+            cli_tools = ['7z', 'unar', 'tar', 'zip', 'unzip']
+            for tool in cli_tools:
+                tool_path = os.path.join(CLI_BASE_PATH, tool)
+                exists = os.path.exists(tool_path)
+                status = "✓" if exists else "✗"
+                print(f"  {status} {tool}")
+            return 0
+            
+    except Exception as e:
+        print(f"\n[ERROR] {str(e)}", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    test_archive_functions()
+    # Default to CLI mode (shows help if no arguments)
+    cli_main()

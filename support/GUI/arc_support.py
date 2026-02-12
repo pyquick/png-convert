@@ -8,9 +8,10 @@ This module provides GUI components and worker classes for archive management.
 
 import os
 import sys
-from PySide6.QtCore import Qt, QSize, Signal, QObject
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QLabel, QFileDialog
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPalette, QPixmap
+from PySide6.QtCore import *
+from PySide6.QtWidgets import *
+from PySide6.QtGui import *
+from UIkit import *
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -389,16 +390,22 @@ class BatchDropZoneWidget(QFrame):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        self.icon_label = QLabel("��")
-        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_label.setStyleSheet("font-size: 20px;")
+        # Create a container for the icon to center it
+        icon_container = QWidget()
+        icon_layout = QHBoxLayout(icon_container)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.icon_label = IconWidget(FluentIcon.FOLDER)
+        self.icon_label.setFixedSize(32, 32)
+        icon_layout.addWidget(self.icon_label)
 
         self.text_label = QLabel(placeholder_text)
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.text_label.setStyleSheet("color: #666; font-size: 12px;")
         self.text_label.setWordWrap(True)
 
-        layout.addWidget(self.icon_label)
+        layout.addWidget(icon_container)
         layout.addWidget(self.text_label)
 
         self.drag_over = False

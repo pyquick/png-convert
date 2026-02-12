@@ -30,7 +30,7 @@ jobs:
               if: github.event_name == 'push'
               uses: softprops/action-gh-release@v2
               with:
-                tag_name: 2.1.0A10
+                tag_name: 2.1.0A11
                 name: 2.1.0 Alpha 10
                 body: ${{ github.event.head_commit.message }}
                 prerelease: true
@@ -58,7 +58,7 @@ jobs:
               if: github.event_name == 'push'
               uses: softprops/action-gh-release@v2
               with:
-                tag_name: 2.1.0A10
+                tag_name: 2.1.0A11
                 name: 2.1.0 Alpha 10
                 body: ${{ github.event.head_commit.message }}
                 prerelease: true
