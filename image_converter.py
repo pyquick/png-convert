@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QSpinBox, QListWidget,
     QFileDialog, QMessageBox, QTabWidget, QGroupBox, QSizePolicy,
-     QTreeWidgetItem, QFrame,QListWidgetItem
+     QTreeWidgetItem, QFrame, QListWidgetItem, QAbstractItemView
 )
 from PySide6.QtGui import QPixmap, QIcon, QFont, QImage, QPalette
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread
@@ -91,7 +91,13 @@ class ICNSConverterGUI(QMainWindow):
         
     def _onThemeChanged(self):
         """Theme change handling"""
-        
+        import darkdetect
+        is_dark_mode = darkdetect.isDark()
+
+        # Reload QSS and update all themed widgets
+        self._apply_theme(is_dark_mode)
+
+        # Sync UIkit theme
         setTheme(Theme.AUTO)
         
         
@@ -219,6 +225,8 @@ class ICNSConverterGUI(QMainWindow):
         # Update DropZoneWidget theme if it exists
         if hasattr(self, 'drop_zone') and self.drop_zone:
             self.drop_zone.set_theme(is_dark_mode)
+        if hasattr(self, 'single_drop_zone') and self.single_drop_zone:
+            self.single_drop_zone.set_theme(is_dark_mode)
             
         # Update success view theme if it exists and is visible
         if hasattr(self, 'success_widget') and self.success_widget and self.success_widget.isVisible():
@@ -341,6 +349,7 @@ class ICNSConverterGUI(QMainWindow):
         
         # Batch conversion variables
         self.batch_files = []
+        self.batch_file_settings = {}  # {file_path: {'output_dir': str, 'format': str}}
         self.batch_converting = False
         self.batch_worker = None
         self.batch_thread = None
@@ -489,6 +498,18 @@ class ICNSConverterGUI(QMainWindow):
         """Setup the main converter tab content"""
         converter_layout = QVBoxLayout(self.converter_tab)
 
+        # Deprecation warning
+        self.deprecation_bar = InfoBar(
+            icon=InfoBarIcon.WARNING,
+            title='Deprecation Notice',
+            content='Single Converter will be removed in a future version. Please use Batch Converter instead.',
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            duration=-1,
+            parent=self.converter_tab
+        )
+        converter_layout.addWidget(self.deprecation_bar)
+
         # Main content area: Left Panel (Input/Output) and Right Side (Options/Preview)
         main_content_h_layout = QHBoxLayout()
         main_content_h_layout.setSpacing(20) # Increased spacing between left and right sections
@@ -507,6 +528,12 @@ class ICNSConverterGUI(QMainWindow):
         file_ops_group_layout.setContentsMargins(10, 25, 10, 10)
         file_ops_group_layout.setSpacing(10)
         left_layout.addWidget(file_ops_group_box)
+
+        # Drop zone for single file input
+        self.single_drop_zone = DropZoneWidget()
+        self.single_drop_zone.setFixedHeight(100)
+        self.single_drop_zone.filesDropped.connect(self._on_single_file_dropped)
+        file_ops_group_layout.addWidget(self.single_drop_zone)
 
         # Input File Selection (inside merged group box)
         input_layout = QHBoxLayout()
@@ -746,15 +773,17 @@ class ICNSConverterGUI(QMainWindow):
         file_list_group_layout.setContentsMargins(10, 25, 10, 10)
         left_batch_layout.addWidget(file_list_group_box, 1)
 
-        # File list with scroll area
-        file_scroll_area = ScrollArea()
-        file_scroll_area.setWidgetResizable(True)
-        file_scroll_area.setMinimumHeight(200)
-        file_scroll_area.setMaximumHeight(300)
-        
-        self.file_list_widget = ListWidget()
-        file_scroll_area.setWidget(self.file_list_widget)
-        file_list_group_layout.addWidget(file_scroll_area)
+        # File tree with per-file settings
+        self.file_list_tree = TreeWidget()
+        self.file_list_tree.setHeaderLabels(["Filename", "Output Path", "Format"])
+        self.file_list_tree.setColumnWidth(0, 200)
+        self.file_list_tree.setColumnWidth(1, 250)
+        self.file_list_tree.setColumnWidth(2, 80)
+        self.file_list_tree.setMinimumHeight(200)
+        self.file_list_tree.setMaximumHeight(300)
+        self.file_list_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.file_list_tree.itemDoubleClicked.connect(self._on_file_tree_double_clicked)
+        file_list_group_layout.addWidget(self.file_list_tree)
 
         # File management buttons
         file_mgmt_layout = QHBoxLayout()
@@ -1985,6 +2014,11 @@ class ICNSConverterGUI(QMainWindow):
         self.preview_tab.clear_previews()
 
 
+    def _on_single_file_dropped(self, file_paths):
+        """Handle file dropped on single converter drop zone"""
+        if file_paths:
+            self.input_text.setText(file_paths[0])
+
     def on_browse_input(self):
         file_dialog = QFileDialog(self)
         file_dialog.setNameFilter("Image files (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.ico *.icns);;All files (*.*)")
@@ -2625,12 +2659,23 @@ class ICNSConverterGUI(QMainWindow):
             )
             
     def update_batch_file_list(self):
-        """Update the file list widget with current batch files"""
-        self.file_list_widget.clear()
+        """Update the file tree widget with current batch files"""
+        self.file_list_tree.clear()
+        default_output = self.get_batch_output_directory() or os.path.expanduser("~/Documents")
+        default_format = self.batch_format_combo.currentText() if hasattr(self, 'batch_format_combo') else 'icns'
+
         for file_path in self.batch_files:
-            item = QListWidgetItem(os.path.basename(file_path))
-            item.setToolTip(file_path)
-            self.file_list_widget.addItem(item)
+            settings = self.batch_file_settings.get(file_path, {})
+            output_dir = settings.get('output_dir', default_output)
+            fmt = settings.get('format', default_format)
+
+            item = QTreeWidgetItem()
+            item.setText(0, os.path.basename(file_path))
+            item.setText(1, output_dir)
+            item.setText(2, fmt)
+            item.setToolTip(0, file_path)
+            item.setData(0, Qt.ItemDataRole.UserRole, file_path)
+            self.file_list_tree.addTopLevelItem(item)
             
     def update_batch_statistics(self):
         """Update batch conversion statistics"""
@@ -2640,6 +2685,7 @@ class ICNSConverterGUI(QMainWindow):
     def clear_batch_files(self):
         """Clear all batch files"""
         self.batch_files.clear()
+        self.batch_file_settings.clear()
         self.update_batch_file_list()
         # Clear preview tab
         self.preview_tab.clear_previews()
@@ -2648,28 +2694,51 @@ class ICNSConverterGUI(QMainWindow):
         
     def remove_selected_files(self):
         """Remove selected files from batch"""
-        selected_items = self.file_list_widget.selectedItems()
+        selected_items = self.file_list_tree.selectedItems()
         if not selected_items:
             return
-            
-        # Get indices of selected items
-        indices = []
+
         for item in selected_items:
-            indices.append(self.file_list_widget.row(item))
-        
-        # Sort indices in descending order to remove from end
-        indices.sort(reverse=True)
-        
-        # Remove files from batch_files list
-        for index in indices:
-            if 0 <= index < len(self.batch_files):
-                del self.batch_files[index]
-                
+            file_path = item.data(0, Qt.ItemDataRole.UserRole)
+            if file_path in self.batch_files:
+                self.batch_files.remove(file_path)
+            self.batch_file_settings.pop(file_path, None)
+
         self.update_batch_file_list()
         # Update preview tab with remaining files
         self.preview_tab.show_multiple_previews(self.batch_files)
         self.update_batch_statistics()
-        
+
+    def _on_file_tree_double_clicked(self, item, column):
+        """Handle double-click on file tree to edit per-file settings"""
+        file_path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not file_path:
+            return
+
+        if column == 1:  # Output Path column
+            dir_path = QFileDialog.getExistingDirectory(
+                self, "Select Output Directory", item.text(1)
+            )
+            if dir_path:
+                item.setText(1, dir_path)
+                if file_path not in self.batch_file_settings:
+                    self.batch_file_settings[file_path] = {}
+                self.batch_file_settings[file_path]['output_dir'] = dir_path
+        elif column == 2:  # Format column
+            formats = list(convert.SUPPORTED_OUTPUT_FORMATS.keys()) if hasattr(convert, 'SUPPORTED_OUTPUT_FORMATS') else [
+                'icns', 'png', 'jpg', 'jpeg', 'bmp', 'gif', 'tiff', 'webp', 'ico', 'pdf'
+            ]
+            current = item.text(2).lower()
+            try:
+                idx = formats.index(current)
+                next_fmt = formats[(idx + 1) % len(formats)]
+            except ValueError:
+                next_fmt = formats[0]
+            item.setText(2, next_fmt)
+            if file_path not in self.batch_file_settings:
+                self.batch_file_settings[file_path] = {}
+            self.batch_file_settings[file_path]['format'] = next_fmt
+
     def start_batch_conversion(self):
         """Start batch conversion process"""
         if not self.batch_files:
@@ -2712,7 +2781,8 @@ class ICNSConverterGUI(QMainWindow):
             preserve_folder_structure=options['preserve_folder_structure'],
             prefix=options['prefix'],
             suffix=options['suffix'],
-            auto_detect_max_size=options['auto_detect_max_size']
+            auto_detect_max_size=options['auto_detect_max_size'],
+            per_file_settings=self.batch_file_settings
         )
         self.batch_worker.moveToThread(self.batch_thread)
         

@@ -99,7 +99,7 @@ class BatchConversionWorker(QObject):
     total_progress_updated = Signal(int)
 
     def __init__(self, input_paths, output_dir, output_format, min_size_param=None, max_size_param=None, quality_param=None,
-                 preserve_folder_structure=False, prefix="", suffix="", auto_detect_max_size=False):
+                 preserve_folder_structure=False, prefix="", suffix="", auto_detect_max_size=False, per_file_settings=None):
         super().__init__()
         self.input_paths = input_paths
         self.output_dir = output_dir
@@ -110,6 +110,7 @@ class BatchConversionWorker(QObject):
         self.prefix = prefix
         self.suffix = suffix
         self.auto_detect_max_size = auto_detect_max_size
+        self.per_file_settings = per_file_settings or {}
 
         if output_format == "icns":
             self.min_size = int(min_size_param) if min_size_param is not None else 16
@@ -129,6 +130,22 @@ class BatchConversionWorker(QObject):
                 self.finished.emit()
                 return
 
+            # Early validation: filter out missing files
+            valid_paths = []
+            for path in self.input_paths:
+                if os.path.isfile(path):
+                    valid_paths.append(path)
+                else:
+                    self.file_processed.emit(
+                        os.path.basename(path), path, "", False,
+                        f"File not found: {path}"
+                    )
+            self.input_paths = valid_paths
+            total_files = len(self.input_paths)
+            if total_files == 0:
+                self.finished.emit()
+                return
+
             # Get common parent directory if preserving folder structure
             common_parent = None
             if self.preserve_folder_structure and self.input_paths:
@@ -136,8 +153,9 @@ class BatchConversionWorker(QObject):
                 if directories:
                     common_parent = os.path.commonpath(directories)
 
-            # Calculate optimal number of threads
-            max_workers = min(16, os.cpu_count() * 2)
+            # Calculate optimal number of threads based on CPU and workload
+            cpu_count = os.cpu_count() or 4
+            max_workers = min(total_files, cpu_count * 2, 16)
             processed_files = 0
             conversion_tasks = []
 
@@ -145,14 +163,20 @@ class BatchConversionWorker(QObject):
             for i, input_path in enumerate(self.input_paths):
                 filename = os.path.basename(input_path)
                 name_without_ext = os.path.splitext(filename)[0]
-                output_filename = f"{self.prefix}{name_without_ext}{self.suffix}.{self.output_format.lower()}"
+
+                # Check per-file settings
+                file_settings = self.per_file_settings.get(input_path, {})
+                file_format = file_settings.get('format', self.output_format).lower()
+                file_output_dir = file_settings.get('output_dir', self.output_dir)
+
+                output_filename = f"{self.prefix}{name_without_ext}{self.suffix}.{file_format}"
 
                 if self.preserve_folder_structure and common_parent:
                     relative_dir = os.path.relpath(os.path.dirname(input_path), common_parent)
-                    output_path = os.path.join(self.output_dir, relative_dir, output_filename)
+                    output_path = os.path.join(file_output_dir, relative_dir, output_filename)
                     os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 else:
-                    converted_dir = os.path.join(self.output_dir, "converted")
+                    converted_dir = os.path.join(file_output_dir, "converted")
                     os.makedirs(converted_dir, exist_ok=True)
                     output_path = os.path.join(converted_dir, output_filename)
 
@@ -161,7 +185,8 @@ class BatchConversionWorker(QObject):
                     'input_path': input_path,
                     'output_path': output_path,
                     'filename': filename,
-                    'total_files': total_files
+                    'total_files': total_files,
+                    'format': file_format
                 })
 
             # Use ThreadPoolExecutor for concurrent conversion
@@ -179,7 +204,8 @@ class BatchConversionWorker(QObject):
                         future_to_task[future] = task
                     except Exception as e:
                         error_msg = f"Error submitting task for {task['filename']}: {str(e)}"
-                        self.batch_error.emit(error_msg)
+                        self.file_processed.emit(task['filename'], task['input_path'], '', False, error_msg)
+                        processed_files += 1
                         print(f"[ERROR] BatchConversionWorker: {error_msg}")
 
                 # Process completed tasks
@@ -233,7 +259,9 @@ class BatchConversionWorker(QObject):
                 percentage = 0
             self.progress_updated.emit(task['index']+1, task['total_files'], task['filename'], percentage)
 
-        if self.output_format == "icns":
+        file_format = task.get('format', self.output_format)
+
+        if file_format == "icns":
             current_max_size = int(self.max_size) if self.max_size is not None else None
             if self.auto_detect_max_size:
                 try:
@@ -246,7 +274,7 @@ class BatchConversionWorker(QObject):
             success, message = convert.convert_image(
                 task['input_path'],
                 task['output_path'],
-                self.output_format,
+                file_format,
                 int(self.min_size) if self.min_size is not None else 16,
                 current_max_size,
                 quality=self.quality,
@@ -256,7 +284,7 @@ class BatchConversionWorker(QObject):
             success, message = convert.convert_image(
                 input_path=task['input_path'],
                 output_path=task['output_path'],
-                output_format=self.output_format,
+                output_format=file_format,
                 quality=self.quality,
                 progress_callback=progress_callback
             )
@@ -298,9 +326,9 @@ class DropZoneWidget(QFrame):
         self.icon_label.setFixedSize(32, 32)
         icon_layout.addWidget(self.icon_label)
 
-        self.text_label = QLabel("Drag files or folders here\n(Supports: PNG, JPG, JPEG, BMP, GIF, TIFF, ICO, ICNS, WebP, SVG, HEIC, HEIF, AVIF, JXL, PDF, EPS, DDS, EXR)")
+        self.text_label = BodyLabel("Drag files or folders here\n(Supports: PNG, JPG, JPEG, BMP, GIF, TIFF, ICO, ICNS, WebP, SVG, HEIC, HEIF, AVIF, JXL, PDF, EPS, DDS, EXR)")
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.text_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.text_label.setStyleSheet("color: #666; font-size: 12px; border: none; background: transparent;")
         self.text_label.setWordWrap(True)
 
         self._apply_light_theme_style()
@@ -340,7 +368,7 @@ class DropZoneWidget(QFrame):
                 background-color: #f0fff0;
             }
         """)
-        self.text_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.text_label.setStyleSheet("color: #666; font-size: 12px; border: none; background: transparent;")
 
     def _apply_dark_theme_style(self):
         self.setStyleSheet("""
@@ -358,7 +386,7 @@ class DropZoneWidget(QFrame):
                 background-color: #1a2f1a;
             }
         """)
-        self.text_label.setStyleSheet("color: #aaa; font-size: 12px;")
+        self.text_label.setStyleSheet("color: #aaa; font-size: 12px; border: none; background: transparent;")
 
     def browse_files(self, event):
         file_dialog = QFileDialog()

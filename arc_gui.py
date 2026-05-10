@@ -9,13 +9,12 @@ from PySide6.QtGui import QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QGridLayout,
                                QPushButton, QLabel, QLineEdit, QTextEdit, QProgressBar,
                                QTabWidget, QWidget, QGroupBox, QListWidget, QListWidgetItem,
-                               QFileDialog, QCheckBox, QComboBox, QFrame, QMessageBox, QMenu,
-                               QTreeWidgetItem, QStackedWidget, QAbstractItemView)
+                               QFileDialog, QCheckBox, QComboBox, QFrame, QMenu,
+                               QTreeWidgetItem, QTreeWidget, QStackedWidget, QAbstractItemView,
+                               QProxyStyle, QStyle)
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPalette, QPixmap, QColor
 from UIkit import *
 
-# Import DraggableTreeView
-from draggable.drag_tree_view import DraggableTreeView
 
 from con import CON
 from support.toggle import ThemeManager
@@ -37,6 +36,66 @@ from password_dialog import PasswordDialog, SimplePasswordDialog
 # sys.stdout.reconfigure(encoding='utf-8')
 # sys.stderr.reconfigure(encoding='utf-8')
 # --- Worker Classes are now imported from support.GUI.arc_support ---
+
+class SlowTreeAnimationStyle(QProxyStyle):
+    def styleHint(self, hint, option=None, widget=None, returnData=None):
+        if hint == QStyle.StyleHint.SH_Widget_Animation_Duration:
+            return 400
+        return super().styleHint(hint, option, widget, returnData)
+
+
+class DraggableTreeWidget(TreeWidget):
+    """TreeWidget with drag-drop collision detection for files and folders"""
+
+    file_dropped_on_file = Signal(str, str)    # source_name, target_name
+    file_dropped_on_folder = Signal(str, str)  # file_name, folder_name
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dragged_index = None
+
+    def startDrag(self, supportedActions):
+        indexes = self.selectedIndexes()
+        if indexes:
+            self._dragged_index = indexes[0]
+        super().startDrag(supportedActions)
+
+    def dropEvent(self, event):
+        pos = event.position().toPoint()
+        index = self.indexAt(pos)
+
+        if not (index.isValid() and self._dragged_index and self._dragged_index.isValid()):
+            self._dragged_index = None
+            super().dropEvent(event)
+            return
+
+        source_item = self.itemFromIndex(self._dragged_index)
+        target_item = self.itemFromIndex(index)
+
+        if not source_item or not target_item or source_item is target_item:
+            self._dragged_index = None
+            super().dropEvent(event)
+            return
+
+        source_is_dir = source_item.data(0, Qt.ItemDataRole.UserRole + 3) is True
+        target_is_dir = target_item.data(0, Qt.ItemDataRole.UserRole + 3) is True
+        self._dragged_index = None
+
+        if source_is_dir and target_is_dir:
+            # folder + folder → ignore
+            event.ignore()
+        elif not source_is_dir and target_is_dir:
+            # file + folder → move file into folder
+            self.file_dropped_on_folder.emit(source_item.text(0), target_item.text(0))
+            event.ignore()
+        elif not source_is_dir and not target_is_dir:
+            # file + file → prompt to create folder
+            self.file_dropped_on_file.emit(source_item.text(0), target_item.text(0))
+            event.ignore()
+        else:
+            # folder + file or other → ignore
+            event.ignore()
+
 
 class CreateFolderMessageBox(MessageBoxBase):
     """Custom message box for creating new folder when dropping file on file"""
@@ -74,6 +133,34 @@ class CreateFolderMessageBox(MessageBoxBase):
             if char in folder_name:
                 return False
         self.folder_name = folder_name
+        return True
+
+
+class NewFolderMessageBox(MessageBoxBase):
+    """Simple message box for creating a new folder from context menu"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.folder_name = ""
+
+        self.titleLabel = SubtitleLabel(self.tr('New Folder'))
+        self.folderLineEdit = LineEdit()
+        self.folderLineEdit.setPlaceholderText(self.tr('Folder name'))
+        self.folderLineEdit.setClearButtonEnabled(True)
+
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addWidget(self.folderLineEdit)
+
+        self.widget.setMinimumWidth(350)
+        self.yesButton.setText(self.tr('Create'))
+        self.cancelButton.setText(self.tr('Cancel'))
+
+    def validate(self):
+        name = self.folderLineEdit.text().strip()
+        invalid_chars = '<>:"/\\|?*'
+        if not name or any(c in name for c in invalid_chars):
+            return False
+        self.folder_name = name
         return True
 
 
@@ -185,7 +272,7 @@ class ZipGUI(QMainWindow):
 
     def __init__(self, initial_dark_mode=False):
         super().__init__()
-        self.setWindowTitle("Archive File Processing Tool")
+        self.setWindowTitle("Archive Converter")
         self.setGeometry(200, 200, 1200, 900)
         self.setMinimumSize(1200, 900)
         
@@ -199,6 +286,11 @@ class ZipGUI(QMainWindow):
         
         
         self.setup_ui()
+
+        # Install event filter for Delete key on archive tree
+        if hasattr(self, 'archive_tree'):
+            self.archive_tree.installEventFilter(self)
+
         self._apply_theme(initial_dark_mode)
         self.center_window() # Center the window after UI setup
         self.qss_combo=CON.qss_combo
@@ -209,6 +301,14 @@ class ZipGUI(QMainWindow):
         # Load settings
         self.load_settings()
     
+    def eventFilter(self, obj, event):
+        """Event filter for handling Delete key on tree widgets"""
+        if obj == self.archive_tree and event.type() == event.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Delete:
+                self.delete_selected_items()
+                return True
+        return super().eventFilter(obj, event)
+
     def closeEvent(self, event):
         """Window close event"""
         # Stop all worker threads
@@ -293,14 +393,13 @@ class ZipGUI(QMainWindow):
                 pass
     def _onThemeChanged(self, theme: Theme):
         """Theme change handling"""
-        # Update interface to respond to theme changes
-        is_dark_mode = theme == Theme.DARK
-        
-        # Update drag and drop area theme
-        if hasattr(self, 'batch_drop_area'):
-            self.batch_drop_area.set_theme(is_dark_mode)
-        
-        self.update()
+        import darkdetect
+        is_dark_mode = darkdetect.isDark()
+
+        # Reload QSS and update all themed widgets
+        self._apply_theme(is_dark_mode)
+
+        # Sync UIkit theme
         setTheme(Theme.AUTO)
     def init_variables(self):
         # Variables for Create ZIP tab
@@ -331,6 +430,7 @@ class ZipGUI(QMainWindow):
         self.add_file_path = ""
         self.add_to_zip_worker_thread = None # Renamed to generic for clarity
         self.add_to_zip_worker = None # Renamed to generic for clarity
+        self._pending_manager = PendingFileManager()
         
         # Variables for List Contents tab
         self.list_zip_path = ""
@@ -407,6 +507,12 @@ class ZipGUI(QMainWindow):
         # Update drag and drop area theme
         if hasattr(self, 'batch_drop_area'):
             self.batch_drop_area.set_theme(is_dark_mode)
+        if hasattr(self, 'create_drop_area'):
+            self.create_drop_area.set_theme(is_dark_mode)
+        if hasattr(self, 'extract_drop_area'):
+            self.extract_drop_area.set_theme(is_dark_mode)
+        if hasattr(self, 'add_archive_drop_area'):
+            self.add_archive_drop_area.set_theme(is_dark_mode)
 
     def _get_file_icon(self, filename, is_dir=False):
         """Get FluentIcon for file based on extension or type"""
@@ -676,12 +782,28 @@ class ZipGUI(QMainWindow):
         sources_header.addWidget(sources_title)
         sources_header.addStretch()
         sources_layout.addLayout(sources_header)
-        
-        # File list
-        self.sources_listbox = ListWidget()
-        self.sources_listbox.setMinimumHeight(200)
-        self.sources_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        sources_layout.addWidget(self.sources_listbox, 1)
+
+        # Drop zone for source files
+        self.create_drop_area = BatchDropZoneWidget(
+            placeholder_text="Drag files or folders here to add to archive",
+            parent=sources_card
+        )
+        self.create_drop_area.supported_formats = set()  # Accept all file types
+        self.create_drop_area._is_supported_archive_file = lambda path: True  # Accept everything
+        self.create_drop_area.files_dropped.connect(self._on_create_files_dropped)
+        sources_layout.addWidget(self.create_drop_area)
+
+        # File tree
+        self.sources_tree = TreeWidget()
+        self.sources_tree.setHeaderLabels(["Name", "Path", "Type"])
+        self.sources_tree.setMinimumHeight(200)
+        self.sources_tree.setColumnWidth(0, 250)
+        self.sources_tree.setColumnWidth(1, 350)
+        self.sources_tree.setColumnWidth(2, 80)
+        self.sources_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.sources_tree.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.sources_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        sources_layout.addWidget(self.sources_tree, 1)
         
         # Action buttons
         button_sizer = QHBoxLayout()
@@ -753,16 +875,25 @@ class ZipGUI(QMainWindow):
         self.notebook.addTab(tab_panel, "Extract Archive")
         self.notebook.setTabIcon(self.notebook.count() - 1, FluentIcon.ZIP_FOLDER.qicon())
 
-        # Tab selector for single/batch extract
-        self.extract_tab_widget = QTabWidget()
-        tab_sizer.addWidget(self.extract_tab_widget)
+        # Pivot selector for single/batch extract
+        self.extract_pivot = Pivot(tab_panel)
+        self.extract_pivot.addItem("single", "Single Extract")
+        self.extract_pivot.addItem("batch", "Batch Extract")
+        tab_sizer.addWidget(self.extract_pivot)
 
-        # Single Extract Tab
+        self.extract_stacked_widget = QStackedWidget(tab_panel)
+        tab_sizer.addWidget(self.extract_stacked_widget)
+
+        # Single Extract Page
         self.create_single_extract_tab()
-        
-        # Batch Extract Tab  
+
+        # Batch Extract Page
         self.create_batch_extract_tab()
-        
+
+        # Connect pivot to stacked widget
+        self.extract_pivot.currentItemChanged.connect(self._on_extract_pivot_changed)
+        self.extract_pivot.setCurrentItem("single")
+
         tab_sizer.addStretch(1)
 
     def create_single_extract_tab(self):
@@ -789,7 +920,15 @@ class ZipGUI(QMainWindow):
         archive_header.addWidget(archive_title)
         archive_header.addStretch()
         archive_layout.addLayout(archive_header)
-        
+
+        # Drop zone for archive file
+        self.extract_drop_area = BatchDropZoneWidget(
+            placeholder_text="Drag archive file here to extract",
+            parent=archive_card
+        )
+        self.extract_drop_area.files_dropped.connect(self._on_extract_file_dropped)
+        archive_layout.addWidget(self.extract_drop_area)
+
         # Archive path input
         archive_input_layout = QHBoxLayout()
         self.extract_zip_text = LineEdit()
@@ -897,7 +1036,7 @@ class ZipGUI(QMainWindow):
         single_sizer.addLayout(action_layout)
         single_sizer.addStretch(1)
         
-        self.extract_tab_widget.addTab(single_panel, "Single Extract")
+        self.extract_stacked_widget.addWidget(single_panel)
 
     def create_batch_extract_tab(self):
         """Create batch archive extraction tab"""
@@ -1127,325 +1266,299 @@ class ZipGUI(QMainWindow):
         main_layout.addWidget(left_panel, 2)
         main_layout.addWidget(right_panel, 2)
         
-        self.extract_tab_widget.addTab(batch_panel, "Batch Extract")
-        self.extract_tab_widget.setTabIcon(self.extract_tab_widget.count() - 1, FluentIcon.FOLDER_ADD.qicon())
+        self.extract_stacked_widget.addWidget(batch_panel)
 
         # Connect drop area signals
         self.batch_drop_area.files_dropped.connect(self.on_batch_files_dropped)
 
-    def create_add_tab(self):
-        """Create Add to Archive tab with merged Archives view and Options"""
-        tab_panel = QWidget()
-        main_layout = QVBoxLayout(tab_panel)
-        main_layout.setSpacing(15)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        
-        # Add to Archive Tab with icon
-        self.notebook.addTab(tab_panel, "Add to Archive")
-        self.notebook.setTabIcon(self.notebook.count() - 1, FluentIcon.FOLDER_ADD.qicon())
+    def _on_extract_pivot_changed(self, route_key):
+        """Handle extract pivot tab change"""
+        index = {"single": 0, "batch": 1}.get(route_key, 0)
+        self.extract_stacked_widget.setCurrentIndex(index)
 
-        # === Archive Selection Section ===
+    def create_add_tab(self):
+        tab_panel = QWidget()
+        tab_sizer = QVBoxLayout(tab_panel)
+        tab_sizer.setSpacing(15)
+        tab_sizer.setContentsMargins(20, 20, 20, 20)
+
+        # Edit Archive Tab with icon
+        self.notebook.addTab(tab_panel, "Edit Archive")
+        self.notebook.setTabIcon(self.notebook.count() - 1, FluentIcon.EDIT.qicon())
+
+        # === Pivot for Options and Archives ===
+        self.add_pivot = Pivot(tab_panel)
+        self.add_pivot.addItem("options", "Options")
+        self.add_pivot.addItem("archives", "Archives")
+
+        # Stacked widget for pivot content
+        self.add_stacked_widget = QStackedWidget(tab_panel)
+
+        # === Options Page ===
+        options_page = QWidget()
+        options_layout = QVBoxLayout(options_page)
+        options_layout.setSpacing(15)
+        options_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Archive file selection
         archive_card = CardWidget()
-        archive_card.setBorderRadius(12)
-        archive_card.setBorderRadius(12)
         archive_card.setBorderRadius(12)
         archive_layout = QVBoxLayout(archive_card)
         archive_layout.setSpacing(10)
-        
-        # Header with icon
+
         archive_header = QHBoxLayout()
         archive_icon = IconWidget(FluentIcon.ZIP_FOLDER)
         archive_icon.setFixedSize(20, 20)
         archive_header.addWidget(archive_icon)
-        archive_title = StrongBodyLabel("Target Archive")
+        archive_title = StrongBodyLabel("Archive File")
         archive_header.addWidget(archive_title)
         archive_header.addStretch()
         archive_layout.addLayout(archive_header)
-        
-        # Archive path input
+
+        # Drop zone for archive file
+        self.add_archive_drop_area = BatchDropZoneWidget(
+            placeholder_text="Drag archive file here to edit",
+            parent=archive_card
+        )
+        self.add_archive_drop_area.files_dropped.connect(self._on_add_archive_dropped)
+        archive_layout.addWidget(self.add_archive_drop_area)
+
         archive_input_layout = QHBoxLayout()
         self.add_zip_text = LineEdit()
-        self.add_zip_text.setPlaceholderText("Select archive file to add files to...")
-        setCustomStyleSheet(self.add_zip_text, CON.qss_line, CON.qss_line)
+        self.add_zip_text.setPlaceholderText("Select archive file to edit...")
         self.add_zip_text.textChanged.connect(self._on_add_archive_path_changed)
+        setCustomStyleSheet(self.add_zip_text, CON.qss_line, CON.qss_line)
         archive_input_layout.addWidget(self.add_zip_text, 1)
-        
+
         zip_button = PushButton("Browse")
         zip_button.setIcon(FluentIcon.FOLDER.qicon())
         zip_button.clicked.connect(self.browse_add_archive)
         archive_input_layout.addWidget(zip_button)
         archive_layout.addLayout(archive_input_layout)
-        
-        main_layout.addWidget(archive_card)
 
-        # === Pivot Navigation (2 tabs only) ===
-        pivot_container = QWidget()
-        pivot_layout = QVBoxLayout(pivot_container)
-        pivot_layout.setSpacing(10)
-        pivot_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Create Pivot
-        self.add_pivot = Pivot()
-        pivot_layout.addWidget(self.add_pivot, 0, Qt.AlignmentFlag.AlignHCenter)
-        
-        # Create StackedWidget for pages
-        self.add_stacked_widget = QStackedWidget()
-        pivot_layout.addWidget(self.add_stacked_widget, 1)
-        
-        # --- Page 1: Archives (Merged view) ---
-        archives_page = QWidget()
-        archives_page.setObjectName("archivesPage")
-        archives_layout = QVBoxLayout(archives_page)
-        archives_layout.setSpacing(10)
-        archives_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Target path display
-        target_path_layout = QHBoxLayout()
-        target_path_layout.addWidget(BodyLabel("Target Folder:"))
-        self.add_target_path_label = LineEdit()
-        self.add_target_path_label.setPlaceholderText("/ (root)")
-        self.add_target_path_label.setReadOnly(True)
-        setCustomStyleSheet(self.add_target_path_label, CON.qss_line, CON.qss_line)
-        target_path_layout.addWidget(self.add_target_path_label, 1)
-        
-        set_root_btn = PushButton("Root")
-        set_root_btn.setToolTip("Set target to root directory")
-        set_root_btn.clicked.connect(self.set_add_target_root)
-        target_path_layout.addWidget(set_root_btn)
-        archives_layout.addLayout(target_path_layout)
-        
-        # Unified tree widget (archive contents + pending files)
-        self.add_unified_tree = DraggableTreeView()
-        self.add_unified_tree_model = ArchiveTreeModel(self)
-        self.add_unified_tree.setModel(self.add_unified_tree_model)
-        
-        # Set column widths - Name column wider to accommodate longer filenames
-        self.add_unified_tree.setColumnWidth(0, 500)
-        self.add_unified_tree.setColumnWidth(1, 100)
-        self.add_unified_tree.setColumnWidth(2, 100)
-        self.add_unified_tree.setColumnWidth(3, 200)
-        self.add_unified_tree.setMinimumHeight(300)
-        
-        # Connect signals
-        self.add_unified_tree.clicked.connect(self._on_unified_tree_item_clicked)
-        self.add_unified_tree.file_dropped_on_file.connect(self._on_file_dropped_on_file)
+        options_layout.addWidget(archive_card)
 
-        # Apply QSS styling
-        self._apply_tree_drag_style()
-        
-        archives_layout.addWidget(self.add_unified_tree, 1)
-        
-        # Operation buttons
-        buttons_layout = QHBoxLayout()
-        
-        insert_file_btn = PushButton("Insert Files")
-        insert_file_btn.setIcon(FluentIcon.DOCUMENT.qicon())
-        insert_file_btn.clicked.connect(self._insert_files_to_archive)
-        buttons_layout.addWidget(insert_file_btn)
-        
-        insert_folder_btn = PushButton("Insert Folder")
-        insert_folder_btn.setIcon(FluentIcon.FOLDER_ADD.qicon())
-        insert_folder_btn.clicked.connect(self._insert_folder_to_archive)
-        buttons_layout.addWidget(insert_folder_btn)
-        
-        buttons_layout.addSpacing(20)
-        
-        remove_btn = PushButton("Remove")
-        remove_btn.setIcon(FluentIcon.REMOVE.qicon())
-        remove_btn.clicked.connect(self._remove_pending_file)
-        buttons_layout.addWidget(remove_btn)
-        
-        clear_btn = PushButton("Clear New")
-        clear_btn.setIcon(FluentIcon.DELETE.qicon())
-        clear_btn.clicked.connect(self._clear_pending_files)
-        buttons_layout.addWidget(clear_btn)
-        
-        buttons_layout.addStretch()
-        
-        refresh_btn = PushButton("Refresh")
-        refresh_btn.setIcon(FluentIcon.SYNC.qicon())
-        refresh_btn.clicked.connect(self._refresh_unified_tree)
-        buttons_layout.addWidget(refresh_btn)
-        
-        archives_layout.addLayout(buttons_layout)
-        
-        # Legend using QFluentWidgets labels
-        legend_layout = QHBoxLayout()
-        
-        legend_existing = CaptionLabel("● Existing")
-        # Set color: black for light theme, white for dark theme
-        legend_existing.setTextColor(QColor(0, 0, 0), QColor(255, 255, 255))
-        legend_layout.addWidget(legend_existing)
-        
-        legend_new = CaptionLabel("● New (Pending)")
-        # Set green color for both themes
-        legend_new.setTextColor(QColor(40, 167, 69), QColor(40, 167, 69))
-        legend_layout.addWidget(legend_new)
-        
-        legend_layout.addStretch()
-        archives_layout.addLayout(legend_layout)
-        
-        self.add_stacked_widget.addWidget(archives_page)
-        
-        # --- Page 2: Options ---
-        options_page = QWidget()
-        options_page.setObjectName("optionsPage")
-        options_layout = QVBoxLayout(options_page)
-        options_layout.setSpacing(15)
-        options_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Options Card
-        options_card = CardWidget()
-        options_card.setBorderRadius(12)
-        options_card.setBorderRadius(12)
-        options_card.setBorderRadius(12)
-        options_card_layout = QVBoxLayout(options_card)
-        options_card_layout.setSpacing(15)
-        
+        # Format conversion
+        format_card = CardWidget()
+        format_card.setBorderRadius(12)
+        format_layout = QVBoxLayout(format_card)
+        format_layout.setSpacing(10)
+
+        format_header = QHBoxLayout()
+        format_icon = IconWidget(FluentIcon.SYNC)
+        format_icon.setFixedSize(20, 20)
+        format_header.addWidget(format_icon)
+        format_title = StrongBodyLabel("Convert Format")
+        format_header.addWidget(format_title)
+        format_header.addStretch()
+        format_layout.addLayout(format_header)
+
+        format_desc = CaptionLabel("Convert archive to a different format")
+        format_layout.addWidget(format_desc)
+
+        format_input_layout = QHBoxLayout()
+        self.format_combo = ComboBox()
+        conversion_formats = [fmt.upper() for fmt in SUPPORTED_ARCHIVE_FORMATS if fmt != 'tgz']
+        self.format_combo.addItems(conversion_formats)
+        format_input_layout.addWidget(self.format_combo, 1)
+
+        self.convert_button = PushButton("Convert")
+        self.convert_button.setIcon(FluentIcon.SYNC.qicon())
+        self.convert_button.clicked.connect(self.convert_archive_format)
+        format_input_layout.addWidget(self.convert_button)
+        format_layout.addLayout(format_input_layout)
+
+        options_layout.addWidget(format_card)
+
+        # === Advanced Options Card ===
+        advanced_card = CardWidget()
+        advanced_card.setBorderRadius(12)
+        advanced_layout = QVBoxLayout(advanced_card)
+        advanced_layout.setSpacing(10)
+
+        advanced_header = QHBoxLayout()
+        advanced_icon = IconWidget(FluentIcon.SETTING)
+        advanced_icon.setFixedSize(20, 20)
+        advanced_header.addWidget(advanced_icon)
+        advanced_title = StrongBodyLabel("Advanced Options")
+        advanced_header.addWidget(advanced_title)
+        advanced_header.addStretch()
+        advanced_layout.addLayout(advanced_header)
+
         # Compression level
-        compression_layout = QVBoxLayout()
-        compression_header = QHBoxLayout()
-        compression_icon = IconWidget(FluentIcon.ZIP_FOLDER)
-        compression_icon.setFixedSize(18, 18)
-        compression_header.addWidget(compression_icon)
-        compression_header.addWidget(BodyLabel("Compression Level"))
-        compression_header.addStretch()
-        compression_layout.addLayout(compression_header)
-        
-        self.add_compression_combo = ModelComboBox()
-        self.add_compression_combo.addItems([
-            "Store (no compression)",
+        compression_layout = QHBoxLayout()
+        compression_label = BodyLabel("Compression Level:")
+        compression_layout.addWidget(compression_label)
+        self.compression_level_combo = ComboBox()
+        self.compression_level_combo.addItems([
+            "Store (No compression)",
+            "Fastest",
             "Fast",
             "Normal",
-            "Best (maximum compression)"
+            "Maximum",
+            "Ultra"
         ])
-        self.add_compression_combo.setCurrentIndex(2)
-        setCustomStyleSheet(self.add_compression_combo, CON.qss_combo, CON.qss_combo)
-        compression_layout.addWidget(self.add_compression_combo)
-        options_card_layout.addLayout(compression_layout)
-        
-        # Overwrite strategy
-        overwrite_layout = QVBoxLayout()
-        overwrite_header = QHBoxLayout()
-        overwrite_icon = IconWidget(FluentIcon.FILTER)
-        overwrite_icon.setFixedSize(18, 18)
-        overwrite_header.addWidget(overwrite_icon)
-        overwrite_header.addWidget(BodyLabel("If file exists"))
-        overwrite_header.addStretch()
-        overwrite_layout.addLayout(overwrite_header)
-        
-        self.add_overwrite_combo = ModelComboBox()
-        self.add_overwrite_combo.addItems([
-            "Overwrite",
-            "Skip",
-            "Rename new file"
-        ])
-        setCustomStyleSheet(self.add_overwrite_combo, CON.qss_combo, CON.qss_combo)
-        overwrite_layout.addWidget(self.add_overwrite_combo)
-        options_card_layout.addLayout(overwrite_layout)
-        
-        # Path handling
-        path_layout = QVBoxLayout()
-        path_header = QHBoxLayout()
-        path_icon = IconWidget(FluentIcon.FOLDER)
-        path_icon.setFixedSize(18, 18)
-        path_header.addWidget(path_icon)
-        path_header.addWidget(BodyLabel("Path handling"))
-        path_header.addStretch()
-        path_layout.addLayout(path_header)
-        
-        self.add_path_combo = ModelComboBox()
-        self.add_path_combo.addItems([
-            "Preserve full path",
-            "Filename only",
-            "Custom prefix..."
-        ])
-        setCustomStyleSheet(self.add_path_combo, CON.qss_combo, CON.qss_combo)
-        path_layout.addWidget(self.add_path_combo)
-        
-        self.add_custom_prefix = LineEdit()
-        self.add_custom_prefix.setPlaceholderText("Enter custom path prefix...")
-        self.add_custom_prefix.setEnabled(False)
-        setCustomStyleSheet(self.add_custom_prefix, CON.qss_line, CON.qss_line)
-        path_layout.addWidget(self.add_custom_prefix)
-        options_card_layout.addLayout(path_layout)
-        
-        self.add_path_combo.currentIndexChanged.connect(
-            lambda idx: self.add_custom_prefix.setEnabled(idx == 2)
-        )
-        
-        options_layout.addWidget(options_card)
-        
-        # Progress Card
+        self.compression_level_combo.setCurrentIndex(3)  # Default: Normal
+        setCustomStyleSheet(self.compression_level_combo, CON.qss_combo, CON.qss_combo)
+        compression_layout.addWidget(self.compression_level_combo, 1)
+        advanced_layout.addLayout(compression_layout)
+
+        # Checkboxes
+        self.overwrite_existing_check = CheckBox("Overwrite existing files in archive")
+        self.overwrite_existing_check.setChecked(True)
+        advanced_layout.addWidget(self.overwrite_existing_check)
+
+        self.preserve_structure_check = CheckBox("Preserve directory structure")
+        self.preserve_structure_check.setChecked(True)
+        advanced_layout.addWidget(self.preserve_structure_check)
+
+        self.exclude_hidden_check = CheckBox("Exclude hidden files")
+        self.exclude_hidden_check.setChecked(False)
+        advanced_layout.addWidget(self.exclude_hidden_check)
+
+        self.exclude_ds_store_check = CheckBox("Exclude .DS_Store and __MACOSX")
+        self.exclude_ds_store_check.setChecked(True)
+        advanced_layout.addWidget(self.exclude_ds_store_check)
+
+        # Password protection
+        password_layout = QHBoxLayout()
+        password_icon = IconWidget(FluentIcon.FINGERPRINT)
+        password_icon.setFixedSize(18, 18)
+        password_layout.addWidget(password_icon)
+        password_label = BodyLabel("Password Protection:")
+        password_layout.addWidget(password_label)
+        password_layout.addStretch()
+        self.add_password_btn = PushButton("Set Password")
+        self.add_password_btn.setIcon(FluentIcon.FINGERPRINT.qicon())
+        self.add_password_btn.clicked.connect(self._set_archive_password)
+        password_layout.addWidget(self.add_password_btn)
+        advanced_layout.addLayout(password_layout)
+
+        self.add_password_status = CaptionLabel("No password set")
+        self.add_password_status.setStyleSheet("color: #888888;")
+        advanced_layout.addWidget(self.add_password_status)
+
+        options_layout.addWidget(advanced_card)
+
+        # Progress section
         progress_card = CardWidget()
         progress_card.setBorderRadius(12)
-        progress_card.setBorderRadius(12)
-        progress_card.setBorderRadius(12)
-        progress_card_layout = QVBoxLayout(progress_card)
-        progress_card_layout.setSpacing(10)
-        
-        progress_header = QHBoxLayout()
-        progress_icon = IconWidget(FluentIcon.INFO)
-        progress_icon.setFixedSize(18, 18)
-        progress_header.addWidget(progress_icon)
-        progress_header.addWidget(BodyLabel("Progress"))
-        progress_header.addStretch()
-        progress_card_layout.addLayout(progress_header)
-        
-        self.add_progress_label = BodyLabel("Ready")
-        progress_card_layout.addWidget(self.add_progress_label)
-        
+        progress_layout = QVBoxLayout(progress_card)
+        progress_layout.setSpacing(8)
+
+        self.add_progress_label = BodyLabel("")
+        progress_layout.addWidget(self.add_progress_label)
+
         self.add_progress = ProgressBar()
         self.add_progress.setRange(0, 100)
         self.add_progress.setValue(0)
-        progress_card_layout.addWidget(self.add_progress)
-        
+        progress_layout.addWidget(self.add_progress)
+
         options_layout.addWidget(progress_card)
-        
+        options_layout.addStretch(1)
+
+        self.add_stacked_widget.addWidget(options_page)
+
+        # === Archives Page (Tree View) ===
+        archives_page = QWidget()
+        archives_layout = QVBoxLayout(archives_page)
+        archives_layout.setSpacing(15)
+        archives_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Archive contents tree
+        tree_card = CardWidget()
+        tree_card.setBorderRadius(12)
+        tree_layout = QVBoxLayout(tree_card)
+        tree_layout.setSpacing(10)
+
+        tree_header = QHBoxLayout()
+        tree_icon = IconWidget(FluentIcon.FOLDER)
+        tree_icon.setFixedSize(20, 20)
+        tree_header.addWidget(tree_icon)
+        tree_title = StrongBodyLabel("Archive Contents")
+        tree_header.addWidget(tree_title)
+        tree_header.addStretch()
+        tree_layout.addLayout(tree_header)
+
+        # Tree widget for archive contents
+        self.archive_tree = DraggableTreeWidget()
+        self.archive_tree.setColumnCount(3)
+        self.archive_tree.setHeaderLabels(["Name", "Size", "Type"])
+        self.archive_tree.setColumnWidth(0, 400)
+        self.archive_tree.setColumnWidth(1, 100)
+        self.archive_tree.setColumnWidth(2, 100)
+        self.archive_tree.setAlternatingRowColors(False)
+        self.archive_tree.setAnimated(True)
+        self.archive_tree.setStyle(SlowTreeAnimationStyle())
+        self.archive_tree.setDragEnabled(True)
+        self.archive_tree.setAcceptDrops(True)
+        self.archive_tree.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        # Enable delete with keyboard
+        self.archive_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.archive_tree.file_dropped_on_file.connect(self._on_file_dropped_on_file)
+        self.archive_tree.file_dropped_on_folder.connect(self._on_file_dropped_on_folder)
+        self.archive_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.archive_tree.customContextMenuRequested.connect(self._show_archive_tree_context_menu)
+        tree_layout.addWidget(self.archive_tree, 1)
+
+        # Alias for backward compatibility
+        self.add_unified_tree = self.archive_tree
+
+        # For backward compatibility with existing code
+        self.add_unified_tree_model = None  # Will be set if needed
+
+        # Tree toolbar
+        tree_toolbar = QHBoxLayout()
+        tree_toolbar.setSpacing(10)
+
+        self.add_files_btn = PushButton("Add Files")
+        self.add_files_btn.setIcon(FluentIcon.ADD.qicon())
+        self.add_files_btn.clicked.connect(self.browse_add_file)
+        tree_toolbar.addWidget(self.add_files_btn)
+
+        self.delete_btn = PushButton("Delete")
+        self.delete_btn.setIcon(FluentIcon.DELETE.qicon())
+        self.delete_btn.clicked.connect(self.delete_selected_items)
+        self.delete_btn.setEnabled(False)
+        tree_toolbar.addWidget(self.delete_btn)
+
+        tree_toolbar.addStretch()
+
+        tree_layout.addLayout(tree_toolbar)
+
+        archives_layout.addWidget(tree_card, 1)
+
         # Action buttons
-        action_buttons = QHBoxLayout()
-        action_buttons.addStretch()
-        
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(15)
+        action_layout.addStretch()
+
+        self.add_saving_label = BodyLabel("")
+        self.add_saving_label.setStyleSheet("color: #888888; font-style: italic;")
+        action_layout.addWidget(self.add_saving_label)
+
         self.add_cancel_button = PushButton("Cancel")
         self.add_cancel_button.setIcon(FluentIcon.CANCEL.qicon())
         self.add_cancel_button.clicked.connect(self.cancel_add_to_archive)
         self.add_cancel_button.setEnabled(False)
-        action_buttons.addWidget(self.add_cancel_button)
-        
-        self.add_button = PrimaryPushButton("Add to Archive")
-        self.add_button.setIcon(FluentIcon.ADD.qicon())
-        self.add_button.clicked.connect(self.start_add_to_archive)
-        action_buttons.addWidget(self.add_button)
-        options_layout.addLayout(action_buttons)
-        
-        options_layout.addStretch()
-        self.add_stacked_widget.addWidget(options_page)
-        
-        main_layout.addWidget(pivot_container, 1)
-        
-        # Setup Pivot items (only 2 tabs)
-        self.add_pivot.addItem(
-            routeKey="archivesPage",
-            text="Archives",
-            onClick=lambda: self.add_stacked_widget.setCurrentWidget(archives_page),
-            icon=FluentIcon.FOLDER
-        )
-        self.add_pivot.addItem(
-            routeKey="optionsPage",
-            text="Options",
-            onClick=lambda: self.add_stacked_widget.setCurrentWidget(options_page),
-            icon=FluentIcon.SETTING
-        )
-        
-        # Connect stacked widget change to pivot
-        self.add_stacked_widget.currentChanged.connect(self._on_add_page_changed)
-        
-        # Set default page
-        self.add_stacked_widget.setCurrentIndex(0)
-        self.add_pivot.setCurrentItem("archivesPage")
-        
-        # Initialize pending file manager
-        self._pending_manager = PendingFileManager()
+        action_layout.addWidget(self.add_cancel_button)
+
+        archives_layout.addLayout(action_layout)
+
+        self.add_stacked_widget.addWidget(archives_page)
+
+        # Connect pivot to stacked widget
+        self.add_pivot.currentItemChanged.connect(lambda item: self.add_stacked_widget.setCurrentIndex(
+            0 if item == "options" else 1))
+
+        # Connect tree selection to delete button
+        self.archive_tree.selectionModel().selectionChanged.connect(
+            lambda: self.delete_btn.setEnabled(len(self.archive_tree.selectedItems()) > 0))
+
+        # Add pivot and stacked widget to tab
+        tab_sizer.addWidget(self.add_pivot)
+        tab_sizer.addWidget(self.add_stacked_widget, 1)
+
 
     def _on_add_page_changed(self, index):
         """Handle page change in Add to Archive tab"""
@@ -1536,12 +1649,10 @@ class ZipGUI(QMainWindow):
         
         # List Contents Tab with icon
         self.notebook.addTab(tab_panel, "List Contents")
-        self.notebook.setTabIcon(self.notebook.count() - 1, FluentIcon.VIEW.qicon())
+        self.notebook.setTabIcon(self.notebook.count() - 1, FluentIcon.MENU.qicon())
 
         # === Archive File Section ===
         archive_card = CardWidget()
-        archive_card.setBorderRadius(12)
-        archive_card.setBorderRadius(12)
         archive_card.setBorderRadius(12)
         archive_layout = QVBoxLayout(archive_card)
         archive_layout.setSpacing(10)
@@ -1574,8 +1685,6 @@ class ZipGUI(QMainWindow):
         # === Password Status Section ===
         status_card = CardWidget()
         status_card.setBorderRadius(12)
-        status_card.setBorderRadius(12)
-        status_card.setBorderRadius(12)
         status_layout = QHBoxLayout(status_card)
         status_layout.setSpacing(10)
         
@@ -1596,14 +1705,12 @@ class ZipGUI(QMainWindow):
         # === Archive Contents Section ===
         contents_card = CardWidget()
         contents_card.setBorderRadius(12)
-        contents_card.setBorderRadius(12)
-        contents_card.setBorderRadius(12)
         contents_layout = QVBoxLayout(contents_card)
         contents_layout.setSpacing(10)
         
         # Header with icon
         contents_header = QHBoxLayout()
-        contents_icon = IconWidget(FluentIcon.VIEW)
+        contents_icon = IconWidget(FluentIcon.MENU)
         contents_icon.setFixedSize(20, 20)
         contents_header.addWidget(contents_icon)
         contents_title = StrongBodyLabel("Archive Contents")
@@ -1611,16 +1718,19 @@ class ZipGUI(QMainWindow):
         contents_header.addStretch()
         contents_layout.addLayout(contents_header)
         
-        # Contents tree widget
+        # Contents tree
         self.contents_tree = TreeWidget()
-        self.contents_tree.setMinimumHeight(300)
+        self.contents_tree.setMinimumHeight(250)
+        self.contents_tree.setColumnCount(3)
         self.contents_tree.setHeaderLabels(["Name", "Size", "Modified"])
         self.contents_tree.setColumnWidth(0, 400)
         self.contents_tree.setColumnWidth(1, 100)
         self.contents_tree.setColumnWidth(2, 150)
-        self.contents_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.contents_tree.setAlternatingRowColors(False)
+        self.contents_tree.setAnimated(True)
+        self.contents_tree.setStyle(SlowTreeAnimationStyle())
         contents_layout.addWidget(self.contents_tree, 1)
-        
+
         tab_sizer.addWidget(contents_card, 2)
 
         # === Action Buttons ===
@@ -1635,7 +1745,7 @@ class ZipGUI(QMainWindow):
         action_layout.addWidget(self.list_cancel_button)
         
         self.list_button = PrimaryPushButton("List Contents")
-        self.list_button.setIcon(FluentIcon.VIEW.qicon())
+        self.list_button.setIcon(FluentIcon.MENU.qicon())
         self.list_button.clicked.connect(self.start_list_archive_contents)
         action_layout.addWidget(self.list_button)
         
@@ -1775,14 +1885,11 @@ class ZipGUI(QMainWindow):
         Returns:
             bool: True if user confirmed cancel, False otherwise
         """
-        reply = QMessageBox.question(
-            self,
-            "Cancel Operation",
-            f"Are you sure you want to cancel the current {operation_name} operation?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        return reply == QMessageBox.StandardButton.Yes
+        w = MessageBox("Cancel Operation",
+                       f"Are you sure you want to cancel the current {operation_name} operation?", self)
+        w.yesButton.setText(self.tr('Yes'))
+        w.cancelButton.setText(self.tr('No'))
+        return bool(w.exec())
     
     def log_cancel(self, operation_type):
         """Log a cancel operation
@@ -1828,7 +1935,7 @@ class ZipGUI(QMainWindow):
             for path in paths:
                 if path not in self.create_sources:
                     self.create_sources.append(path)
-                    self.sources_listbox.addItem(path)
+                    self._add_file_to_sources_tree(path, is_folder=False)
 
     def add_source_folder(self):
         dir_dialog = QFileDialog(self)
@@ -1838,13 +1945,21 @@ class ZipGUI(QMainWindow):
             folder_path = dir_dialog.selectedFiles()[0]
             if folder_path not in self.create_sources:
                 self.create_sources.append(folder_path)
-                self.sources_listbox.addItem(f"[FOLDER] {folder_path}")
+                self._add_file_to_sources_tree(folder_path, is_folder=True)
+
+    def _on_create_files_dropped(self, file_paths):
+        """Handle files dropped on create archive drop zone"""
+        for path in file_paths:
+            if path not in self.create_sources:
+                self.create_sources.append(path)
+                self._add_file_to_sources_tree(path, is_folder=False)
 
     def remove_source(self):
         """Remove selected source files"""
-        if not self.sources_listbox.selectedIndexes():
+        selected_items = self.sources_tree.selectedItems()
+        if not selected_items:
             self._show_popup(
-                target=self.sources_listbox,
+                target=self.sources_tree,
                 icon=InfoBarIcon.WARNING,
                 title='Warning',
                 content='Please select items to remove first',
@@ -1852,22 +1967,62 @@ class ZipGUI(QMainWindow):
             )
             return
 
-        # Get selected rows
-        selected_rows = sorted(set(index.row() for index in self.sources_listbox.selectedIndexes()), reverse=True)
-        
-        # Remove from back to front to avoid index changes
-        for row in selected_rows:
-            self.sources_listbox.takeItem(row)
-            if row < len(self.create_sources):
-                self.create_sources.pop(row)
+        removed_count = 0
+        for item in selected_items:
+            index = self.sources_tree.indexOfTopLevelItem(item)
+            if index >= 0:
+                path = item.text(1)
+                if path in self.create_sources:
+                    self.create_sources.remove(path)
+                self.sources_tree.takeTopLevelItem(index)
+                removed_count += 1
         
         # Show removal success message
         self._show_info_bar(
             icon=InfoBarIcon.SUCCESS,
             title='Removal Successful',
-            content=f'Removed {len(selected_rows)} items',
+            content=f'Removed {removed_count} items',
             duration=2000
         )
+
+    def _add_file_to_sources_tree(self, path, is_folder=False):
+        """Add a file or folder to the sources tree widget"""
+        item = QTreeWidgetItem()
+        name = os.path.basename(path)
+        item.setText(0, name)
+        item.setText(1, path)
+        item.setText(2, "Folder" if is_folder else (os.path.splitext(name)[1] or "File"))
+        item.setIcon(0, self._get_file_icon(name, is_dir=is_folder).qicon())
+        item.setToolTip(0, path)
+        # Store metadata for drag-drop operations
+        item.setData(0, Qt.ItemDataRole.UserRole + 1, path)  # Full path
+        item.setData(0, Qt.ItemDataRole.UserRole + 3, is_folder)  # Is directory flag
+        if is_folder:
+            self._populate_folder_tree(item, path)
+        self.sources_tree.addTopLevelItem(item)
+
+    def _populate_folder_tree(self, parent_item, folder_path):
+        """Recursively populate tree with folder contents"""
+        try:
+            for entry in sorted(os.listdir(folder_path)):
+                full_path = os.path.join(folder_path, entry)
+                child = QTreeWidgetItem()
+                child.setText(0, entry)
+                child.setText(1, full_path)
+                is_dir = os.path.isdir(full_path)
+                if is_dir:
+                    child.setText(2, "Folder")
+                    child.setIcon(0, FluentIcon.FOLDER.qicon())
+                    child.setData(0, Qt.ItemDataRole.UserRole + 3, True)
+                    self._populate_folder_tree(child, full_path)
+                else:
+                    child.setText(2, os.path.splitext(entry)[1] or "File")
+                    child.setIcon(0, self._get_file_icon(entry).qicon())
+                    child.setData(0, Qt.ItemDataRole.UserRole + 3, False)
+                child.setData(0, Qt.ItemDataRole.UserRole + 1, full_path)
+                parent_item.addChild(child)
+        except PermissionError:
+            pass
 
     def update_create_progress(self, message, progress):
         # Update both progress bar and label
@@ -1891,7 +2046,7 @@ class ZipGUI(QMainWindow):
         # Check if source files are added
         if not self.create_sources:
             self._show_popup(
-                target=self.sources_listbox,
+                target=self.sources_tree,
                 icon=InfoBarIcon.WARNING,
                 title='Warning',
                 content='Please add files or folders to compress',
@@ -2081,6 +2236,12 @@ class ZipGUI(QMainWindow):
             self.create_zip_worker.deleteLater()
             self.create_zip_worker = None
 
+
+    def _on_extract_file_dropped(self, file_paths):
+        """Handle archive file dropped on single extract drop zone"""
+        if file_paths:
+            self.extract_zip_path = file_paths[0]
+            self.extract_zip_text.setText(self.extract_zip_path)
 
     def browse_extract_archive(self):
         file_dialog = QFileDialog(self)
@@ -2757,6 +2918,11 @@ class ZipGUI(QMainWindow):
             self.extract_zip_worker = None
 
 
+    def _on_add_archive_dropped(self, file_paths):
+        """Handle archive file dropped on add-to-archive drop zone"""
+        if file_paths:
+            self.add_zip_text.setText(file_paths[0])
+
     def browse_add_archive(self):
         file_dialog = QFileDialog(self)
         wildcard_parts = [f"{fmt.upper()} files (*.{fmt})" for fmt in SUPPORTED_ARCHIVE_FORMATS]
@@ -2766,6 +2932,8 @@ class ZipGUI(QMainWindow):
         if file_dialog.exec():
             self.add_zip_path = file_dialog.selectedFiles()[0]
             self.add_zip_text.setText(self.add_zip_path)
+            # Load archive contents into tree
+            self._load_archive_to_tree()
             # Auto-detect password protection using the new PasswordDetector
             try:
                 from support.password_detector import password_detector
@@ -2780,12 +2948,96 @@ class ZipGUI(QMainWindow):
                 print(f"Warning: Could not detect password protection: {e}")
                 self.is_password_protected = False
 
+    def _load_archive_to_tree(self):
+        """Load archive contents into the tree view"""
+        if not self.add_zip_path or not os.path.exists(self.add_zip_path):
+            return
+
+        # Clear existing items
+        self.archive_tree.clear()
+
+        try:
+            from support.archive_manager import list_archive_contents
+            contents = list_archive_contents(self.add_zip_path)
+
+            if not contents:
+                # Show empty message
+                item = QTreeWidgetItem(self.archive_tree)
+                item.setText(0, "Archive is empty")
+                item.setIcon(0, FluentIcon.INFO.qicon())
+                return
+
+            # Build tree structure from contents
+            folder_nodes = {"": None}
+
+            # First pass: create all folders
+            for item_data in contents:
+                name = item_data.get("name", "")
+                is_dir = item_data.get("is_dir", False)
+
+                if not name:
+                    continue
+
+                # Split path
+                parts = name.rstrip("/").split("/")
+
+                # Create folder nodes
+                current_path = ""
+                for i, part in enumerate(parts[:-1] if not is_dir else parts):
+                    if current_path:
+                        current_path += "/" + part
+                    else:
+                        current_path = part
+
+                    if current_path not in folder_nodes:
+                        # Create folder item
+                        parent_node = folder_nodes.get(parts[0] if not current_path.split("/")[0] else current_path.rsplit("/", 1)[0], self.archive_tree)
+                        folder_item = QTreeWidgetItem(parent_node if parent_node else self.archive_tree)
+                        folder_item.setText(0, part)
+                        folder_item.setText(1, "<DIR>")
+                        folder_item.setText(2, "Folder")
+                        folder_item.setIcon(0, FluentIcon.FOLDER.qicon())
+                        folder_nodes[current_path] = folder_item
+
+            # Second pass: add files
+            for item_data in contents:
+                name = item_data.get("name", "")
+                size = item_data.get("size", 0)
+                is_dir = item_data.get("is_dir", False)
+
+                if not name or is_dir:
+                    continue
+
+                parts = name.rstrip("/").split("/")
+                file_name = parts[-1]
+                parent_path = "/".join(parts[:-1]) if len(parts) > 1 else ""
+
+                # Find parent
+                parent_item = folder_nodes.get(parent_path, self.archive_tree)
+
+                # Create file item
+                file_item = QTreeWidgetItem(parent_item)
+                file_item.setText(0, file_name)
+                file_item.setText(1, self._format_file_size(size))
+                file_item.setText(2, "File")
+                icon = self._get_file_icon(file_name, is_dir=False)
+                file_item.setIcon(0, icon.qicon())
+
+            # Expand all
+            self.archive_tree.expandAll()
+
+        except Exception as e:
+            print(f"Error loading archive: {e}")
+            item = QTreeWidgetItem(self.archive_tree)
+            item.setText(0, f"Error: {str(e)}")
+            item.setIcon(0, FluentIcon.INFO.qicon())
+
     # --- Add to Archive Helper Methods ---
     def _on_add_archive_path_changed(self, text):
         """Handle archive path change - refresh preview"""
         if text and os.path.exists(text):
             self.add_zip_path = text
-            self._refresh_unified_tree()
+            self._load_archive_to_tree()
 
     def _refresh_unified_tree(self):
         """Refresh unified tree with archive contents and pending files using Model/View"""
@@ -2981,41 +3233,105 @@ class ZipGUI(QMainWindow):
 
     def _on_file_dropped_on_file(self, source_name, target_name):
         """Handle when a file is dropped onto another file in the tree"""
-        print(f"[_on_file_dropped_on_file] Called with {source_name} -> {target_name}")
-
         # Show CreateFolderMessageBox dialog
         dialog = CreateFolderMessageBox(source_name, target_name, self)
 
-        result = dialog.exec()
-        print(f"[_on_file_dropped_on_file] Dialog result: {result}")
-
-        if result:
-            # User confirmed - create folder and move files
+        if dialog.exec() and dialog.folder_name:
             folder_name = dialog.folder_name
-            print(f"[_on_file_dropped_on_file] Folder name: {folder_name}")
-            if folder_name:
-                # Update the tree model directly without full refresh
-                self._create_folder_and_move_files(source_name, target_name, folder_name)
+            self._create_folder_and_move_files(source_name, target_name, folder_name)
+            self._show_info_bar(
+                title='Folder Created',
+                content=f'Created folder "{folder_name}" and moved files into it',
+                duration=2000
+            )
 
-                self._show_info_bar(
-                    title='Folder Created',
-                    content=f'Created folder "{folder_name}" and moved files into it',
-                    duration=2000
-                )
-        else:
-            print(f"[_on_file_dropped_on_file] Dialog cancelled or validation failed")
+    def _on_file_dropped_on_folder(self, file_name, folder_name):
+        """Handle when a file is dropped onto a folder in the tree"""
+        file_item = self._find_tree_item(file_name, is_dir=False)
+        folder_item = self._find_tree_item(folder_name, is_dir=True)
+
+        if file_item and folder_item:
+            old_parent = file_item.parent() or self.archive_tree.invisibleRootItem()
+            index = old_parent.indexOfChild(file_item)
+            taken = old_parent.takeChild(index)
+            folder_item.addChild(taken)
+            folder_full_path = self._get_item_archive_path(folder_item)
+            self._pending_manager.update_file_target_by_basename(
+                file_name, f"{folder_full_path}/{file_name}")
+            self.archive_tree.expandAll()
+
+    def _find_tree_item(self, name, is_dir=None, parent=None):
+        """Recursively find a tree item by name and optionally by type"""
+        if parent is None:
+            parent = self.archive_tree.invisibleRootItem()
+        for i in range(parent.childCount()):
+            child = parent.child(i)
+            if not child:
+                continue
+            item_is_dir = child.data(0, Qt.ItemDataRole.UserRole + 3) is True
+            if child.text(0) == name and (is_dir is None or item_is_dir == is_dir):
+                return child
+            result = self._find_tree_item(name, is_dir, child)
+            if result:
+                return result
+        return None
+
+    def _get_item_archive_path(self, item) -> str:
+        """Walk up the tree to build full archive path like 'outer/inner/name'"""
+        parts = []
+        current = item
+        while current is not None:
+            parts.append(current.text(0))
+            current = current.parent()
+        parts.reverse()
+        return "/".join(parts)
 
     def _create_folder_and_move_files(self, source_name, target_name, folder_name):
-        """Create a new folder and move files into it"""
-        # Update pending manager with new folder structure
-        self._pending_manager.update_file_target_by_basename(source_name, f"{folder_name}/{source_name}")
-        self._pending_manager.update_file_target_by_basename(target_name, f"{folder_name}/{target_name}")
+        """Create a new folder in the common parent and move files into it"""
+        # Find items in tree before any modifications
+        source_item = self._find_tree_item(source_name, is_dir=False)
+        target_item = self._find_tree_item(target_name, is_dir=False)
 
-        # Refresh tree view
-        self._refresh_tree_view()
+        if source_item and target_item:
+            # Capture parents before takeChild removes them
+            src_parent_item = source_item.parent()
+            tgt_parent_item = target_item.parent()
 
-        # Expand the new folder
-        self.add_unified_tree.expandAll()
+            # Determine the insertion parent and full folder path
+            if src_parent_item is not None and src_parent_item is tgt_parent_item:
+                insert_parent = src_parent_item
+                parent_path = self._get_item_archive_path(src_parent_item)
+                full_folder_path = f"{parent_path}/{folder_name}"
+            else:
+                insert_parent = self.archive_tree.invisibleRootItem()
+                full_folder_path = folder_name
+
+            # Update pending manager with correct full paths
+            self._pending_manager.update_file_target_by_basename(source_name, f"{full_folder_path}/{source_name}")
+            self._pending_manager.update_file_target_by_basename(target_name, f"{full_folder_path}/{target_name}")
+
+            # Take items from their current parents
+            src_root = src_parent_item or self.archive_tree.invisibleRootItem()
+            tgt_root = tgt_parent_item or self.archive_tree.invisibleRootItem()
+            taken_src = src_root.takeChild(src_root.indexOfChild(source_item))
+            taken_tgt = tgt_root.takeChild(tgt_root.indexOfChild(target_item))
+
+            # Create folder item
+            folder_item = QTreeWidgetItem()
+            folder_item.setText(0, folder_name)
+            folder_item.setText(1, "<DIR>")
+            folder_item.setText(2, "Folder")
+            folder_item.setIcon(0, FluentIcon.FOLDER.qicon())
+            folder_item.setData(0, Qt.ItemDataRole.UserRole + 3, True)
+
+            # Add files under folder
+            folder_item.addChild(taken_src)
+            folder_item.addChild(taken_tgt)
+
+            # Insert at the correct parent (common parent or root)
+            insert_parent.addChild(folder_item)
+
+        self.archive_tree.expandAll()
 
     def browse_add_folder(self):
         """Browse for folder to add to archive"""
@@ -3181,9 +3497,207 @@ class ZipGUI(QMainWindow):
             if selected_files:
                 # Store files as list
                 self.add_file_path = selected_files
-                
-                # Update the UI display
+
+                # Add files to archive tree with green color for new files
+                self._add_files_to_archive_tree(selected_files)
+
+                # Also update legacy display
                 self.update_add_files_list(selected_files)
+
+                # Auto-save
+                self._schedule_auto_save()
+
+    def _add_files_to_archive_tree(self, files):
+        """Add files to archive tree with green color for new files"""
+        # Switch to Archives page
+        if hasattr(self, 'add_pivot'):
+            self.add_pivot.setCurrentItem("archives")
+
+        for file_path in files:
+            if not os.path.exists(file_path):
+                continue
+
+            # Create item
+            item = QTreeWidgetItem(self.archive_tree)
+            item.setText(0, os.path.basename(file_path))
+
+            if os.path.isdir(file_path):
+                item.setText(1, "<DIR>")
+                item.setText(2, "Folder")
+                item.setIcon(0, FluentIcon.FOLDER.qicon())
+                # Add children for directories
+                self._add_directory_children(item, file_path)
+            else:
+                size = os.path.getsize(file_path)
+                item.setText(1, self._format_file_size(size))
+                item.setText(2, "File")
+                icon = self._get_file_icon(file_path, is_dir=False)
+                item.setIcon(0, icon.qicon())
+
+            # Set green color for new files
+            item.setForeground(0, QColor(0, 200, 0))  # Green text
+
+            # Expand if has children
+            if item.childCount() > 0:
+                item.setExpanded(True)
+
+        # Expand root
+        self.archive_tree.expandAll()
+
+    def _add_directory_children(self, parent_item, dir_path):
+        """Recursively add directory contents to tree"""
+        try:
+            for entry in os.scandir(dir_path):
+                child_item = QTreeWidgetItem(parent_item)
+                child_item.setText(0, entry.name)
+
+                if entry.is_dir():
+                    child_item.setText(1, "<DIR>")
+                    child_item.setText(2, "Folder")
+                    child_item.setIcon(0, FluentIcon.FOLDER.qicon())
+                    self._add_directory_children(child_item, entry.path)
+                else:
+                    size = entry.stat().st_size
+                    child_item.setText(1, self._format_file_size(size))
+                    child_item.setText(2, "File")
+                    icon = self._get_file_icon(entry.name, is_dir=False)
+                    child_item.setIcon(0, icon.qicon())
+
+                # Green for new files
+                child_item.setForeground(0, QColor(0, 200, 0))
+        except PermissionError:
+            pass
+
+    def delete_selected_items(self):
+        """Delete selected items from the archive tree"""
+        selected = self.archive_tree.selectedItems()
+        if not selected:
+            return
+
+        # Confirmation dialog
+        count = len(selected)
+        msg = f"Delete {count} item(s) from the archive?"
+        w = MessageBox("Confirm Delete", msg, self)
+        w.yesButton.setText(self.tr('Yes'))
+        w.cancelButton.setText(self.tr('No'))
+        if not w.exec():
+            return
+
+        # Collect items to delete (including children for folders)
+        items_to_delete = []
+        for item in selected:
+            items_to_delete.append(item)
+            # If it's a folder, add all children
+            for i in range(item.childCount()):
+                child = item.child(i)
+                items_to_delete.append(child)
+
+        # Remove items from tree
+        for item in items_to_delete:
+            parent = item.parent()
+            if parent:
+                parent.removeChild(item)
+            else:
+                index = self.archive_tree.indexOfTopLevelItem(item)
+                if index >= 0:
+                    self.archive_tree.takeTopLevelItem(index)
+
+        self.delete_btn.setEnabled(len(self.archive_tree.selectedItems()) > 0)
+
+    def convert_archive_format(self):
+        """Convert archive to a different format"""
+        if not self.add_zip_path:
+            self._show_popup(
+                target=self.add_zip_text,
+                icon=InfoBarIcon.ERROR,
+                title='Error',
+                content='Please select an archive file first',
+                duration=2000
+            )
+            return
+
+        target_format = self.format_combo.currentText().lower()
+        source_path = Path(self.add_zip_path)
+        source_format = source_path.suffix.lower().lstrip('.')
+
+        if source_format == target_format:
+            self._show_popup(
+                target=self.format_combo,
+                icon=InfoBarIcon.WARNING,
+                title='Warning',
+                content='Source and target formats are the same',
+                duration=2000
+            )
+            return
+
+        # Show save dialog for new file
+        save_path = str(source_path.with_suffix(f'.{target_format}'))
+        new_path, _ = QFileDialog.getSaveFileName(
+            self, "Save As", save_path,
+            f"{target_format.upper()} files (*.{target_format})"
+        )
+
+        if not new_path:
+            return
+
+        self._show_info_bar(title='Converting', content=f'Converting to {target_format.upper()}...', duration=1000)
+
+        # TODO: Implement actual conversion using archive_manager
+
+    def _set_archive_password(self):
+        """Set or clear password for archive editing operations"""
+        if hasattr(self, '_add_archive_password') and self._add_archive_password:
+            # Password already set - ask to clear or change
+            w = MessageBox("Password Protection",
+                          "A password is already set. What would you like to do?", self)
+            w.yesButton.setText(self.tr('Change Password'))
+            w.cancelButton.setText(self.tr('Remove Password'))
+            if w.exec():
+                # Change password
+                from password_dialog import get_password
+                password = get_password(self, "Set Password",
+                                       "Enter new password for archive operations:")
+                if password:
+                    self._add_archive_password = password
+                    self.add_password_status.setText("Password set")
+                    self.add_password_status.setStyleSheet("color: #27ae60; font-weight: bold;")
+                    self.add_password_btn.setText("Change Password")
+            else:
+                # Remove password
+                self._add_archive_password = None
+                self.add_password_status.setText("No password set")
+                self.add_password_status.setStyleSheet("color: #888888;")
+                self.add_password_btn.setText("Set Password")
+        else:
+            # No password set - prompt to set one
+            from password_dialog import get_password
+            password = get_password(self, "Set Password",
+                                   "Enter password for archive operations:")
+            if password:
+                self._add_archive_password = password
+                self.add_password_status.setText("Password set")
+                self.add_password_status.setStyleSheet("color: #27ae60; font-weight: bold;")
+                self.add_password_btn.setText("Change Password")
+                self._show_info_bar(
+                    title='Password Set',
+                    content='Password protection enabled for archive operations',
+                    duration=2000
+                )
+
+    def _schedule_auto_save(self):
+        """Schedule auto-save with debounce so rapid additions batch together"""
+        if not hasattr(self, '_auto_save_timer'):
+            self._auto_save_timer = QTimer()
+            self._auto_save_timer.setSingleShot(True)
+            self._auto_save_timer.timeout.connect(self._auto_save_if_ready)
+        self._auto_save_timer.start(600)
+
+    def _auto_save_if_ready(self):
+        """Auto-save if archive path is set, pending files exist, and no operation running"""
+        if (self.add_zip_path and os.path.exists(self.add_zip_path)
+                and not self._pending_manager.is_empty()
+                and not self.add_to_zip_worker_thread):
+            self.start_add_to_archive()
 
     def update_add_progress(self, message, progress):
         # Update both progress bar and label
@@ -3280,15 +3794,16 @@ class ZipGUI(QMainWindow):
         self.add_progress_label.setText("Starting archive file addition...")
         self.add_progress.setValue(0)
 
-        # Enable cancel button and disable add button during operation
-        self.add_button.setEnabled(False)
+        # Enable cancel button during operation
         self.add_cancel_button.setEnabled(True)
+        if hasattr(self, 'add_saving_label'):
+            self.add_saving_label.setText("Saving...")
 
-        # Get file paths from pending manager
+        # Get file paths from pending manager with target paths
         active_files = self._pending_manager.get_active_files()
-        file_paths = [f.path for f in active_files]
+        file_infos = [{'path': f.path, 'target': f.target} for f in active_files]
 
-        self.add_to_zip_worker = AddToZipWorker(self.add_zip_path, file_paths)
+        self.add_to_zip_worker = AddToZipWorker(self.add_zip_path, file_infos)
         self.add_to_zip_worker_thread = QThread()
         self.add_to_zip_worker.moveToThread(self.add_to_zip_worker_thread)
 
@@ -3310,6 +3825,9 @@ class ZipGUI(QMainWindow):
                 file_count = len(self.add_to_zip_worker.files_to_add)
         file_text = "files" if file_count > 1 else "file"
         
+        # Refresh tree to show newly added files
+        self._refresh_unified_tree()
+
         # Show success notification at the top
         self._show_info_bar(
             title='Success',
@@ -3357,8 +3875,9 @@ class ZipGUI(QMainWindow):
     def _force_cleanup_add_thread(self):
         """强制清理Add to Archive的线程，确保完全终止"""
         # Reset button states
-        self.add_button.setEnabled(True)
         self.add_cancel_button.setEnabled(False)
+        if hasattr(self, 'add_saving_label'):
+            self.add_saving_label.setText("")
         
         if self.add_to_zip_worker_thread:
             if self.add_to_zip_worker_thread.isRunning():
@@ -3427,6 +3946,118 @@ class ZipGUI(QMainWindow):
     def show_contents_context_menu(self, position):
         """Show right-click menu for archive contents list - functionality removed"""
         pass
+
+    def _show_archive_tree_context_menu(self, pos):
+        """Show RoundMenu context menu for the archive tree"""
+        from PySide6.QtGui import QCursor
+        menu = RoundMenu(parent=self)
+
+        menu.addAction(Action(FluentIcon.FOLDER_ADD, self.tr('New Folder'),
+                              triggered=self._context_add_folder))
+        menu.addAction(Action(FluentIcon.ADD, self.tr('Add File'),
+                              triggered=self._context_add_file))
+        menu.addSeparator()
+
+        has_selection = len(self.archive_tree.selectedItems()) > 0
+        remove_action = Action(FluentIcon.DELETE, self.tr('Remove Selected'),
+                               triggered=self.delete_selected_items)
+        remove_action.setEnabled(has_selection)
+        menu.addAction(remove_action)
+
+        menu.exec(QCursor.pos())
+
+    def _context_add_folder(self):
+        """Create a new folder at the selected location from context menu"""
+        dialog = NewFolderMessageBox(parent=self)
+        if not (dialog.exec() and dialog.folder_name):
+            return
+
+        folder_name = dialog.folder_name
+        selected = self.archive_tree.selectedItems()
+
+        folder_item = QTreeWidgetItem()
+        folder_item.setText(0, folder_name)
+        folder_item.setText(1, "<DIR>")
+        folder_item.setText(2, "Folder")
+        folder_item.setIcon(0, FluentIcon.FOLDER.qicon())
+        folder_item.setData(0, Qt.ItemDataRole.UserRole + 3, True)
+
+        if selected:
+            sel = selected[0]
+            is_dir = sel.data(0, Qt.ItemDataRole.UserRole + 3) is True
+            if is_dir:
+                sel.addChild(folder_item)
+                sel.setExpanded(True)
+            else:
+                parent = sel.parent() or self.archive_tree.invisibleRootItem()
+                parent.insertChild(parent.indexOfChild(sel) + 1, folder_item)
+        else:
+            self.archive_tree.invisibleRootItem().addChild(folder_item)
+
+        self.archive_tree.setCurrentItem(folder_item)
+        self._show_info_bar(
+            title='Folder Created',
+            content=f'Created folder "{folder_name}"',
+            duration=2000
+        )
+
+    def _context_add_file(self):
+        """Add files at the selected location from context menu"""
+        file_dialog = QFileDialog(self)
+        file_dialog.setNameFilter("All files (*.*)")
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        if not file_dialog.exec():
+            return
+
+        files = file_dialog.selectedFiles()
+        if not files:
+            return
+
+        # Determine target folder path from current selection
+        selected = self.archive_tree.selectedItems()
+        target_prefix = ""
+        insert_parent = self.archive_tree.invisibleRootItem()
+
+        if selected:
+            sel = selected[0]
+            is_dir = sel.data(0, Qt.ItemDataRole.UserRole + 3) is True
+            if is_dir:
+                target_prefix = self._get_item_archive_path(sel)
+                insert_parent = sel
+            else:
+                parent = sel.parent()
+                if parent:
+                    target_prefix = self._get_item_archive_path(parent)
+                    insert_parent = parent
+
+        if hasattr(self, 'add_pivot'):
+            self.add_pivot.setCurrentItem("archives")
+
+        for file_path in files:
+            if not os.path.exists(file_path):
+                continue
+            basename = os.path.basename(file_path)
+            target = f"{target_prefix}/{basename}" if target_prefix else basename
+            self._pending_manager.add_file(file_path, target)
+
+            item = QTreeWidgetItem()
+            item.setText(0, basename)
+            item.setText(1, self._format_file_size(os.path.getsize(file_path)))
+            item.setText(2, "File")
+            icon = self._get_file_icon(file_path, is_dir=False)
+            item.setIcon(0, icon.qicon())
+            item.setForeground(0, QColor(0, 200, 0))
+            insert_parent.addChild(item)
+
+        self.archive_tree.expandAll()
+        self._show_info_bar(
+            title='Files Added',
+            content=f'Added {len(files)} file(s) to archive',
+            duration=2000
+        )
+
+        # Auto-save
+        self._schedule_auto_save()
 
     def start_list_archive_contents(self):
         if not self.list_zip_path:
@@ -3588,7 +4219,7 @@ class ZipGUI(QMainWindow):
         except ImportError:
             # Fallback if password dialog is not available
             self._show_popup(
-                target=self.contents_listbox,
+                target=self.contents_tree,
                 icon=InfoBarIcon.WARNING,
                 title='Password Required',
                 content=f'This archive is password protected: {str(error_message)}',
@@ -3619,7 +4250,7 @@ class ZipGUI(QMainWindow):
                 
                 # Show error message
                 self._show_popup(
-                    target=self.contents_listbox,
+                    target=self.contents_tree,
                     icon=InfoBarIcon.ERROR,
                     title='Incorrect Password',
                     content='The password you entered is incorrect. Please try again.',
@@ -3796,6 +4427,8 @@ class ZipGUI(QMainWindow):
                     if archive_files:
                         self.add_zip_text.setText(archive_files[0])
                         current_archive = archive_files[0]
+                        # Load archive contents into tree
+                        self._load_archive_to_tree()
                     
                     # If we have files to add, update the UI
                     if files_to_add:
@@ -3841,10 +4474,7 @@ class ZipGUI(QMainWindow):
                             file_path = url.toLocalFile()
                             if os.path.exists(file_path) and file_path not in self.create_sources:
                                 self.create_sources.append(file_path)
-                                if os.path.isdir(file_path):
-                                    self.sources_listbox.addItem(f"[FOLDER] {file_path}")
-                                else:
-                                    self.sources_listbox.addItem(file_path)
+                                self._add_file_to_sources_tree(file_path, is_folder=os.path.isdir(file_path))
                         event.acceptProposedAction()
                         self._show_info_bar(
                             title='Files Added',

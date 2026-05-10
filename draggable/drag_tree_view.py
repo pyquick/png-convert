@@ -21,7 +21,7 @@ class DraggableTreeView(TreeView):
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
-        self.setDragDropMode(QTreeView.DragDropMode.InternalMove)
+        self.setDragDropMode(TreeView.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
 
         # Store dragged item info

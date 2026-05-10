@@ -145,7 +145,14 @@ class AddToZipWorker(QObject):
     def __init__(self, zip_path, file_paths):
         super().__init__()
         self.archive_path = zip_path
-        self.files_to_add = file_paths if isinstance(file_paths, list) else [file_paths]
+        # Support both list of paths and list of dicts with 'path' and 'target'
+        if isinstance(file_paths, list):
+            if file_paths and isinstance(file_paths[0], dict):
+                self.files_to_add = file_paths
+            else:
+                self.files_to_add = [{'path': p, 'target': ''} for p in file_paths]
+        else:
+            self.files_to_add = [{'path': file_paths, 'target': ''}]
         self.is_stopped = False
 
     def stop(self):
@@ -156,12 +163,21 @@ class AddToZipWorker(QObject):
     def run(self):
         try:
             total_files = len(self.files_to_add)
-            for i, file_path in enumerate(self.files_to_add):
+            for i, file_info in enumerate(self.files_to_add):
                 if self.is_stopped:
                     raise RuntimeError("Add to archive canceled by user")
 
-                self.progress_updated.emit(f"Adding file {i+1}/{total_files}: {os.path.basename(file_path)}", (i/total_files)*100)
-                add_to_archive(self.archive_path, file_path, None)
+                file_path = file_info['path']
+                target_path = file_info.get('target', '')
+
+                file_name = os.path.basename(file_path)
+                self.progress_updated.emit(f"Adding file {i+1}/{total_files}: {file_name}", (i/total_files)*100)
+
+                def progress_callback(msg, pct):
+                    if self.is_stopped:
+                        raise RuntimeError("Add to archive canceled by user")
+
+                add_to_archive(self.archive_path, file_path, progress_callback, target_path)
 
             if not self.is_stopped:
                 self.progress_updated.emit(f"Added {total_files} files to archive", 100)
@@ -400,9 +416,9 @@ class BatchDropZoneWidget(QFrame):
         self.icon_label.setFixedSize(32, 32)
         icon_layout.addWidget(self.icon_label)
 
-        self.text_label = QLabel(placeholder_text)
+        self.text_label = BodyLabel(placeholder_text)
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.text_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.text_label.setStyleSheet("color: #666; font-size: 12px; border: none; background: transparent;")
         self.text_label.setWordWrap(True)
 
         layout.addWidget(icon_container)
@@ -441,7 +457,7 @@ class BatchDropZoneWidget(QFrame):
                 background-color: #f0fff0;
             }
         """)
-        self.text_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.text_label.setStyleSheet("color: #666; font-size: 12px; border: none; background: transparent;")
 
     def _apply_dark_theme_style(self):
         self.setStyleSheet("""
@@ -459,7 +475,7 @@ class BatchDropZoneWidget(QFrame):
                 background-color: #1a2f1a;
             }
         """)
-        self.text_label.setStyleSheet("color: #aaa; font-size: 12px;")
+        self.text_label.setStyleSheet("color: #aaa; font-size: 12px; border: none; background: transparent;")
 
     def browse_files(self, event):
         file_dialog = QFileDialog()
