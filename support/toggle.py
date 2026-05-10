@@ -1,9 +1,9 @@
 from termios import INPCK
 from PySide6.QtWidgets import QWidget
 import darkdetect
-from qfluentwidgets import setTheme, setThemeColor, Theme
-from qframelesswindow import QMainWindow
-from qframelesswindow.utils import getSystemAccentColor
+from UIkit import setTheme, setThemeColor, Theme
+from UIWindow import QMainWindow
+from UIWindow.utils import getSystemAccentColor
 from darkdetect import isDark
 from PySide6.QtCore import QThread, QTimer
 import threading
@@ -14,15 +14,15 @@ import platform
 from typing import Optional, Tuple
 import gc
 
-# 创建一个锁来保护对CON对象的访问
+# Create a lock to protect access to CON object
 _con_lock = threading.Lock()
-from qfluentwidgets import *
+from UIkit import *
 
 class ThemeManager(QObject):
     def __init__(self):
         super().__init__()
         setTheme(Theme.AUTO)
-        # 定时器：每 1 秒检查一次
+        # Timer: check every 1 second
         
         setThemeColor(getSystemAccentColor(), save=False)
         self.current_theme = "dark"
@@ -34,7 +34,7 @@ class ThemeManager(QObject):
         self.last_color_hex = None
         
     def check_accent_color(self):
-        """检测系统主题色"""
+        """Detect system accent color"""
         color = getSystemAccentColor()
         color_hex = color.name()
 
@@ -49,9 +49,9 @@ class ThemeManager(QObject):
             }
             self.on_color_change(color_dict)
     def on_color_change(self, color_dict):
-        """当系统主题色变化时触发"""
+        """Triggered when system accent color changes"""
         setThemeColor(getSystemAccentColor(), save=False)
-        print("系统主题色变化:", color_dict)
+        print("System accent color changed:", color_dict)
     def start(self):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.check_accent_color)
@@ -62,5 +62,5 @@ class ThemeManager(QObject):
     
 
 
-# 创建全局主题管理器实例
+# Create global theme manager instance
 theme_manager = ThemeManager()

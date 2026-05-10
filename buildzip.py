@@ -15,3 +15,4 @@ def build_zip_intel():
         ["./dist/Converter.app"],
         "zip"
     )
+build_zip_intel()

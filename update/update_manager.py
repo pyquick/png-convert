@@ -10,7 +10,7 @@ class UpdateManager:
         self.current_version = self._parse_version(current_version)
 
     def _parse_version(self, version_str: str) -> tuple:
-        # Handles versions like 2.0.0 and pre-release like 2.0.0RC1, 2.0.0A1, 2.0.0D1, 2.0.0RC1
+        # Handles versions like 2.1.0A11 and pre-release like 2.1.0A11RC1, 2.1.0A11A1, 2.1.0A11D1, 2.1.0A11RC1
         parts = version_str.split('.')
         if len(parts) != 3:
             raise ValueError(f"Invalid version string: {version_str}")
@@ -19,7 +19,7 @@ class UpdateManager:
         minor = int(parts[1])
         
         patch_part = parts[2]
-        # 支持 Alpha(A), Deepdev(D), Beta(B), RC, Stable 格式
+        # Support Alpha(A), Deepdev(D), Beta(B), RC, Stable formats
         match = re.match(r'^(\d+)([a-zA-Z]*)(\d*)$', patch_part)
         
         if not match:
@@ -29,13 +29,13 @@ class UpdateManager:
         patch = int(num_str)
         
         if tag:
-            pre_release_tag = tag.upper()  # 转换为大写统一处理
+            pre_release_tag = tag.upper()  # Convert to uppercase for uniform handling
             pre_release_num = int(pre_num_str) if pre_num_str else 0
             
-            # 验证标签是否为支持的类型
+            # Verify if tag is a supported type
             supported_tags = ['A', 'D', 'B', 'RC']
             if pre_release_tag not in supported_tags:
-                # 如果是不支持的标签，当作普通预发布版本处理
+                # If unsupported tag, treat as regular pre-release version
                 pre_release_tag = pre_release_tag.lower()
             
             return (major, minor, patch, pre_release_tag, pre_release_num)
@@ -51,11 +51,11 @@ class UpdateManager:
             url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases"
             headers = CON.headers.copy()
             
-            # 读取PAT设置
+            # Read PAT settings
             settings = QSettings("pyquick", "converter")
             encrypted_pat = settings.value("general/github_pat", "", type=str)
             
-            # 如果有PAT，添加到headers
+            # If PAT exists, add to headers
             if encrypted_pat:
                 try:
                     import os, sys
@@ -85,14 +85,14 @@ class UpdateManager:
                 if is_prerelease and not include_prerelease:
                     continue
                 
-                # 如果指定了预发布版本类型，进行筛选
+                # If pre-release type is specified, filter accordingly
                 if include_prerelease and prerelease_type:
-                    # 解析发布版本的标签
+                    # Parse release version tag
                     try:
                         release_version_info = self._parse_version(tag_name)
                         _, _, _, release_tag, _ = release_version_info
                         
-                        # 建立预发布类型名称到标签字母的映射
+                        # Build mapping from pre-release type name to tag letter
                         prerelease_type_map = {
                             'beta': 'B',
                             'alpha': 'A', 
@@ -100,10 +100,10 @@ class UpdateManager:
                             'rc': 'RC'
                         }
                         
-                        # 将用户输入的预发布类型转换为对应的标签字母
+                        # Convert user input pre-release type to corresponding tag letter
                         expected_tag = prerelease_type_map.get(prerelease_type.lower(), prerelease_type.upper())
                         
-                        # 统一大小写比较，避免大小写不匹配问题
+                        # Case-insensitive comparison to avoid case mismatch issues
                         if release_tag.upper() != expected_tag.upper():
                             continue
                     except ValueError:
@@ -127,7 +127,7 @@ class UpdateManager:
                     "download_url": latest_suitable_release.get('html_url', ''),
                     "latest_version": latest_version_str,
                     "release_body": latest_suitable_release.get('body', ''),
-                    "version_info": latest_suitable_version  # 添加版本信息用于UI显示
+                    "version_info": latest_suitable_version  # Add version info for UI display
                 }
             elif latest_suitable_release and self._compare_versions(latest_suitable_version, self.current_version) <= 0:
                 return {
@@ -172,7 +172,7 @@ class UpdateManager:
         elif tag1 != '' and tag2 == '':
             return -1
         elif tag1 != tag2:
-            # 预发布版本优先级：Stable > RC > Beta > Deepdev > Alpha
+            # Pre-release version priority: Stable > RC > Beta > Deepdev > Alpha
             priority = {'RC': 4, 'B': 3, 'D': 2, 'A': 1}
             priority1 = priority.get(tag1, 0)
             priority2 = priority.get(tag2, 0)
@@ -180,7 +180,7 @@ class UpdateManager:
             if priority1 != priority2:
                 return 1 if priority1 > priority2 else -1
             else:
-                # 如果优先级相同，按字母顺序比较
+                # If same priority, compare alphabetically
                 return 1 if tag1 > tag2 else -1
         
         # Compare pre-release numbers
@@ -194,7 +194,7 @@ class UpdateManager:
         if tag == '':
             return f"{major}.{minor}.{patch}"
         else:
-            # 将标签转换回原始格式
+            # Convert tag back to original format
             tag_map = {'A': 'A', 'D': 'D', 'B': 'B', 'RC': 'RC'}
             display_tag = tag_map.get(tag, tag)
             
@@ -204,8 +204,8 @@ class UpdateManager:
             return f"{major}.{minor}.{patch}{display_tag}{pre_num}"
     
     def get_version_type_name(self, version_info: tuple | str) -> str:
-        """获取版本类型的友好名称"""
-        # 支持传入元组或单个标签
+        """Get friendly name for version type"""
+        # Support passing tuple or single tag
         if isinstance(version_info, tuple):
             _, _, _, tag, _ = version_info
         else:
@@ -221,10 +221,10 @@ class UpdateManager:
         return type_names.get(tag, f"Unknown ({tag})")
     
     def get_github_pat(self) -> str:
-        """获取GitHub PAT
+        """Get GitHub PAT
         
         Returns:
-            str: 解密后的PAT，如果没有设置则返回空字符串
+            str: Decrypted PAT, returns empty string if not set
         """
         try:
             settings = QSettings("pyquick", "converter")
@@ -235,5 +235,5 @@ class UpdateManager:
                 from utils.security import decrypt_pat
                 return decrypt_pat(encrypted_pat)
         except Exception as e:
-            print(f"获取PAT失败: {e}")
+            print(f"Failed to get PAT: {e}")
         return ""

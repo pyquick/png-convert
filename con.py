@@ -192,6 +192,7 @@ SegmentedToolItem[isSelected=true]:pressed {
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1"
         }
+        self.__version__="2.1.0A11"
 
 # Create a singleton instance
 CON = _CON()

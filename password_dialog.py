@@ -5,7 +5,7 @@ Password Input Dialog for Archive Manager
 
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt, Signal
-from qfluentwidgets import (
+from UIkit import (
     PasswordLineEdit, PrimaryPushButton, 
     MessageBoxBase, SubtitleLabel, BodyLabel, setCustomStyleSheet, InfoBar, InfoBarPosition
 )

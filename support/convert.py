@@ -45,27 +45,46 @@ def convert_image(input_path, output_path, output_format, min_size=16, max_size=
         quality (int): Image quality for lossy formats like JPG (default: 85, range: 1-100).
         progress_callback (function): Callback function to report progress.
         interface_settings (dict): Interface behavior settings for controlling conversion behavior.
+    
+    Returns:
+        tuple: (success, message) where success is a boolean and message is a string
     """
-    if output_format not in SUPPORTED_FORMATS:
-        raise ValueError(f"Unsupported output format: {output_format}. Supported formats are: {', '.join(SUPPORTED_FORMATS)}")
+    try:
+        if output_format not in SUPPORTED_FORMATS:
+            error_msg = f"Unsupported output format: {output_format}. Supported formats are: {', '.join(SUPPORTED_FORMATS)}"
+            if progress_callback:
+                progress_callback(error_msg, 0)
+            return False, error_msg
 
-    if output_format == "icns":
-        # Existing ICNS conversion logic
-        _create_icns_internal(input_path, output_path, min_size, max_size, progress_callback)
-    else:
-        # Generic image conversion using Pillow
-        try:
-            img = Image.open(input_path)
-            
-            # For JPG, ensure the image is in RGB mode as JPG does not support alpha channel
-            if output_format.lower() == "jpg":
-                if progress_callback:
-                    progress_callback(f"Processing image for JPG conversion...", 30)
+        if not os.path.exists(input_path):
+            error_msg = f"Input file not found: {input_path}"
+            if progress_callback:
+                progress_callback(error_msg, 0)
+            return False, error_msg
+
+        if output_format == "icns":
+            # Existing ICNS conversion logic
+            _create_icns_internal(input_path, output_path, min_size, max_size, progress_callback)
+        else:
+            # Generic image conversion using Pillow
+            img = None
+            try:
+                img = Image.open(input_path)
                 
-                # Handle various image modes that need conversion to RGB
-                if img.mode in ('RGBA', 'LA', 'P', 'CMYK', 'YCbCr', 'LAB', 'HSV', 'I', 'F'):
+                # Create output directory if it doesn't exist
+                output_dir = os.path.dirname(output_path)
+                if output_dir and not os.path.exists(output_dir):
+                    os.makedirs(output_dir, exist_ok=True)
+                
+                # For JPG, ensure the image is in RGB mode as JPG does not support alpha channel
+                if output_format.lower() == "jpg":
                     if progress_callback:
-                        progress_callback(f"Converting from {img.mode} mode to RGB...", 40)
+                        progress_callback(f"Processing image for JPG conversion...", 30)
+                    
+                    # Handle various image modes that need conversion to RGB
+                    if img.mode in ('RGBA', 'LA', 'P', 'CMYK', 'YCbCr', 'LAB', 'HSV', 'I', 'F'):
+                        if progress_callback:
+                            progress_callback(f"Converting from {img.mode} mode to RGB...", 40)
                     
                     # For modes with transparency, use white background
                     if img.mode in ('RGBA', 'LA', 'P'):
@@ -78,237 +97,299 @@ def convert_image(input_path, output_path, output_format, min_size=16, max_size=
                     else:
                         # For other modes, convert directly to RGB
                         img = img.convert('RGB')
+                    
+                    if progress_callback:
+                        progress_callback(f"Image converted to RGB mode", 50)
                 
-                if progress_callback:
-                    progress_callback(f"Image converted to RGB mode", 50)
-            
-            # Save with appropriate options for each format
-            save_options = {}
-            
-            if output_format.lower() == "jpg":
-                # Save JPG with specified quality and optimized settings
-                img.save(output_path, format='JPEG', quality=quality, optimize=True, progressive=True)
-            elif output_format.lower() == "webp":
-                # Save WebP with quality settings
-                save_options = {'quality': quality, 'method': 6}
-                img.save(output_path, format='WEBP', **save_options)
-            elif output_format.lower() == "tiff":
-                # Save TIFF with compression
-                save_options = {'compression': 'tiff_lzw'}
-                img.save(output_path, format='TIFF', **save_options)
-            elif output_format.lower() in ["svg", "pdf", "eps"]:
-                # Vector formats require special handling
-                # For now, convert raster image to these formats with basic settings
-                if progress_callback:
-                    progress_callback(f"Converting to vector format {output_format.upper()}...", 70)
-                img.save(output_path, format=output_format.upper())
-            elif output_format.lower() in ["heic", "heif"]:
-                # HEIC/HEIF format support
-                if progress_callback:
-                    progress_callback(f"Converting to {output_format.upper()} format...", 70)
-                # Try to save as HEIF if available, otherwise fallback
-                try:
-                    img.save(output_path, format='HEIF', quality=quality)
-                except Exception:
-                    # Fallback to PNG if HEIF not supported
+                # Save with appropriate options for each format
+                save_options = {}
+                
+                if output_format.lower() == "jpg":
+                    # Save JPG with specified quality and optimized settings
+                    img.save(output_path, format='JPEG', quality=quality, optimize=True, progressive=True)
+                elif output_format.lower() == "webp":
+                    # Save WebP with quality settings
+                    save_options = {'quality': quality, 'method': 6}
+                    img.save(output_path, format='WEBP', **save_options)
+                elif output_format.lower() == "tiff":
+                    # Save TIFF with compression
+                    save_options = {'compression': 'tiff_lzw'}
+                    img.save(output_path, format='TIFF', **save_options)
+                elif output_format.lower() in ["svg", "pdf", "eps"]:
+                    # Vector formats require special handling
+                    # For now, convert raster image to these formats with basic settings
                     if progress_callback:
-                        progress_callback(f"HEIF format not available, falling back to PNG", 80)
-                    img.save(output_path, format='PNG')
-            elif output_format.lower() in ["avif", "jxl"]:
-                # Modern formats that may require additional libraries
-                if progress_callback:
-                    progress_callback(f"Converting to {output_format.upper()} format...", 70)
-                try:
-                    img.save(output_path, format=output_format.upper(), quality=quality)
-                except Exception as format_error:
-                    # Fallback to WebP if modern format not supported
+                        progress_callback(f"Converting to vector format {output_format.upper()}...", 70)
+                    img.save(output_path, format=output_format.upper())
+                elif output_format.lower() in ["heic", "heif"]:
+                    # HEIC/HEIF format support
                     if progress_callback:
-                        progress_callback(f"{output_format.upper()} format not available, falling back to WebP", 80)
-                    img.save(output_path, format='WEBP', quality=quality)
-            elif output_format.lower() in ["dds", "exr"]:
-                # Specialized formats for gaming and HDR
-                if progress_callback:
-                    progress_callback(f"Converting to {output_format.upper()} format...", 70)
-                img.save(output_path, format=output_format.upper())
-            else:
-                # Default handling for other formats
-                img.save(output_path, format=output_format.upper())
+                        progress_callback(70, 100, f"Converting to {output_format.upper()} format...")
+                    # Try to save as HEIF if available, otherwise fallback
+                    try:
+                        img.save(output_path, format='HEIF', quality=quality)
+                    except Exception:
+                        # Fallback to PNG if HEIF not supported
+                        if progress_callback:
+                            progress_callback(f"HEIF format not available, falling back to PNG", 80)
+                        img.save(output_path, format='PNG')
+                elif output_format.lower() in ["avif", "jxl"]:
+                    # Modern formats that may require additional libraries
+                    if progress_callback:
+                        progress_callback(f"Converting to {output_format.upper()} format...", 70)
+                    try:
+                        img.save(output_path, format=output_format.upper(), quality=quality)
+                    except Exception as format_error:
+                        # Fallback to WebP if modern format not supported
+                        if progress_callback:
+                            progress_callback(f"{output_format.upper()} format not available, falling back to WebP", 80)
+                        img.save(output_path, format='WEBP', quality=quality)
+                elif output_format.lower() in ["dds", "exr"]:
+                    # Specialized formats for gaming and HDR
+                    if progress_callback:
+                        progress_callback(f"Converting to {output_format.upper()} format...", 70)
+                    img.save(output_path, format=output_format.upper())
+                else:
+                    # Default handling for other formats
+                    img.save(output_path, format=output_format.upper())
+            finally:
+                # Ensure image resources are released
+                if img is not None:
+                    img.close()
+                    del img
                 
             if progress_callback:
-                progress_callback(f"Successfully converted {input_path} to {output_path} ({output_format})", 100)
+                progress_callback(100, 100, f"Successfully converted {input_path} to {output_path} ({output_format})")
             else:
                 print(f"Successfully converted {input_path} to {output_path} ({output_format})")
-        except Exception as e:
-            error_msg = f"Error converting image to {output_format.upper()}: {e}"
-            if progress_callback:
-                progress_callback(error_msg, 0)
-            raise Exception(error_msg) from e
+        
+        return True, f"Successfully converted {os.path.basename(input_path)} to {output_format.upper()}"
+    except Exception as e:
+        error_msg = f"Error converting image {os.path.basename(input_path)}: {str(e)}"
+        if progress_callback:
+            progress_callback(error_msg, 0)
+        return False, error_msg
 
 def _create_icns_internal(png_path, icns_path, min_size=16, max_size=None, progress_callback=None):
     """
     Internal function to convert a PNG image to ICNS format using iconset method.
     This function contains the original logic of create_icns.
     """
-    # Open the source image
-    img = Image.open(png_path)
-    
-    # Automatically detect image size if not provided
-    if max_size is None:
-        max_size = min(img.width, img.height)
+    img = None
+    try:
+        # Open the source image
+        img = Image.open(png_path)
+        
+        # Automatically detect image size if not provided
+        if max_size is None:
+            max_size = min(img.width, img.height)
+            if progress_callback:
+                progress_callback(5, 100, f"Auto-detected maximum size: {max_size}")
+            else:
+                print(f"Auto-detected maximum size: {max_size}")
+        
         if progress_callback:
-            progress_callback(f"Auto-detected maximum size: {max_size}", 5)
+            progress_callback(10, 100, f"Source image size: {img.width}x{img.height}")
         else:
-            print(f"Auto-detected maximum size: {max_size}")
-    
-    if progress_callback:
-        progress_callback(f"Source image size: {img.width}x{img.height}", 10)
-    else:
-        print(f"Source image size: {img.width}x{img.height}")
-    
-    # Ensure the image is square
-    if img.width != img.height:
-        if progress_callback:
-            progress_callback("Warning: Image is not square. Cropping to square.", 15)
-        else:
-            print("Warning: Image is not square. Cropping to square.")
-        min_dimension = min(img.width, img.height)
-        left = (img.width - min_dimension) // 2
-        top = (img.height - min_dimension) // 2
-        right = left + min_dimension
-        bottom = top + min_dimension
-        img = img.crop((left, top, right, bottom))
-    
-    # Create a temporary directory for iconset
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        iconset_dir = os.path.join(tmp_dir, "iconset.iconset")
-        os.makedirs(iconset_dir)
+            print(f"Source image size: {img.width}x{img.height}")
         
-        # Define standard sizes for ICNS (based on Apple's specifications)
-        standard_sizes = [16, 32, 64, 128, 256, 512, 1024]
+        # Ensure the image is square
+        if img.width != img.height:
+            if progress_callback:
+                progress_callback(15, 100, "Warning: Image is not square. Cropping to square.")
+            else:
+                print("Warning: Image is not square. Cropping to square.")
+            min_dimension = min(img.width, img.height)
+            left = (img.width - min_dimension) // 2
+            top = (img.height - min_dimension) // 2
+            right = left + min_dimension
+            bottom = top + min_dimension
+            img = img.crop((left, top, right, bottom))
         
-        # Generate icons for standard sizes within our range
-        generated_sizes = []
-        total_steps = len(standard_sizes) * 2  # Approximate steps
-        current_step = 0
-        
-        for size in standard_sizes:
-            if min_size <= size <= max_size:
-                current_step += 1
-                if progress_callback:
-                    progress_callback(f"Generating size: {size}x{size}", 20 + int(60 * current_step / total_steps))
-                else:
-                    print(f"Generated size: {size}x{size}")
-                
-                # Create a copy of the image and resize it
-                resized_img = img.copy().resize((size, size), Image.Resampling.LANCZOS)
-                
-                # Save as PNG in iconset directory
-                filename = f"icon_{size}x{size}.png"
-                resized_img.save(os.path.join(iconset_dir, filename), "PNG")
-                generated_sizes.append(size)
-                
-                # For specific sizes, also generate retina versions
-                retina_pairs = {16: 32, 32: 64, 128: 256, 256: 512, 512: 1024}
-                if size in retina_pairs and retina_pairs[size] <= max_size:
+        # Create a temporary directory for iconset
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            iconset_dir = os.path.join(tmp_dir, "iconset.iconset")
+            os.makedirs(iconset_dir)
+            
+            # Define standard sizes for ICNS (based on Apple's specifications)
+            standard_sizes = [16, 32, 64, 128, 256, 512, 1024]
+            
+            # Generate icons for standard sizes within our range
+            generated_sizes = []
+            total_steps = len(standard_sizes) * 2  # Approximate steps
+            current_step = 0
+            
+            for size in standard_sizes:
+                if min_size <= size <= max_size:
                     current_step += 1
-                    retina_size = retina_pairs[size]
                     if progress_callback:
-                        progress_callback(f"Generating retina size: {retina_size}x{retina_size}", 20 + int(60 * current_step / total_steps))
+                        progress_callback(20 + int(60 * current_step / total_steps), 100, f"Generating size: {size}x{size}")
                     else:
-                        print(f"Generated retina size: {retina_size}x{retina_size}")
+                        print(f"Generated size: {size}x{size}")
                     
-                    retina_img = img.copy().resize((retina_size, retina_size), Image.Resampling.LANCZOS)
-                    retina_filename = f"icon_{size}x{size}@2x.png"
-                    retina_img.save(os.path.join(iconset_dir, retina_filename), "PNG")
-                    generated_sizes.append(retina_size)
-        
-        # Make sure we include max_size if it's not already included
-        if max_size not in generated_sizes:
-            if progress_callback:
-                progress_callback(f"Generating max size: {max_size}x{max_size}", 85)
-            else:
-                print(f"Generated max size: {max_size}x{max_size}")
+                    # Create a copy of the image and resize it
+                    resized_img = img.copy().resize((size, size), Image.Resampling.LANCZOS)
+                    
+                    # Save as PNG in iconset directory
+                    filename = f"icon_{size}x{size}.png"
+                    resized_img.save(os.path.join(iconset_dir, filename), "PNG")
+                    generated_sizes.append(size)
+                    
+                    # For specific sizes, also generate retina versions
+                    retina_pairs = {16: 32, 32: 64, 128: 256, 256: 512, 512: 1024}
+                    if size in retina_pairs and retina_pairs[size] <= max_size:
+                        current_step += 1
+                        retina_size = retina_pairs[size]
+                        if progress_callback:
+                            progress_callback(20 + int(60 * current_step / total_steps), 100, f"Generating retina size: {retina_size}x{retina_size}")
+                        else:
+                            print(f"Generated retina size: {retina_size}x{retina_size}")
+                        
+                        retina_img = img.copy().resize((retina_size, retina_size), Image.Resampling.LANCZOS)
+                        retina_filename = f"icon_{size}x{size}@2x.png"
+                        retina_img.save(os.path.join(iconset_dir, retina_filename), "PNG")
+                        generated_sizes.append(retina_size)
             
-            resized_img = img.copy().resize((max_size, max_size), Image.Resampling.LANCZOS)
-            filename = f"icon_{max_size}x{max_size}.png"
-            resized_img.save(os.path.join(iconset_dir, filename), "PNG")
-            generated_sizes.append(max_size)
-        
-        # Use iconutil to create ICNS file (macOS only)
-        if progress_callback:
-            progress_callback("Creating ICNS file with iconutil...", 90)
-        else:
-            print("Creating ICNS file with iconutil...")
+            # Make sure we include max_size if it's not already included
+            if max_size not in generated_sizes:
+                if progress_callback:
+                    progress_callback(85, 100, f"Generating max size: {max_size}x{max_size}")
+                else:
+                    print(f"Generated max size: {max_size}x{max_size}")
+                
+                resized_img = img.copy().resize((max_size, max_size), Image.Resampling.LANCZOS)
+                filename = f"icon_{max_size}x{max_size}.png"
+                resized_img.save(os.path.join(iconset_dir, filename), "PNG")
+                generated_sizes.append(max_size)
             
-        try:
-            subprocess.run(["iconutil", "-c", "icns", iconset_dir, "-o", icns_path], check=True)
+            # Use iconutil to create ICNS file (macOS only)
             if progress_callback:
-                progress_callback(f"Successfully converted {png_path} to {icns_path}", 100)
+                progress_callback(90, 100, "Creating ICNS file with iconutil...")
             else:
-                print(f"Successfully converted {png_path} to {icns_path}")
-                print(f"Generated sizes: {sorted(set(generated_sizes))}")
-        except subprocess.CalledProcessError as e:
-            error_detail = e.stderr.decode() if e.stderr else str(e)
-            error_msg = f"Error creating ICNS with iconutil: {error_detail}"
-            if progress_callback:
-                progress_callback(error_msg, 90)
-                progress_callback("Falling back to Pillow method...", 90)
-            else:
-                print(error_msg)
-                print("Falling back to Pillow method...")
-            # Fallback to Pillow method if iconutil fails
-            _fallback_method_internal(iconset_dir, icns_path, progress_callback)
-        except Exception as e:
-            error_msg = f"Unexpected error during iconutil conversion: {e}"
-            if progress_callback:
-                progress_callback(error_msg, 90)
-                progress_callback("Falling back to Pillow method...", 90)
-            else:
-                print(error_msg)
-                print("Falling back to Pillow method...")
-            _fallback_method_internal(iconset_dir, icns_path, progress_callback)
+                print("Creating ICNS file with iconutil...")
+                
+            try:
+                subprocess.run(["iconutil", "-c", "icns", iconset_dir, "-o", icns_path], check=True, capture_output=True, text=True)
+                if progress_callback:
+                    progress_callback(100, 100, f"Successfully converted {png_path} to {icns_path}")
+                else:
+                    print(f"Successfully converted {png_path} to {icns_path}")
+                    print(f"Generated sizes: {sorted(set(generated_sizes))}")
+            except subprocess.CalledProcessError as e:
+                error_detail = e.stderr if e.stderr else str(e)
+                error_msg = f"Error creating ICNS with iconutil: {error_detail}"
+                if progress_callback:
+                    progress_callback(90, 100, error_msg)
+                    progress_callback(90, 100, "Falling back to Pillow method...")
+                else:
+                    print(error_msg)
+                    print("Falling back to Pillow method...")
+                # Fallback to Pillow method if iconutil fails
+                _fallback_method_internal(iconset_dir, icns_path, progress_callback)
+            except Exception as e:
+                error_msg = f"Unexpected error during iconutil conversion: {e}"
+                if progress_callback:
+                    progress_callback(90, 100, error_msg)
+                    progress_callback(90, 100, "Falling back to Pillow method...")
+                else:
+                    print(error_msg)
+                    print("Falling back to Pillow method...")
+                _fallback_method_internal(iconset_dir, icns_path, progress_callback)
+    finally:
+        # Ensure image resources are released
+        if img is not None:
+            img.close()
+            del img
 
 def _fallback_method_internal(iconset_dir, icns_path, progress_callback=None):
     """
     Internal fallback method using Pillow if iconutil is not available
     """
-    icon_files = os.listdir(iconset_dir)
-    if not icon_files:
-        error_msg = "No icons generated, cannot create ICNS file"
+    try:
+        icon_files = os.listdir(iconset_dir)
+        if not icon_files:
+            error_msg = "No icons generated, cannot create ICNS file"
+            if progress_callback:
+                progress_callback(100, 100, error_msg)
+            else:
+                print(error_msg)
+            return
+            
+        # Find the largest icon file to use as main image
+        icon_paths = [os.path.join(iconset_dir, f) for f in icon_files]
+        
+        # Get sizes of all icons
+        icon_sizes = []
+        for icon_path in icon_paths:
+            img = None
+            try:
+                img = Image.open(icon_path)
+                icon_sizes.append((img.size[0], icon_path))
+            finally:
+                if img is not None:
+                    img.close()
+                    del img
+        
+        if not icon_sizes:
+            error_msg = "Could not read any icon files for fallback method"
+            if progress_callback:
+                progress_callback(100, 100, error_msg)
+            else:
+                print(error_msg)
+            return
+        
+        # Find the largest icon
+        largest_icon_path = max(icon_sizes, key=lambda x: x[0])[1]
+        
+        # Open the largest icon as main image
+        main_img = None
+        append_images = []
+        try:
+            main_img = Image.open(largest_icon_path)
+            
+            # Create list of additional images
+            for icon_path in icon_paths:
+                if icon_path != largest_icon_path:
+                    img = None
+                    try:
+                        img = Image.open(icon_path)
+                        append_images.append(img)
+                    except Exception as e:
+                        # Skip individual images that can't be opened
+                        print(f"Warning: Could not open icon {icon_path} for fallback: {e}")
+                        if img is not None:
+                            img.close()
+                            del img
+            
+            # Save as ICNS
+            if append_images:
+                main_img.save(
+                    icns_path,
+                    format='ICNS',
+                    append_images=append_images
+                )
+            else:
+                main_img.save(icns_path, format='ICNS')
+        finally:
+            # Ensure all image resources are released
+            if main_img is not None:
+                main_img.close()
+                del main_img
+            for img in append_images:
+                img.close()
+                del img
+        
+        success_msg = f"Successfully converted using fallback method to {icns_path}"
         if progress_callback:
-            progress_callback(error_msg, 100)
+            progress_callback(100, 100, success_msg)
+        else:
+            print(success_msg)
+    except Exception as e:
+        error_msg = f"Error in fallback method: {e}"
+        if progress_callback:
+            progress_callback(100, 100, error_msg)
         else:
             print(error_msg)
-        return
-        
-    # Find the largest icon file to use as main image
-    icon_paths = [os.path.join(iconset_dir, f) for f in icon_files]
-    largest_icon = max(icon_paths, key=lambda p: Image.open(p).size[0])
-    
-    # Open the largest icon as main image
-    main_img = Image.open(largest_icon)
-    
-    # Create list of additional images
-    append_images = []
-    for icon_path in icon_paths:
-        if icon_path != largest_icon:
-            append_images.append(Image.open(icon_path))
-    
-    # Save as ICNS
-    if append_images:
-        main_img.save(
-            icns_path,
-            format='ICNS',
-            append_images=append_images
-        )
-    else:
-        main_img.save(icns_path, format='ICNS')
-    
-    success_msg = f"Successfully converted using fallback method to {icns_path}"
-    if progress_callback:
-        progress_callback(success_msg, 100)
-    else:
-        print(success_msg)
 
 def main():
     parser = argparse.ArgumentParser(description="Convert images to various formats (ICNS, PNG, JPG, WebP)")

@@ -1,168 +1,221 @@
 import os
 import sys
-# import threading # PySide6 will use QThread
 import subprocess
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl, QObject
-from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
-                               QPushButton, QLabel, QLineEdit, QTextEdit, QProgressBar, 
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl, QObject, QSize, QSettings, QModelIndex, QMimeData
+from PySide6.QtGui import QStandardItemModel, QStandardItem
+from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QGridLayout,
+                               QPushButton, QLabel, QLineEdit, QTextEdit, QProgressBar,
                                QTabWidget, QWidget, QGroupBox, QListWidget, QListWidgetItem,
-                               QFileDialog, QCheckBox, QComboBox, QFrame, QMessageBox, QMenu)
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPalette, QPixmap
-from qfluentwidgets import *
+                               QFileDialog, QCheckBox, QComboBox, QFrame, QMenu,
+                               QTreeWidgetItem, QTreeWidget, QStackedWidget, QAbstractItemView,
+                               QProxyStyle, QStyle)
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPalette, QPixmap, QColor
+from UIkit import *
+
 
 from con import CON
 from support.toggle import ThemeManager
+from support.GUI.arc_support import (
+    BatchDropZoneWidget,
+    CreateZipWorker, ExtractZipWorker, AddToZipWorker,
+    ListZipContentsWorker, BatchExtractWorker
+)
+
 # Add the current directory to Python path to import convertzip module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from support.archive_manager import create_archive, extract_archive, add_to_archive, list_archive_contents, SUPPORTED_ARCHIVE_FORMATS
-from support.password_detector import PasswordDetector, detect_password_protection
+from support.archive_manager import create_archive, extract_archive, add_to_archive, list_archive_contents, SUPPORTED_ARCHIVE_FORMATS, batch_extract_archives
+from support.password_detector import PasswordDetector
+from support.pending_manager import PendingFileManager, PendingFile, FolderNode
+from support.archive_tree_model import ArchiveTreeModel
+from password_dialog import PasswordDialog, SimplePasswordDialog
 
 # Remove the problematic reconfigure calls
 # sys.stdout.reconfigure(encoding='utf-8')
 # sys.stderr.reconfigure(encoding='utf-8')
-# --- Worker Classes for QThread ---
-class CreateZipWorker(QObject):
-    finished = Signal()
-    progress_updated = Signal(str, int)
-    conversion_error = Signal(str)
+# --- Worker Classes are now imported from support.GUI.arc_support ---
 
-    def __init__(self, output_path, sources, archive_format, password=None):
-        super().__init__()
-        self.output_path = output_path
-        self.sources = sources
-        self.archive_format = archive_format
-        self.password = password
+class SlowTreeAnimationStyle(QProxyStyle):
+    def styleHint(self, hint, option=None, widget=None, returnData=None):
+        if hint == QStyle.StyleHint.SH_Widget_Animation_Duration:
+            return 400
+        return super().styleHint(hint, option, widget, returnData)
 
-    def run(self):
-        try:
-            # Validate input parameters
-            if not self.output_path:
-                raise ValueError("Output path is empty")
-            if not self.sources:
-                raise ValueError("No source files specified")
-            if not self.archive_format:
-                raise ValueError("Archive format is not specified")
-            
-            # Check if source files exist
-            for source in self.sources:
-                if not os.path.exists(source):
-                    raise ValueError(f"Source file does not exist: {source}")
-            
-            create_archive(self.output_path, self.sources, self.archive_format, self._update_progress_callback, self.password)
-            self.finished.emit()
-        except ValueError as e:
-            # Handle value errors
-            self.conversion_error.emit(f"Input error: {str(e)}")
-        except FileNotFoundError as e:
-            # Handle file not found errors
-            self.conversion_error.emit(f"File not found: {str(e)}")
-        except PermissionError as e:
-            # Handle permission errors
-            self.conversion_error.emit(f"Permission denied: {str(e)}")
-        except OSError as e:
-            # Handle OS errors
-            self.conversion_error.emit(f"System error: {str(e)}")
-        except NotImplementedError as e:
-            # Handle not implemented errors
-            self.conversion_error.emit(str(e))
-        except Exception as e:
-            # Handle all other exceptions
-            import traceback
-            error_msg = f"Unexpected error: {str(e)}\n{traceback.format_exc()}"
-            self.conversion_error.emit(error_msg)
 
-    def _update_progress_callback(self, message, percentage):
-        self.progress_updated.emit(message, percentage)
+class DraggableTreeWidget(TreeWidget):
+    """TreeWidget with drag-drop collision detection for files and folders"""
 
-class ExtractZipWorker(QObject):
-    finished = Signal()
-    progress_updated = Signal(str, int)
-    conversion_error = Signal(str)
-    password_required = Signal(str) # Emits error message when password is required
+    file_dropped_on_file = Signal(str, str)    # source_name, target_name
+    file_dropped_on_folder = Signal(str, str)  # file_name, folder_name
 
-    def __init__(self, zip_path, dest_path, password=None):
-        super().__init__()
-        self.archive_path = zip_path # Renamed for clarity with generic archive_manager
-        self.extract_to = dest_path
-        self.password = password
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dragged_index = None
 
-    def run(self):
-        try:
-            extract_archive(self.archive_path, self.extract_to, self._update_progress_callback, self.password)
-            self.finished.emit()
-        except RuntimeError as e:
-            # Handle password required case
-            if "password" in str(e).lower() or "encrypted" in str(e).lower():
-                self.password_required.emit(str(e))
-            else:
-                self.conversion_error.emit(str(e))
-        except Exception as e:
-            self.conversion_error.emit(str(e))
+    def startDrag(self, supportedActions):
+        indexes = self.selectedIndexes()
+        if indexes:
+            self._dragged_index = indexes[0]
+        super().startDrag(supportedActions)
 
-    def _update_progress_callback(self, message, percentage):
-        self.progress_updated.emit(message, percentage)
+    def dropEvent(self, event):
+        pos = event.position().toPoint()
+        index = self.indexAt(pos)
 
-class AddToZipWorker(QObject):
-    finished = Signal()
-    progress_updated = Signal(str, int)
-    conversion_error = Signal(str)
+        if not (index.isValid() and self._dragged_index and self._dragged_index.isValid()):
+            self._dragged_index = None
+            super().dropEvent(event)
+            return
 
-    def __init__(self, zip_path, file_paths):
-        super().__init__()
-        self.archive_path = zip_path # Renamed for clarity with generic archive_manager
-        self.files_to_add = file_paths if isinstance(file_paths, list) else [file_paths]
+        source_item = self.itemFromIndex(self._dragged_index)
+        target_item = self.itemFromIndex(index)
 
-    def run(self):
-        try:
-            # Handle multiple files
-            total_files = len(self.files_to_add)
-            for i, file_path in enumerate(self.files_to_add):
-                self._update_progress_callback(f"Adding file {i+1}/{total_files}: {os.path.basename(file_path)}", (i/total_files)*100)
-                add_to_archive(self.archive_path, file_path, None)  # No individual progress for each file
-            
-            self._update_progress_callback(f"Added {total_files} files to archive", 100)
-            self.finished.emit()
-        except NotImplementedError as e:
-            self.conversion_error.emit(str(e))
-        except Exception as e:
-            self.conversion_error.emit(str(e))
+        if not source_item or not target_item or source_item is target_item:
+            self._dragged_index = None
+            super().dropEvent(event)
+            return
 
-    def _update_progress_callback(self, message, percentage):
-        self.progress_updated.emit(message, percentage)
+        source_is_dir = source_item.data(0, Qt.ItemDataRole.UserRole + 3) is True
+        target_is_dir = target_item.data(0, Qt.ItemDataRole.UserRole + 3) is True
+        self._dragged_index = None
 
-class ListZipContentsWorker(QObject):
-    finished = Signal(list) # Emits list of contents
-    conversion_error = Signal(str)
-    password_required = Signal(str) # Emits error message when password is required
+        if source_is_dir and target_is_dir:
+            # folder + folder → ignore
+            event.ignore()
+        elif not source_is_dir and target_is_dir:
+            # file + folder → move file into folder
+            self.file_dropped_on_folder.emit(source_item.text(0), target_item.text(0))
+            event.ignore()
+        elif not source_is_dir and not target_is_dir:
+            # file + file → prompt to create folder
+            self.file_dropped_on_file.emit(source_item.text(0), target_item.text(0))
+            event.ignore()
+        else:
+            # folder + file or other → ignore
+            event.ignore()
 
-    def __init__(self, zip_path, password=None):
-        super().__init__()
-        self.archive_path = zip_path # Renamed for clarity with generic archive_manager
-        self.password = password
-        self.result = None  # Add result attribute to store results
 
-    def run(self):
-        try:
-            print(f"[DEBUG] ListZipContentsWorker: Starting to list contents of {self.archive_path}")
-            contents = list_archive_contents(self.archive_path, password=self.password)
-            print(f"[DEBUG] ListZipContentsWorker: Got {len(contents) if contents else 0} items")
-            self.result = contents  # 设置result属性
-            self.finished.emit(contents)
-        except RuntimeError as e:
-            # Handle password required case
-            print(f"[DEBUG] ListZipContentsWorker: RuntimeError - {str(e)}")
-            if "password" in str(e).lower() or "encrypted" in str(e).lower():
-                self.password_required.emit(str(e))
-            else:
-                self.conversion_error.emit(str(e))
-        except Exception as e:
-            print(f"[DEBUG] ListZipContentsWorker: Exception - {str(e)}")
-            import traceback
-            traceback.print_exc()
-            self.conversion_error.emit(str(e))
+class CreateFolderMessageBox(MessageBoxBase):
+    """Custom message box for creating new folder when dropping file on file"""
+
+    def __init__(self, source_name, target_name, parent=None):
+        super().__init__(parent)
+        self.folder_name = ""
+
+        self.titleLabel = SubtitleLabel(self.tr('Create New Folder'))
+        self.infoLabel = CaptionLabel(self.tr(f'Move "{source_name}" and "{target_name}" into new folder:'))
+        self.folderLineEdit = LineEdit()
+        self.folderLineEdit.setPlaceholderText(self.tr('Enter folder name'))
+        self.folderLineEdit.setClearButtonEnabled(True)
+
+        # Add widgets to view layout
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addWidget(self.infoLabel)
+        self.viewLayout.addWidget(self.folderLineEdit)
+
+        # Set minimum width
+        self.widget.setMinimumWidth(400)
+
+        # Update button text
+        self.yesButton.setText(self.tr('Create & Move'))
+        self.cancelButton.setText(self.tr('Cancel'))
+
+    def validate(self):
+        """Validate folder name"""
+        folder_name = self.folderLineEdit.text().strip()
+        if not folder_name:
+            return False
+        # Check for invalid characters
+        invalid_chars = '<>:"/\\|?*'
+        for char in invalid_chars:
+            if char in folder_name:
+                return False
+        self.folder_name = folder_name
+        return True
+
+
+class NewFolderMessageBox(MessageBoxBase):
+    """Simple message box for creating a new folder from context menu"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.folder_name = ""
+
+        self.titleLabel = SubtitleLabel(self.tr('New Folder'))
+        self.folderLineEdit = LineEdit()
+        self.folderLineEdit.setPlaceholderText(self.tr('Folder name'))
+        self.folderLineEdit.setClearButtonEnabled(True)
+
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addWidget(self.folderLineEdit)
+
+        self.widget.setMinimumWidth(350)
+        self.yesButton.setText(self.tr('Create'))
+        self.cancelButton.setText(self.tr('Cancel'))
+
+    def validate(self):
+        name = self.folderLineEdit.text().strip()
+        invalid_chars = '<>:"/\\|?*'
+        if not name or any(c in name for c in invalid_chars):
+            return False
+        self.folder_name = name
+        return True
+
+
+class ConflictResolveMessageBox(MessageBoxBase):
+    """Custom message box for resolving file conflicts"""
+
+    def __init__(self, file_name, existing_path, parent=None):
+        super().__init__(parent)
+        self.result_action = None
+
+        self.titleLabel = SubtitleLabel(self.tr('File Conflict'))
+        self.infoLabel = CaptionLabel(self.tr(f'File "{file_name}" conflicts with existing file at:\n{existing_path}'))
+
+        # Add widgets to view layout
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addWidget(self.infoLabel)
+
+        # Set minimum width
+        self.widget.setMinimumWidth(450)
+
+        # Update button text
+        self.yesButton.setText(self.tr('Overwrite'))
+        self.cancelButton.setText(self.tr('Skip'))
+
+    def get_result(self):
+        return self.result_action
+
+
+class ArchiveTreeItem:
+    """Tree item data class for archive contents and pending files"""
+    def __init__(self, name, size, item_type, path, is_dir=False, parent=None):
+        self.name = name
+        self.size = size
+        self.item_type = item_type  # 'existing' or 'pending'
+        self.path = path
+        self.is_dir = is_dir
+        self.parent = parent
+        self.children = []
+        self.row = 0
+        
+    def add_child(self, child):
+        child.parent = self
+        child.row = len(self.children)
+        self.children.append(child)
+        return child
+    
+    def get_full_path(self):
+        """Get full path for the item"""
+        if self.parent and self.parent.parent:  # Not root
+            parent_path = self.parent.get_full_path()
+            if parent_path:
+                return f"{parent_path}/{self.name}"
+            return self.name
+        return self.name
+
 
 
 class ZipGUI(QMainWindow):
@@ -219,33 +272,134 @@ class ZipGUI(QMainWindow):
 
     def __init__(self, initial_dark_mode=False):
         super().__init__()
-        self.setWindowTitle("Archive File Processing Tool")
-        self.setGeometry(200, 200, 800, 600)
-        self.setMinimumSize(600, 780)
+        self.setWindowTitle("Archive Converter")
+        self.setGeometry(200, 200, 1200, 900)
+        self.setMinimumSize(1200, 900)
         
         # Enable drag and drop for the main window
         self.setAcceptDrops(True)
         
         self.themeListener = SystemThemeListener(self)
         self.init_variables()
+        
+        
+        
+        
         self.setup_ui()
+
+        # Install event filter for Delete key on archive tree
+        if hasattr(self, 'archive_tree'):
+            self.archive_tree.installEventFilter(self)
+
         self._apply_theme(initial_dark_mode)
         self.center_window() # Center the window after UI setup
         self.qss_combo=CON.qss_combo
         setTheme(Theme.AUTO)
         self.themeListener.start()
         qconfig.themeChanged.connect(self._onThemeChanged)
+        
+        # Load settings
+        self.load_settings()
+    
+    def eventFilter(self, obj, event):
+        """Event filter for handling Delete key on tree widgets"""
+        if obj == self.archive_tree and event.type() == event.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Delete:
+                self.delete_selected_items()
+                return True
+        return super().eventFilter(obj, event)
+
     def closeEvent(self, event):
         """Window close event"""
+        # Stop all worker threads
+        self._stop_all_workers()
+
         # Stop listener thread
         if hasattr(self, 'themeListener'):
             self.themeListener.terminate()
             self.themeListener.deleteLater()
         super().closeEvent(event)
+
+    def _stop_all_workers(self):
+        """Stop all running worker threads"""
+        # Stop create archive worker
+        if hasattr(self, 'create_zip_worker') and self.create_zip_worker:
+            try:
+                self.create_zip_worker.stop()
+            except:
+                pass
+        if hasattr(self, 'create_zip_worker_thread') and self.create_zip_worker_thread:
+            try:
+                if self.create_zip_worker_thread.isRunning():
+                    self.create_zip_worker_thread.quit()
+                    self.create_zip_worker_thread.wait(1000)
+            except:
+                pass
+
+        # Stop extract archive worker
+        if hasattr(self, 'extract_zip_worker') and self.extract_zip_worker:
+            try:
+                self.extract_zip_worker.stop()
+            except:
+                pass
+        if hasattr(self, 'extract_zip_worker_thread') and self.extract_zip_worker_thread:
+            try:
+                if self.extract_zip_worker_thread.isRunning():
+                    self.extract_zip_worker_thread.quit()
+                    self.extract_zip_worker_thread.wait(1000)
+            except:
+                pass
+
+        # Stop add to archive worker
+        if hasattr(self, 'add_to_zip_worker') and self.add_to_zip_worker:
+            try:
+                self.add_to_zip_worker.stop()
+            except:
+                pass
+        if hasattr(self, 'add_to_zip_worker_thread') and self.add_to_zip_worker_thread:
+            try:
+                if self.add_to_zip_worker_thread.isRunning():
+                    self.add_to_zip_worker_thread.quit()
+                    self.add_to_zip_worker_thread.wait(1000)
+            except:
+                pass
+
+        # Stop list contents worker
+        if hasattr(self, 'list_zip_worker') and self.list_zip_worker:
+            try:
+                self.list_zip_worker.stop()
+            except:
+                pass
+        if hasattr(self, 'list_zip_worker_thread') and self.list_zip_worker_thread:
+            try:
+                if self.list_zip_worker_thread.isRunning():
+                    self.list_zip_worker_thread.quit()
+                    self.list_zip_worker_thread.wait(1000)
+            except:
+                pass
+
+        # Stop batch extract worker
+        if hasattr(self, 'batch_extract_worker') and self.batch_extract_worker:
+            try:
+                self.batch_extract_worker.stop()
+            except:
+                pass
+        if hasattr(self, 'batch_extract_worker_thread') and self.batch_extract_worker_thread:
+            try:
+                if self.batch_extract_worker_thread.isRunning():
+                    self.batch_extract_worker_thread.quit()
+                    self.batch_extract_worker_thread.wait(1000)
+            except:
+                pass
     def _onThemeChanged(self, theme: Theme):
         """Theme change handling"""
-        # Update interface to respond to theme changes
-        self.update()
+        import darkdetect
+        is_dark_mode = darkdetect.isDark()
+
+        # Reload QSS and update all themed widgets
+        self._apply_theme(is_dark_mode)
+
+        # Sync UIkit theme
         setTheme(Theme.AUTO)
     def init_variables(self):
         # Variables for Create ZIP tab
@@ -261,11 +415,22 @@ class ZipGUI(QMainWindow):
         self.extract_zip_worker_thread = None # Renamed to generic for clarity
         self.extract_zip_worker = None # Renamed to generic for clarity
         
+        # Variables for Batch Extract tab
+        self.batch_extract_files = []
+        self.batch_extract_dest_path = ""
+        self.batch_extract_worker = None
+        self.batch_extract_worker_thread = None
+        self.batch_extract_running = False
+        self.batch_extract_success_count = 0
+        self.batch_extract_failed_count = 0
+        self.batch_extract_password = None
+        
         # Variables for Add to ZIP tab
         self.add_zip_path = ""
         self.add_file_path = ""
         self.add_to_zip_worker_thread = None # Renamed to generic for clarity
         self.add_to_zip_worker = None # Renamed to generic for clarity
+        self._pending_manager = PendingFileManager()
         
         # Variables for List Contents tab
         self.list_zip_path = ""
@@ -275,12 +440,43 @@ class ZipGUI(QMainWindow):
         # Password protection status for archive contents
         self.is_password_protected = False
         self._current_password = None
+        self._password_dialog = None
 
+    def request_password(self, archive_path, format_name, is_protected):
+        """Request password from user for a protected archive"""
+        archive_name = os.path.basename(archive_path)
+        title = "Password Required"
+        
+        if is_protected:
+            content = f"The archive '{archive_name}' ({format_name.upper()}) is password protected.\nPlease enter the password:"
+        else:
+            content = f"Enter password for archive '{archive_name}' ({format_name.upper()}):"
+        
+        # Create and show password dialog
+        self._password_dialog = PasswordDialog(
+            parent=self,
+            title=title,
+            content=content,
+            error_message=""
+        )
+        
+        # Show dialog and get result
+        if self._password_dialog.exec() == PasswordDialog.DialogCode.Accepted:
+            password = self._password_dialog.get_password()
+            self._password_dialog = None
+            return password
+        else:
+            # User canceled
+            self._password_dialog = None
+            return None
+    
+    
+    
     def setup_ui(self):
         self.main_widget = QWidget(self)
         self.setCentralWidget(self.main_widget)
         self.main_layout = QVBoxLayout(self.main_widget)
-        
+
         # Initialize status bar
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")
@@ -307,9 +503,186 @@ class ZipGUI(QMainWindow):
             self.setStyleSheet(self.DARK_QSS)
         else:
             self.setStyleSheet(self.LIGHT_QSS)
+            
+        # Update drag and drop area theme
+        if hasattr(self, 'batch_drop_area'):
+            self.batch_drop_area.set_theme(is_dark_mode)
+        if hasattr(self, 'create_drop_area'):
+            self.create_drop_area.set_theme(is_dark_mode)
+        if hasattr(self, 'extract_drop_area'):
+            self.extract_drop_area.set_theme(is_dark_mode)
+        if hasattr(self, 'add_archive_drop_area'):
+            self.add_archive_drop_area.set_theme(is_dark_mode)
+
+    def _get_file_icon(self, filename, is_dir=False):
+        """Get FluentIcon for file based on extension or type"""
+        if is_dir:
+            return FluentIcon.FOLDER
+        
+        ext = os.path.splitext(filename.lower())[1]
+        
+        # Image files
+        if ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp', '.ico', '.icns', '.svg', '.heic', '.heif', '.avif', '.jxl']:
+            return FluentIcon.PHOTO
+        
+        # Video files
+        if ext in ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg']:
+            return FluentIcon.VIDEO
+        
+        # Audio files
+        if ext in ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma']:
+            return FluentIcon.MUSIC
+        
+        # Archive files
+        if ext in ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.lzma', '.cab', '.iso']:
+            return FluentIcon.ZIP_FOLDER
+        
+        # Code files
+        if ext in ['.py', '.js', '.html', '.css', '.java', '.cpp', '.c', '.h', '.hpp', '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.kt', '.ts']:
+            return FluentIcon.CODE
+        
+        # Document files
+        if ext in ['.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt']:
+            return FluentIcon.DOCUMENT
+        
+        # Spreadsheet files
+        if ext in ['.xls', '.xlsx', '.csv', '.ods']:
+            return FluentIcon.FONT
+        
+        # Presentation files
+        if ext in ['.ppt', '.pptx', '.odp']:
+            return FluentIcon.MEDIA
+        
+        # Executable files
+        if ext in ['.exe', '.msi', '.dmg', '.pkg', '.deb', '.rpm', '.app', '.bat', '.sh']:
+            return FluentIcon.PLAY
+        
+        # Default
+        return FluentIcon.DOCUMENT
+
+    def _format_file_size(self, size):
+        """Format file size to human readable string"""
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        elif size < 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size / (1024 * 1024 * 1024):.2f} GB"
+
+    def _build_tree_structure(self, contents):
+        """Build tree structure from archive contents"""
+        # Create root node
+        root = QTreeWidgetItem(self.contents_tree)
+        root.setText(0, "Archive Root")
+        root.setIcon(0, FluentIcon.ZIP_FOLDER.qicon())
+        root.setExpanded(True)
+        
+        # Dictionary to store folder nodes
+        folder_nodes = {"": root}
+        
+        # Sort contents by path
+        sorted_contents = sorted(contents, key=lambda x: x.get("name", ""))
+        
+        for item in sorted_contents:
+            if not isinstance(item, dict) or "name" not in item:
+                continue
+            
+            name = item["name"]
+            size = item.get("size", 0)
+            is_dir = item.get("is_dir", False)
+            modified = item.get("modified", "")
+            
+            # Split path into components
+            path_parts = name.split("/")
+            
+            # Get parent path and file name
+            if is_dir:
+                # For directories, the full path is the directory
+                parent_path = "/".join(path_parts[:-1]) if len(path_parts) > 1 else ""
+                current_name = path_parts[-1] if path_parts else name
+            else:
+                # For files
+                parent_path = "/".join(path_parts[:-1]) if len(path_parts) > 1 else ""
+                current_name = path_parts[-1] if path_parts else name
+            
+            # Get or create parent node
+            if parent_path not in folder_nodes:
+                # Create parent folder nodes recursively
+                self._create_parent_nodes(folder_nodes, parent_path, root)
+            
+            parent_node = folder_nodes.get(parent_path, root)
+            
+            # Create node
+            node = QTreeWidgetItem(parent_node)
+            node.setText(0, current_name)
+            
+            if is_dir:
+                node.setText(1, "<DIR>")
+                node.setIcon(0, FluentIcon.FOLDER.qicon())
+                # Store folder node for potential children
+                current_path = name if name.endswith("/") else name + "/"
+                folder_nodes[current_path.rstrip("/")] = node
+            else:
+                node.setText(1, self._format_file_size(size))
+                icon = self._get_file_icon(current_name, is_dir=False)
+                node.setIcon(0, icon.qicon())
+            
+            # Set modified time
+            if modified:
+                node.setText(2, str(modified))
+        
+        return root
+
+    def _create_parent_nodes(self, folder_nodes, parent_path, root):
+        """Create parent folder nodes recursively"""
+        if not parent_path or parent_path in folder_nodes:
+            return
+        
+        parts = parent_path.split("/")
+        current_path = ""
+        
+        for i, part in enumerate(parts):
+            if not part:
+                continue
+            
+            if current_path:
+                current_path += "/" + part
+            else:
+                current_path = part
+            
+            if current_path not in folder_nodes:
+                # Find parent node
+                if i == 0:
+                    parent_node = root
+                else:
+                    parent_node = folder_nodes.get("/".join(parts[:i]), root)
+                
+                # Create folder node
+                node = QTreeWidgetItem(parent_node)
+                node.setText(0, part)
+                node.setText(1, "<DIR>")
+                node.setIcon(0, FluentIcon.FOLDER.qicon())
+                folder_nodes[current_path] = node
 
     def _apply_system_theme(self, is_dark_mode):
         self._apply_theme(is_dark_mode)
+    
+    def load_settings(self):
+        """Load settings from QSettings"""
+        settings = QSettings("MyCompany", "ConverterApp")
+        
+        # Load task mode setting
+        self.task_mode = settings.value("task_mode", False, type=bool)
+    
+    def save_settings(self):
+        """Save settings to QSettings"""
+        settings = QSettings("MyCompany", "ConverterApp")
+        
+        # Task mode setting removed - now controlled globally
+        
+        settings.sync()
 
     def center_window(self):
         qr = self.frameGeometry()
@@ -332,250 +705,1054 @@ class ZipGUI(QMainWindow):
     def create_create_tab(self):
         tab_panel = QWidget()
         tab_sizer = QVBoxLayout(tab_panel)
-        self.notebook.addTab(tab_panel, "Create Archive") # Changed tab title
-
-        # Output file selection
-        output_box = QGroupBox("Output Archive File") # Changed group box title
-        output_box_sizer = QHBoxLayout(output_box)
+        tab_sizer.setSpacing(15)
+        tab_sizer.setContentsMargins(20, 20, 20, 20)
         
-        self.create_output_text = LineEdit()
-        setCustomStyleSheet(self.create_output_text, CON.qss_line, CON.qss_line)
-        # self.create_output_text.setReadOnly(True)  # Allow users to manually input path
-        output_box_sizer.addWidget(self.create_output_text, 1)
-        output_button = PushButton("Browse...")
-        output_button.clicked.connect(self.browse_create_output)
-        output_box_sizer.addWidget(output_button)
-        tab_sizer.addWidget(output_box)
+        # Create Archive Tab with icon
+        self.notebook.addTab(tab_panel, "Create Archive")
+        self.notebook.setTabIcon(self.notebook.count() - 1, FluentIcon.ADD.qicon())
 
-        # Archive Format Selection (new)
+        # === Output Section ===
+        output_card = CardWidget()
+        output_card.setBorderRadius(12)
+        output_card.setBorderRadius(12)
+        output_card.setBorderRadius(12)
+        output_layout = QVBoxLayout(output_card)
+        output_layout.setSpacing(10)
+        
+        # Header with icon
+        output_header = QHBoxLayout()
+        output_icon = IconWidget(FluentIcon.SAVE)
+        output_icon.setFixedSize(20, 20)
+        output_header.addWidget(output_icon)
+        output_title = StrongBodyLabel("Output Archive File")
+        output_header.addWidget(output_title)
+        output_header.addStretch()
+        output_layout.addLayout(output_header)
+        
+        # Output path input
+        output_input_layout = QHBoxLayout()
+        self.create_output_text = LineEdit()
+        self.create_output_text.setPlaceholderText("Select output archive file path...")
+        setCustomStyleSheet(self.create_output_text, CON.qss_line, CON.qss_line)
+        output_input_layout.addWidget(self.create_output_text, 1)
+        
+        output_button = PushButton("Browse")
+        output_button.setIcon(FluentIcon.FOLDER.qicon())
+        output_button.clicked.connect(self.browse_create_output)
+        output_input_layout.addWidget(output_button)
+        output_layout.addLayout(output_input_layout)
+        
+        # Archive Format Selection
         format_layout = QHBoxLayout()
-        format_label = QLabel("Archive Format:")
+        format_icon = IconWidget(FluentIcon.ZIP_FOLDER)
+        format_icon.setFixedSize(18, 18)
+        format_layout.addWidget(format_icon)
+        format_label = BodyLabel("Archive Format:")
+        format_layout.addWidget(format_label)
+        
         self.create_format_combo = ModelComboBox()
-        # Filter formats to only allow creation of supported types
         creation_formats = []
         for fmt in SUPPORTED_ARCHIVE_FORMATS:
             if fmt != 'tgz':
                 creation_formats.append(fmt.upper())
-        
         self.create_format_combo.addItems(creation_formats)
         self.create_format_combo.setCurrentText("ZIP")
         setCustomStyleSheet(self.create_format_combo, CON.qss_combo, CON.qss_combo)
-        format_layout.addWidget(format_label)
         format_layout.addWidget(self.create_format_combo, 1)
-        tab_sizer.addLayout(format_layout)
+        format_layout.addStretch()
+        output_layout.addLayout(format_layout)
+        
+        tab_sizer.addWidget(output_card)
 
-        # Source files list
-        sources_box = QGroupBox("Source Files/Directories")
-        sources_box_sizer = QVBoxLayout(sources_box)
+        # === Source Files Section ===
+        sources_card = CardWidget()
+        sources_card.setBorderRadius(12)
+        sources_card.setBorderRadius(12)
+        sources_card.setBorderRadius(12)
+        sources_layout = QVBoxLayout(sources_card)
+        sources_layout.setSpacing(10)
         
-        self.sources_listbox = ListWidget()
-        self.sources_listbox.setMinimumHeight(280)  # Set minimum height
-        sources_box_sizer.addWidget(self.sources_listbox, 1)  # Increase stretch weight
-        # Set right-click to immediately select
-        self.sources_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        # Context menu functionality removed
-        # self.sources_listbox.customContextMenuRequested.connect(self.show_sources_context_menu)
+        # Header with icon
+        sources_header = QHBoxLayout()
+        sources_icon = IconWidget(FluentIcon.FOLDER)
+        sources_icon.setFixedSize(20, 20)
+        sources_header.addWidget(sources_icon)
+        sources_title = StrongBodyLabel("Source Files / Directories")
+        sources_header.addWidget(sources_title)
+        sources_header.addStretch()
+        sources_layout.addLayout(sources_header)
+
+        # Drop zone for source files
+        self.create_drop_area = BatchDropZoneWidget(
+            placeholder_text="Drag files or folders here to add to archive",
+            parent=sources_card
+        )
+        self.create_drop_area.supported_formats = set()  # Accept all file types
+        self.create_drop_area._is_supported_archive_file = lambda path: True  # Accept everything
+        self.create_drop_area.files_dropped.connect(self._on_create_files_dropped)
+        sources_layout.addWidget(self.create_drop_area)
+
+        # File tree
+        self.sources_tree = TreeWidget()
+        self.sources_tree.setHeaderLabels(["Name", "Path", "Type"])
+        self.sources_tree.setMinimumHeight(200)
+        self.sources_tree.setColumnWidth(0, 250)
+        self.sources_tree.setColumnWidth(1, 350)
+        self.sources_tree.setColumnWidth(2, 80)
+        self.sources_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.sources_tree.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.sources_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        sources_layout.addWidget(self.sources_tree, 1)
         
-        # Buttons to add/remove sources
+        # Action buttons
         button_sizer = QHBoxLayout()
-        add_files_button = PushButton("Add Files...")
+        button_sizer.setSpacing(10)
+        
+        add_files_button = PushButton("Add Files")
+        add_files_button.setIcon(FluentIcon.DOCUMENT.qicon())
         add_files_button.clicked.connect(self.add_source_files)
         button_sizer.addWidget(add_files_button)
         
-        add_folder_button = PushButton("Add Folder...")
+        add_folder_button = PushButton("Add Folder")
+        add_folder_button.setIcon(FluentIcon.FOLDER_ADD.qicon())
         add_folder_button.clicked.connect(self.add_source_folder)
         button_sizer.addWidget(add_folder_button)
         
         remove_button = PushButton("Remove Selected")
+        remove_button.setIcon(FluentIcon.REMOVE.qicon())
         remove_button.clicked.connect(self.remove_source)
         button_sizer.addWidget(remove_button)
-        button_sizer.addStretch(1) # Push buttons to left
+        button_sizer.addStretch()
         
-        sources_box_sizer.addLayout(button_sizer)
-        tab_sizer.addWidget(sources_box, 1) # Give sources box more stretch
+        sources_layout.addLayout(button_sizer)
+        tab_sizer.addWidget(sources_card, 1)
 
-        # Progress bar
-        self.create_progress_label = QLabel("")
-        tab_sizer.addWidget(self.create_progress_label)
+        # === Progress Section ===
+        progress_card = CardWidget()
+        progress_card.setBorderRadius(12)
+        progress_card.setBorderRadius(12)
+        progress_card.setBorderRadius(12)
+        progress_layout = QVBoxLayout(progress_card)
+        progress_layout.setSpacing(8)
+        
+        self.create_progress_label = BodyLabel("")
+        progress_layout.addWidget(self.create_progress_label)
         
         self.create_progress = ProgressBar()
         self.create_progress.setRange(0, 100)
         self.create_progress.setValue(0)
-        tab_sizer.addWidget(self.create_progress)
-
-        # Create button
-        self.create_button = PrimaryPushButton("Create Archive") # Changed button text
-
-        self.create_button.clicked.connect(self.start_create_archive) # Changed signal
-        tab_sizer.addWidget(self.create_button, 0, Qt.AlignmentFlag.AlignCenter)
+        progress_layout.addWidget(self.create_progress)
         
-        tab_sizer.addStretch(1) # Push content to top
+        tab_sizer.addWidget(progress_card)
+
+        # === Action Buttons ===
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(15)
+        action_layout.addStretch()
+        
+        self.create_cancel_button = PushButton("Cancel")
+        self.create_cancel_button.setIcon(FluentIcon.CANCEL.qicon())
+        self.create_cancel_button.clicked.connect(self.cancel_create_archive)
+        self.create_cancel_button.setEnabled(False)
+        action_layout.addWidget(self.create_cancel_button)
+        
+        self.create_button = PrimaryPushButton("Create Archive")
+        self.create_button.setIcon(FluentIcon.ADD.qicon())
+        self.create_button.clicked.connect(self.start_create_archive)
+        action_layout.addWidget(self.create_button)
+        
+        tab_sizer.addLayout(action_layout)
+        tab_sizer.addStretch(1)
 
     def create_extract_tab(self):
         tab_panel = QWidget()
         tab_sizer = QVBoxLayout(tab_panel)
-        self.notebook.addTab(tab_panel, "Extract Archive") # Changed tab title
+        tab_sizer.setSpacing(15)
+        tab_sizer.setContentsMargins(20, 20, 20, 20)
+        
+        # Extract Archive Tab with icon
+        self.notebook.addTab(tab_panel, "Extract Archive")
+        self.notebook.setTabIcon(self.notebook.count() - 1, FluentIcon.ZIP_FOLDER.qicon())
 
-        # Archive file selection (changed title)
-        zip_box = QGroupBox("Archive File to Extract")
-        zip_box_sizer = QHBoxLayout(zip_box)
+        # Pivot selector for single/batch extract
+        self.extract_pivot = Pivot(tab_panel)
+        self.extract_pivot.addItem("single", "Single Extract")
+        self.extract_pivot.addItem("batch", "Batch Extract")
+        tab_sizer.addWidget(self.extract_pivot)
 
+        self.extract_stacked_widget = QStackedWidget(tab_panel)
+        tab_sizer.addWidget(self.extract_stacked_widget)
+
+        # Single Extract Page
+        self.create_single_extract_tab()
+
+        # Batch Extract Page
+        self.create_batch_extract_tab()
+
+        # Connect pivot to stacked widget
+        self.extract_pivot.currentItemChanged.connect(self._on_extract_pivot_changed)
+        self.extract_pivot.setCurrentItem("single")
+
+        tab_sizer.addStretch(1)
+
+    def create_single_extract_tab(self):
+        """Create single archive extraction tab"""
+        single_panel = QWidget()
+        single_sizer = QVBoxLayout(single_panel)
+        single_sizer.setSpacing(15)
+        single_sizer.setContentsMargins(15, 15, 15, 15)
+
+        # === Archive File Section ===
+        archive_card = CardWidget()
+        archive_card.setBorderRadius(12)
+        archive_card.setBorderRadius(12)
+        archive_card.setBorderRadius(12)
+        archive_layout = QVBoxLayout(archive_card)
+        archive_layout.setSpacing(10)
+        
+        # Header with icon
+        archive_header = QHBoxLayout()
+        archive_icon = IconWidget(FluentIcon.ZIP_FOLDER)
+        archive_icon.setFixedSize(20, 20)
+        archive_header.addWidget(archive_icon)
+        archive_title = StrongBodyLabel("Archive File to Extract")
+        archive_header.addWidget(archive_title)
+        archive_header.addStretch()
+        archive_layout.addLayout(archive_header)
+
+        # Drop zone for archive file
+        self.extract_drop_area = BatchDropZoneWidget(
+            placeholder_text="Drag archive file here to extract",
+            parent=archive_card
+        )
+        self.extract_drop_area.files_dropped.connect(self._on_extract_file_dropped)
+        archive_layout.addWidget(self.extract_drop_area)
+
+        # Archive path input
+        archive_input_layout = QHBoxLayout()
         self.extract_zip_text = LineEdit()
+        self.extract_zip_text.setPlaceholderText("Select archive file to extract...")
         setCustomStyleSheet(self.extract_zip_text, CON.qss_line, CON.qss_line)
-        # self.extract_zip_text.setReadOnly(True)  # Allow users to manually input path
-        zip_box_sizer.addWidget(self.extract_zip_text, 1)
-        zip_button = PushButton("Browse...")
+        archive_input_layout.addWidget(self.extract_zip_text, 1)
+        
+        zip_button = PushButton("Browse")
+        zip_button.setIcon(FluentIcon.FOLDER.qicon())
+        zip_button.clicked.connect(self.browse_extract_archive)
+        archive_input_layout.addWidget(zip_button)
+        archive_layout.addLayout(archive_input_layout)
+        
+        single_sizer.addWidget(archive_card)
 
-        zip_button.clicked.connect(self.browse_extract_archive) # Changed signal
-        zip_box_sizer.addWidget(zip_button)
-        tab_sizer.addWidget(zip_box)
-
-        # Destination folder selection
-        dest_box = QGroupBox("Destination Folder")
-        dest_box_sizer = QHBoxLayout(dest_box)
-
+        # === Destination Section ===
+        dest_card = CardWidget()
+        dest_card.setBorderRadius(12)
+        dest_card.setBorderRadius(12)
+        dest_card.setBorderRadius(12)
+        dest_layout = QVBoxLayout(dest_card)
+        dest_layout.setSpacing(10)
+        
+        # Header with icon
+        dest_header = QHBoxLayout()
+        dest_icon = IconWidget(FluentIcon.DOWNLOAD)
+        dest_icon.setFixedSize(20, 20)
+        dest_header.addWidget(dest_icon)
+        dest_title = StrongBodyLabel("Destination Folder")
+        dest_header.addWidget(dest_title)
+        dest_header.addStretch()
+        dest_layout.addLayout(dest_header)
+        
+        # Destination path input
+        dest_input_layout = QHBoxLayout()
         self.extract_dest_text = LineEdit()
+        self.extract_dest_text.setPlaceholderText("Select destination folder...")
         setCustomStyleSheet(self.extract_dest_text, CON.qss_line, CON.qss_line)
-        # self.extract_dest_text.setReadOnly(True)  # Allow users to manually input path
-        dest_box_sizer.addWidget(self.extract_dest_text, 1)
-        dest_button = PushButton("Browse...")
-
+        dest_input_layout.addWidget(self.extract_dest_text, 1)
+        
+        dest_button = PushButton("Browse")
+        dest_button.setIcon(FluentIcon.FOLDER.qicon())
         dest_button.clicked.connect(self.browse_extract_dest)
-        dest_box_sizer.addWidget(dest_button)
-        tab_sizer.addWidget(dest_box)
+        dest_input_layout.addWidget(dest_button)
+        dest_layout.addLayout(dest_input_layout)
+        
+        single_sizer.addWidget(dest_card)
 
-        # Password status indicator
-        password_status_box = QHBoxLayout()
-        self.extract_password_status_label = QLabel("Archive Status: Unknown")
+        # === Password Status Section ===
+        status_card = CardWidget()
+        status_card.setBorderRadius(12)
+        status_card.setBorderRadius(12)
+        status_card.setBorderRadius(12)
+        status_layout = QHBoxLayout(status_card)
+        status_layout.setSpacing(10)
+        
+        status_icon = IconWidget(FluentIcon.INFO)
+        status_icon.setFixedSize(18, 18)
+        status_layout.addWidget(status_icon)
+        
+        self.extract_password_status_label = BodyLabel("Archive Status: Unknown")
+        status_layout.addWidget(self.extract_password_status_label)
+        
         self.extract_password_status_icon = QLabel()
         self.extract_password_status_icon.setFixedSize(16, 16)
-        password_status_box.addWidget(self.extract_password_status_label)
-        password_status_box.addWidget(self.extract_password_status_icon)
-        password_status_box.addStretch()
-        tab_sizer.addLayout(password_status_box)
+        status_layout.addWidget(self.extract_password_status_icon)
+        status_layout.addStretch()
         
-        # Progress bar
-        self.extract_progress_label = QLabel("")
-        tab_sizer.addWidget(self.extract_progress_label)
+        single_sizer.addWidget(status_card)
+        
+        # === Progress Section ===
+        progress_card = CardWidget()
+        progress_card.setBorderRadius(12)
+        progress_card.setBorderRadius(12)
+        progress_card.setBorderRadius(12)
+        progress_layout = QVBoxLayout(progress_card)
+        progress_layout.setSpacing(8)
+        
+        self.extract_progress_label = BodyLabel("")
+        progress_layout.addWidget(self.extract_progress_label)
         
         self.extract_progress = ProgressBar()
         self.extract_progress.setRange(0, 100)
         self.extract_progress.setValue(0)
-        tab_sizer.addWidget(self.extract_progress)
-
-        # Extract button
-        self.extract_button = PrimaryPushButton("Extract Archive") # Changed button text
-
-        self.extract_button.clicked.connect(self.start_extract_archive) # Changed signal
-        tab_sizer.addWidget(self.extract_button, 0, Qt.AlignmentFlag.AlignCenter)
+        progress_layout.addWidget(self.extract_progress)
         
-        tab_sizer.addStretch(1) # Push content to top
+        single_sizer.addWidget(progress_card)
+
+        # === Action Buttons ===
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(15)
+        action_layout.addStretch()
+        
+        self.extract_cancel_button = PushButton("Cancel")
+        self.extract_cancel_button.setIcon(FluentIcon.CANCEL.qicon())
+        self.extract_cancel_button.clicked.connect(self.cancel_extract_archive)
+        self.extract_cancel_button.setEnabled(False)
+        action_layout.addWidget(self.extract_cancel_button)
+        
+        self.extract_button = PrimaryPushButton("Extract Archive")
+        self.extract_button.setIcon(FluentIcon.ZIP_FOLDER.qicon())
+        self.extract_button.clicked.connect(self.start_extract_archive)
+        action_layout.addWidget(self.extract_button)
+        
+        single_sizer.addLayout(action_layout)
+        single_sizer.addStretch(1)
+        
+        self.extract_stacked_widget.addWidget(single_panel)
+
+    def create_batch_extract_tab(self):
+        """Create batch archive extraction tab"""
+        batch_panel = QWidget()
+        main_layout = QHBoxLayout(batch_panel)
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Left side - File management and selection
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setSpacing(15)
+        
+        # === File Selection Card ===
+        file_card = CardWidget()
+        file_card.setBorderRadius(12)
+        file_card.setBorderRadius(12)
+        file_card.setBorderRadius(12)
+        file_layout = QVBoxLayout(file_card)
+        file_layout.setSpacing(10)
+        
+        # Header with icon
+        file_header = QHBoxLayout()
+        file_icon = IconWidget(FluentIcon.ZIP_FOLDER)
+        file_icon.setFixedSize(20, 20)
+        file_header.addWidget(file_icon)
+        file_title = StrongBodyLabel("Batch Archive Files")
+        file_header.addWidget(file_title)
+        file_header.addStretch()
+        file_layout.addLayout(file_header)
+        
+        # Drag and drop area
+        self.batch_drop_area = BatchDropZoneWidget("Drag archive files here\nor click to browse")
+        file_layout.addWidget(self.batch_drop_area)
+        
+        # File list
+        self.batch_files_listbox = ListWidget()
+        self.batch_files_listbox.setMinimumHeight(200)
+        self.batch_files_listbox.setMinimumWidth(300)
+        file_layout.addWidget(self.batch_files_listbox, 1)
+        
+        # File management buttons
+        file_buttons_layout = QHBoxLayout()
+        file_buttons_layout.setSpacing(10)
+        
+        self.batch_add_files_btn = PushButton("Add Files")
+        self.batch_add_files_btn.setIcon(FluentIcon.DOCUMENT.qicon())
+        self.batch_add_files_btn.clicked.connect(self.browse_batch_archive_files)
+        file_buttons_layout.addWidget(self.batch_add_files_btn)
+        
+        self.batch_remove_files_btn = PushButton("Remove Selected")
+        self.batch_remove_files_btn.setIcon(FluentIcon.REMOVE.qicon())
+        self.batch_remove_files_btn.clicked.connect(self.remove_selected_batch_files)
+        file_buttons_layout.addWidget(self.batch_remove_files_btn)
+        
+        self.batch_clear_files_btn = PushButton("Clear All")
+        self.batch_clear_files_btn.setIcon(FluentIcon.DELETE.qicon())
+        self.batch_clear_files_btn.clicked.connect(self.clear_batch_files)
+        file_buttons_layout.addWidget(self.batch_clear_files_btn)
+        
+        file_buttons_layout.addStretch()
+        file_layout.addLayout(file_buttons_layout)
+        
+        left_layout.addWidget(file_card, 1)
+        
+        # Right side - Configuration and progress
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setSpacing(15)
+        
+        # === Destination Card ===
+        dest_card = CardWidget()
+        dest_card.setBorderRadius(12)
+        dest_card.setBorderRadius(12)
+        dest_card.setBorderRadius(12)
+        dest_layout = QVBoxLayout(dest_card)
+        dest_layout.setSpacing(10)
+        
+        # Header with icon
+        dest_header = QHBoxLayout()
+        dest_icon = IconWidget(FluentIcon.DOWNLOAD)
+        dest_icon.setFixedSize(20, 20)
+        dest_header.addWidget(dest_icon)
+        dest_title = StrongBodyLabel("Destination Folder")
+        dest_header.addWidget(dest_title)
+        dest_header.addStretch()
+        dest_layout.addLayout(dest_header)
+        
+        # Destination path input
+        dest_input_layout = QHBoxLayout()
+        self.batch_extract_dest_text = LineEdit()
+        self.batch_extract_dest_text.setPlaceholderText("Select destination folder...")
+        setCustomStyleSheet(self.batch_extract_dest_text, CON.qss_line, CON.qss_line)
+        dest_input_layout.addWidget(self.batch_extract_dest_text, 1)
+        
+        batch_dest_button = PushButton("Browse")
+        batch_dest_button.setIcon(FluentIcon.FOLDER.qicon())
+        batch_dest_button.clicked.connect(self.browse_batch_extract_dest)
+        dest_input_layout.addWidget(batch_dest_button)
+        dest_layout.addLayout(dest_input_layout)
+        
+        right_layout.addWidget(dest_card)
+        
+        # === Options Card ===
+        options_card = CardWidget()
+        options_card.setBorderRadius(12)
+        options_card.setBorderRadius(12)
+        options_card.setBorderRadius(12)
+        options_layout = QVBoxLayout(options_card)
+        options_layout.setSpacing(10)
+        
+        # Header with icon
+        options_header = QHBoxLayout()
+        options_icon = IconWidget(FluentIcon.SETTING)
+        options_icon.setFixedSize(20, 20)
+        options_header.addWidget(options_icon)
+        options_title = StrongBodyLabel("Extract Options")
+        options_header.addWidget(options_title)
+        options_header.addStretch()
+        options_layout.addLayout(options_header)
+        
+        # Options
+        self.batch_create_subfolders_check = CheckBox("Create subfolder for each archive")
+        self.batch_create_subfolders_check.setChecked(True)
+        options_layout.addWidget(self.batch_create_subfolders_check)
+        
+        self.batch_overwrite_files_check = CheckBox("Overwrite existing files")
+        self.batch_overwrite_files_check.setChecked(False)
+        options_layout.addWidget(self.batch_overwrite_files_check)
+        
+        self.batch_skip_existing_files_check = CheckBox("Skip existing files")
+        self.batch_skip_existing_files_check.setChecked(False)
+        options_layout.addWidget(self.batch_skip_existing_files_check)
+        
+        # Overwrite strategy
+        strategy_layout = QHBoxLayout()
+        strategy_icon = IconWidget(FluentIcon.FILTER)
+        strategy_icon.setFixedSize(16, 16)
+        strategy_layout.addWidget(strategy_icon)
+        strategy_layout.addWidget(BodyLabel("Overwrite Strategy:"))
+        
+        self.overwrite_strategy_combo = ModelComboBox()
+        self.overwrite_strategy_combo.addItems([
+            "Overwrite all",
+            "Skip existing",
+            "Rename new",
+            "Overwrite if newer"
+        ])
+        setCustomStyleSheet(self.overwrite_strategy_combo, CON.qss_combo_2, CON.qss_combo_2)
+        strategy_layout.addWidget(self.overwrite_strategy_combo, 1)
+        options_layout.addLayout(strategy_layout)
+        
+        right_layout.addWidget(options_card)
+        
+        # === Progress Card ===
+        progress_card = CardWidget()
+        progress_card.setBorderRadius(12)
+        progress_card.setBorderRadius(12)
+        progress_card.setBorderRadius(12)
+        progress_layout = QVBoxLayout(progress_card)
+        progress_layout.setSpacing(10)
+        
+        # Header with icon
+        progress_header = QHBoxLayout()
+        progress_icon = IconWidget(FluentIcon.INFO)
+        progress_icon.setFixedSize(20, 20)
+        progress_header.addWidget(progress_icon)
+        progress_title = StrongBodyLabel("Progress & Statistics")
+        progress_header.addWidget(progress_title)
+        progress_header.addStretch()
+        progress_layout.addLayout(progress_header)
+        
+        # Progress label
+        self.batch_progress_label = BodyLabel("Ready to extract archives")
+        self.batch_progress_label.setWordWrap(True)
+        progress_layout.addWidget(self.batch_progress_label)
+        
+        # Progress bar
+        self.batch_progress = ProgressBar()
+        self.batch_progress.setRange(0, 100)
+        self.batch_progress.setValue(0)
+        progress_layout.addWidget(self.batch_progress)
+        
+        # Statistics in a grid layout
+        stats_widget = QWidget()
+        stats_layout = QGridLayout(stats_widget)
+        stats_layout.setSpacing(10)
+        
+        self.batch_total_count_label = BodyLabel("Total Archives:")
+        self.batch_total_count_value = BodyLabel("0")
+        stats_layout.addWidget(self.batch_total_count_label, 0, 0)
+        stats_layout.addWidget(self.batch_total_count_value, 0, 1)
+        
+        self.batch_success_count_label = BodyLabel("Successful:")
+        self.batch_success_count_value = BodyLabel("0")
+        stats_layout.addWidget(self.batch_success_count_label, 1, 0)
+        stats_layout.addWidget(self.batch_success_count_value, 1, 1)
+        
+        self.batch_failed_count_label = BodyLabel("Failed:")
+        self.batch_failed_count_value = BodyLabel("0")
+        stats_layout.addWidget(self.batch_failed_count_label, 2, 0)
+        stats_layout.addWidget(self.batch_failed_count_value, 2, 1)
+        
+        progress_layout.addWidget(stats_widget)
+        right_layout.addWidget(progress_card)
+        
+        # === Control Buttons ===
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(15)
+        button_layout.addStretch()
+        
+        self.batch_stop_btn = PushButton("Stop")
+        self.batch_stop_btn.setIcon(FluentIcon.CANCEL.qicon())
+        self.batch_stop_btn.clicked.connect(self.stop_batch_extract)
+        self.batch_stop_btn.setEnabled(False)
+        button_layout.addWidget(self.batch_stop_btn)
+        
+        self.batch_start_btn = PrimaryPushButton("Start Extract")
+        self.batch_start_btn.setIcon(FluentIcon.ZIP_FOLDER.qicon())
+        self.batch_start_btn.clicked.connect(self.start_batch_extract)
+        button_layout.addWidget(self.batch_start_btn)
+        
+        right_layout.addLayout(button_layout)
+        right_layout.addStretch(1)
+        
+        # Add panels to main layout with proportional sizing
+        main_layout.addWidget(left_panel, 2)
+        main_layout.addWidget(right_panel, 2)
+        
+        self.extract_stacked_widget.addWidget(batch_panel)
+
+        # Connect drop area signals
+        self.batch_drop_area.files_dropped.connect(self.on_batch_files_dropped)
+
+    def _on_extract_pivot_changed(self, route_key):
+        """Handle extract pivot tab change"""
+        index = {"single": 0, "batch": 1}.get(route_key, 0)
+        self.extract_stacked_widget.setCurrentIndex(index)
 
     def create_add_tab(self):
         tab_panel = QWidget()
         tab_sizer = QVBoxLayout(tab_panel)
-        self.notebook.addTab(tab_panel, "Add to Archive") # Changed tab title
+        tab_sizer.setSpacing(15)
+        tab_sizer.setContentsMargins(20, 20, 20, 20)
 
-        # Existing Archive file selection
-        zip_box = QGroupBox("Existing Archive File") # Changed group box title
-        zip_box_sizer = QHBoxLayout(zip_box)
+        # Edit Archive Tab with icon
+        self.notebook.addTab(tab_panel, "Edit Archive")
+        self.notebook.setTabIcon(self.notebook.count() - 1, FluentIcon.EDIT.qicon())
 
+        # === Pivot for Options and Archives ===
+        self.add_pivot = Pivot(tab_panel)
+        self.add_pivot.addItem("options", "Options")
+        self.add_pivot.addItem("archives", "Archives")
+
+        # Stacked widget for pivot content
+        self.add_stacked_widget = QStackedWidget(tab_panel)
+
+        # === Options Page ===
+        options_page = QWidget()
+        options_layout = QVBoxLayout(options_page)
+        options_layout.setSpacing(15)
+        options_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Archive file selection
+        archive_card = CardWidget()
+        archive_card.setBorderRadius(12)
+        archive_layout = QVBoxLayout(archive_card)
+        archive_layout.setSpacing(10)
+
+        archive_header = QHBoxLayout()
+        archive_icon = IconWidget(FluentIcon.ZIP_FOLDER)
+        archive_icon.setFixedSize(20, 20)
+        archive_header.addWidget(archive_icon)
+        archive_title = StrongBodyLabel("Archive File")
+        archive_header.addWidget(archive_title)
+        archive_header.addStretch()
+        archive_layout.addLayout(archive_header)
+
+        # Drop zone for archive file
+        self.add_archive_drop_area = BatchDropZoneWidget(
+            placeholder_text="Drag archive file here to edit",
+            parent=archive_card
+        )
+        self.add_archive_drop_area.files_dropped.connect(self._on_add_archive_dropped)
+        archive_layout.addWidget(self.add_archive_drop_area)
+
+        archive_input_layout = QHBoxLayout()
         self.add_zip_text = LineEdit()
+        self.add_zip_text.setPlaceholderText("Select archive file to edit...")
+        self.add_zip_text.textChanged.connect(self._on_add_archive_path_changed)
         setCustomStyleSheet(self.add_zip_text, CON.qss_line, CON.qss_line)
-        # self.add_zip_text.setReadOnly(True)  # Allow users to manually input path
-        zip_box_sizer.addWidget(self.add_zip_text, 1)
-        zip_button = PushButton("Browse...")
+        archive_input_layout.addWidget(self.add_zip_text, 1)
 
-        zip_button.clicked.connect(self.browse_add_archive) # Changed signal
-        zip_box_sizer.addWidget(zip_button)
-        tab_sizer.addWidget(zip_box)
+        zip_button = PushButton("Browse")
+        zip_button.setIcon(FluentIcon.FOLDER.qicon())
+        zip_button.clicked.connect(self.browse_add_archive)
+        archive_input_layout.addWidget(zip_button)
+        archive_layout.addLayout(archive_input_layout)
 
-        # File to add selection
-        file_box = QGroupBox("Files to Add")
-        file_box_sizer = QVBoxLayout(file_box)
+        options_layout.addWidget(archive_card)
 
-        # File list for multiple files (always visible)
-        self.add_files_listbox = ListWidget()
-        self.add_files_listbox.setMinimumHeight(150)
-        self.add_files_listbox.setVisible(True)  # Always visible
-        file_box_sizer.addWidget(self.add_files_listbox)
-        
-        # Browse button
-        file_button = PushButton("Browse...")
-        file_button.clicked.connect(self.browse_add_file)
-        file_box_sizer.addWidget(file_button)
-        
-        tab_sizer.addWidget(file_box)
+        # Format conversion
+        format_card = CardWidget()
+        format_card.setBorderRadius(12)
+        format_layout = QVBoxLayout(format_card)
+        format_layout.setSpacing(10)
 
-        # Progress bar
-        self.add_progress_label = QLabel("")
-        tab_sizer.addWidget(self.add_progress_label)
-        
+        format_header = QHBoxLayout()
+        format_icon = IconWidget(FluentIcon.SYNC)
+        format_icon.setFixedSize(20, 20)
+        format_header.addWidget(format_icon)
+        format_title = StrongBodyLabel("Convert Format")
+        format_header.addWidget(format_title)
+        format_header.addStretch()
+        format_layout.addLayout(format_header)
+
+        format_desc = CaptionLabel("Convert archive to a different format")
+        format_layout.addWidget(format_desc)
+
+        format_input_layout = QHBoxLayout()
+        self.format_combo = ComboBox()
+        conversion_formats = [fmt.upper() for fmt in SUPPORTED_ARCHIVE_FORMATS if fmt != 'tgz']
+        self.format_combo.addItems(conversion_formats)
+        format_input_layout.addWidget(self.format_combo, 1)
+
+        self.convert_button = PushButton("Convert")
+        self.convert_button.setIcon(FluentIcon.SYNC.qicon())
+        self.convert_button.clicked.connect(self.convert_archive_format)
+        format_input_layout.addWidget(self.convert_button)
+        format_layout.addLayout(format_input_layout)
+
+        options_layout.addWidget(format_card)
+
+        # === Advanced Options Card ===
+        advanced_card = CardWidget()
+        advanced_card.setBorderRadius(12)
+        advanced_layout = QVBoxLayout(advanced_card)
+        advanced_layout.setSpacing(10)
+
+        advanced_header = QHBoxLayout()
+        advanced_icon = IconWidget(FluentIcon.SETTING)
+        advanced_icon.setFixedSize(20, 20)
+        advanced_header.addWidget(advanced_icon)
+        advanced_title = StrongBodyLabel("Advanced Options")
+        advanced_header.addWidget(advanced_title)
+        advanced_header.addStretch()
+        advanced_layout.addLayout(advanced_header)
+
+        # Compression level
+        compression_layout = QHBoxLayout()
+        compression_label = BodyLabel("Compression Level:")
+        compression_layout.addWidget(compression_label)
+        self.compression_level_combo = ComboBox()
+        self.compression_level_combo.addItems([
+            "Store (No compression)",
+            "Fastest",
+            "Fast",
+            "Normal",
+            "Maximum",
+            "Ultra"
+        ])
+        self.compression_level_combo.setCurrentIndex(3)  # Default: Normal
+        setCustomStyleSheet(self.compression_level_combo, CON.qss_combo, CON.qss_combo)
+        compression_layout.addWidget(self.compression_level_combo, 1)
+        advanced_layout.addLayout(compression_layout)
+
+        # Checkboxes
+        self.overwrite_existing_check = CheckBox("Overwrite existing files in archive")
+        self.overwrite_existing_check.setChecked(True)
+        advanced_layout.addWidget(self.overwrite_existing_check)
+
+        self.preserve_structure_check = CheckBox("Preserve directory structure")
+        self.preserve_structure_check.setChecked(True)
+        advanced_layout.addWidget(self.preserve_structure_check)
+
+        self.exclude_hidden_check = CheckBox("Exclude hidden files")
+        self.exclude_hidden_check.setChecked(False)
+        advanced_layout.addWidget(self.exclude_hidden_check)
+
+        self.exclude_ds_store_check = CheckBox("Exclude .DS_Store and __MACOSX")
+        self.exclude_ds_store_check.setChecked(True)
+        advanced_layout.addWidget(self.exclude_ds_store_check)
+
+        # Password protection
+        password_layout = QHBoxLayout()
+        password_icon = IconWidget(FluentIcon.FINGERPRINT)
+        password_icon.setFixedSize(18, 18)
+        password_layout.addWidget(password_icon)
+        password_label = BodyLabel("Password Protection:")
+        password_layout.addWidget(password_label)
+        password_layout.addStretch()
+        self.add_password_btn = PushButton("Set Password")
+        self.add_password_btn.setIcon(FluentIcon.FINGERPRINT.qicon())
+        self.add_password_btn.clicked.connect(self._set_archive_password)
+        password_layout.addWidget(self.add_password_btn)
+        advanced_layout.addLayout(password_layout)
+
+        self.add_password_status = CaptionLabel("No password set")
+        self.add_password_status.setStyleSheet("color: #888888;")
+        advanced_layout.addWidget(self.add_password_status)
+
+        options_layout.addWidget(advanced_card)
+
+        # Progress section
+        progress_card = CardWidget()
+        progress_card.setBorderRadius(12)
+        progress_layout = QVBoxLayout(progress_card)
+        progress_layout.setSpacing(8)
+
+        self.add_progress_label = BodyLabel("")
+        progress_layout.addWidget(self.add_progress_label)
+
         self.add_progress = ProgressBar()
         self.add_progress.setRange(0, 100)
         self.add_progress.setValue(0)
-        tab_sizer.addWidget(self.add_progress)
+        progress_layout.addWidget(self.add_progress)
 
-        # Add button
-        self.add_button = PrimaryPushButton("Add to Archive") # Changed button text
+        options_layout.addWidget(progress_card)
+        options_layout.addStretch(1)
 
-        self.add_button.clicked.connect(self.start_add_to_archive) # Changed signal
-        tab_sizer.addWidget(self.add_button, 0, Qt.AlignmentFlag.AlignCenter)
+        self.add_stacked_widget.addWidget(options_page)
+
+        # === Archives Page (Tree View) ===
+        archives_page = QWidget()
+        archives_layout = QVBoxLayout(archives_page)
+        archives_layout.setSpacing(15)
+        archives_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Archive contents tree
+        tree_card = CardWidget()
+        tree_card.setBorderRadius(12)
+        tree_layout = QVBoxLayout(tree_card)
+        tree_layout.setSpacing(10)
+
+        tree_header = QHBoxLayout()
+        tree_icon = IconWidget(FluentIcon.FOLDER)
+        tree_icon.setFixedSize(20, 20)
+        tree_header.addWidget(tree_icon)
+        tree_title = StrongBodyLabel("Archive Contents")
+        tree_header.addWidget(tree_title)
+        tree_header.addStretch()
+        tree_layout.addLayout(tree_header)
+
+        # Tree widget for archive contents
+        self.archive_tree = DraggableTreeWidget()
+        self.archive_tree.setColumnCount(3)
+        self.archive_tree.setHeaderLabels(["Name", "Size", "Type"])
+        self.archive_tree.setColumnWidth(0, 400)
+        self.archive_tree.setColumnWidth(1, 100)
+        self.archive_tree.setColumnWidth(2, 100)
+        self.archive_tree.setAlternatingRowColors(False)
+        self.archive_tree.setAnimated(True)
+        self.archive_tree.setStyle(SlowTreeAnimationStyle())
+        self.archive_tree.setDragEnabled(True)
+        self.archive_tree.setAcceptDrops(True)
+        self.archive_tree.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        # Enable delete with keyboard
+        self.archive_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.archive_tree.file_dropped_on_file.connect(self._on_file_dropped_on_file)
+        self.archive_tree.file_dropped_on_folder.connect(self._on_file_dropped_on_folder)
+        self.archive_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.archive_tree.customContextMenuRequested.connect(self._show_archive_tree_context_menu)
+        tree_layout.addWidget(self.archive_tree, 1)
+
+        # Alias for backward compatibility
+        self.add_unified_tree = self.archive_tree
+
+        # For backward compatibility with existing code
+        self.add_unified_tree_model = None  # Will be set if needed
+
+        # Tree toolbar
+        tree_toolbar = QHBoxLayout()
+        tree_toolbar.setSpacing(10)
+
+        self.add_files_btn = PushButton("Add Files")
+        self.add_files_btn.setIcon(FluentIcon.ADD.qicon())
+        self.add_files_btn.clicked.connect(self.browse_add_file)
+        tree_toolbar.addWidget(self.add_files_btn)
+
+        self.delete_btn = PushButton("Delete")
+        self.delete_btn.setIcon(FluentIcon.DELETE.qicon())
+        self.delete_btn.clicked.connect(self.delete_selected_items)
+        self.delete_btn.setEnabled(False)
+        tree_toolbar.addWidget(self.delete_btn)
+
+        tree_toolbar.addStretch()
+
+        tree_layout.addLayout(tree_toolbar)
+
+        archives_layout.addWidget(tree_card, 1)
+
+        # Action buttons
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(15)
+        action_layout.addStretch()
+
+        self.add_saving_label = BodyLabel("")
+        self.add_saving_label.setStyleSheet("color: #888888; font-style: italic;")
+        action_layout.addWidget(self.add_saving_label)
+
+        self.add_cancel_button = PushButton("Cancel")
+        self.add_cancel_button.setIcon(FluentIcon.CANCEL.qicon())
+        self.add_cancel_button.clicked.connect(self.cancel_add_to_archive)
+        self.add_cancel_button.setEnabled(False)
+        action_layout.addWidget(self.add_cancel_button)
+
+        archives_layout.addLayout(action_layout)
+
+        self.add_stacked_widget.addWidget(archives_page)
+
+        # Connect pivot to stacked widget
+        self.add_pivot.currentItemChanged.connect(lambda item: self.add_stacked_widget.setCurrentIndex(
+            0 if item == "options" else 1))
+
+        # Connect tree selection to delete button
+        self.archive_tree.selectionModel().selectionChanged.connect(
+            lambda: self.delete_btn.setEnabled(len(self.archive_tree.selectedItems()) > 0))
+
+        # Add pivot and stacked widget to tab
+        tab_sizer.addWidget(self.add_pivot)
+        tab_sizer.addWidget(self.add_stacked_widget, 1)
+
+
+    def _on_add_page_changed(self, index):
+        """Handle page change in Add to Archive tab"""
+        widget = self.add_stacked_widget.widget(index)
+        if widget:
+            self.add_pivot.setCurrentItem(widget.objectName())
+
+    def _apply_tree_drag_style(self):
+        """Apply QSS styling for tree widget drag and drop"""
+        # Check if dark mode
+        bg_color = self.palette().color(QPalette.ColorRole.Window)
+        is_dark = bg_color.lightness() < 128
         
-        tab_sizer.addStretch(1) # Push content to top
+        if is_dark:
+            # Dark mode styles
+            self.add_unified_tree.setStyleSheet("""
+                QTreeWidget {
+                    border: 1px solid #555555;
+                    border-radius: 8px;
+                    background-color: #2d2d2d;
+                    outline: none;
+                    color: #ffffff;
+                }
+                QTreeWidget::item {
+                    padding: 6px;
+                    border-radius: 6px;
+                    min-height: 28px;
+                    margin: 2px 4px;
+                    color: #ffffff;
+                }
+                QTreeWidget::item:selected {
+                    background-color: #0d6efd;
+                    color: #ffffff;
+                }
+                QTreeWidget::item:hover {
+                    background-color: #3d3d3d;
+                }
+                QTreeWidget::item:selected:hover {
+                    background-color: #0b5ed7;
+                }
+                QTreeWidget QHeaderView::section {
+                    background-color: #3d3d3d;
+                    color: #ffffff;
+                    padding: 6px;
+                    border: none;
+                }
+            """)
+        else:
+            # Light mode styles
+            self.add_unified_tree.setStyleSheet("""
+                QTreeWidget {
+                    border: 1px solid #dee2e6;
+                    border-radius: 8px;
+                    background-color: #f8f9fa;
+                    outline: none;
+                    color: #212529;
+                }
+                QTreeWidget::item {
+                    padding: 6px;
+                    border-radius: 6px;
+                    min-height: 28px;
+                    margin: 2px 4px;
+                    color: #212529;
+                }
+                QTreeWidget::item:selected {
+                    background-color: #0d6efd;
+                    color: #ffffff;
+                }
+                QTreeWidget::item:hover {
+                    background-color: #e9ecef;
+                }
+                QTreeWidget::item:selected:hover {
+                    background-color: #0b5ed7;
+                }
+                QTreeWidget QHeaderView::section {
+                    background-color: #e9ecef;
+                    color: #212529;
+                    padding: 6px;
+                    border: none;
+                }
+            """)
 
     def create_list_tab(self):
         tab_panel = QWidget()
         tab_sizer = QVBoxLayout(tab_panel)
+        tab_sizer.setSpacing(15)
+        tab_sizer.setContentsMargins(20, 20, 20, 20)
+        
+        # List Contents Tab with icon
         self.notebook.addTab(tab_panel, "List Contents")
+        self.notebook.setTabIcon(self.notebook.count() - 1, FluentIcon.MENU.qicon())
 
-        # Archive file selection (changed title)
-        zip_box = QGroupBox("Archive File")
-        zip_box_sizer = QHBoxLayout(zip_box)
+        # === Archive File Section ===
+        archive_card = CardWidget()
+        archive_card.setBorderRadius(12)
+        archive_layout = QVBoxLayout(archive_card)
+        archive_layout.setSpacing(10)
         
+        # Header with icon
+        archive_header = QHBoxLayout()
+        archive_icon = IconWidget(FluentIcon.ZIP_FOLDER)
+        archive_icon.setFixedSize(20, 20)
+        archive_header.addWidget(archive_icon)
+        archive_title = StrongBodyLabel("Archive File")
+        archive_header.addWidget(archive_title)
+        archive_header.addStretch()
+        archive_layout.addLayout(archive_header)
+        
+        # Archive path input
+        archive_input_layout = QHBoxLayout()
         self.list_zip_text = LineEdit()
+        self.list_zip_text.setPlaceholderText("Select archive file to list contents...")
         setCustomStyleSheet(self.list_zip_text, CON.qss_line, CON.qss_line)
-        # self.list_zip_text.setReadOnly(True)  # Allow users to manually input path
-        zip_box_sizer.addWidget(self.list_zip_text, 1)
-        zip_button = PushButton("Browse...")
-
-        zip_button.clicked.connect(self.browse_list_archive) # Changed signal
-        zip_box_sizer.addWidget(zip_button)
-        tab_sizer.addWidget(zip_box)
+        archive_input_layout.addWidget(self.list_zip_text, 1)
         
-        # Password status indicator
-        password_status_box = QHBoxLayout()
-        self.password_status_label = QLabel("Archive Status: Unknown")
+        zip_button = PushButton("Browse")
+        zip_button.setIcon(FluentIcon.FOLDER.qicon())
+        zip_button.clicked.connect(self.browse_list_archive)
+        archive_input_layout.addWidget(zip_button)
+        archive_layout.addLayout(archive_input_layout)
+        
+        tab_sizer.addWidget(archive_card)
+        
+        # === Password Status Section ===
+        status_card = CardWidget()
+        status_card.setBorderRadius(12)
+        status_layout = QHBoxLayout(status_card)
+        status_layout.setSpacing(10)
+        
+        status_icon = IconWidget(FluentIcon.INFO)
+        status_icon.setFixedSize(18, 18)
+        status_layout.addWidget(status_icon)
+        
+        self.password_status_label = BodyLabel("Archive Status: Unknown")
+        status_layout.addWidget(self.password_status_label)
+        
         self.password_status_icon = QLabel()
         self.password_status_icon.setFixedSize(16, 16)
-        password_status_box.addWidget(self.password_status_label)
-        password_status_box.addWidget(self.password_status_icon)
-        password_status_box.addStretch()
-        tab_sizer.addLayout(password_status_box)
+        status_layout.addWidget(self.password_status_icon)
+        status_layout.addStretch()
         
-        # Listbox for contents
-        contents_box = QGroupBox("Archive Contents") # Changed group box title
-        contents_box_sizer = QVBoxLayout(contents_box)
+        tab_sizer.addWidget(status_card)
+        
+        # === Archive Contents Section ===
+        contents_card = CardWidget()
+        contents_card.setBorderRadius(12)
+        contents_layout = QVBoxLayout(contents_card)
+        contents_layout.setSpacing(10)
+        
+        # Header with icon
+        contents_header = QHBoxLayout()
+        contents_icon = IconWidget(FluentIcon.MENU)
+        contents_icon.setFixedSize(20, 20)
+        contents_header.addWidget(contents_icon)
+        contents_title = StrongBodyLabel("Archive Contents")
+        contents_header.addWidget(contents_title)
+        contents_header.addStretch()
+        contents_layout.addLayout(contents_header)
+        
+        # Contents tree
+        self.contents_tree = TreeWidget()
+        self.contents_tree.setMinimumHeight(250)
+        self.contents_tree.setColumnCount(3)
+        self.contents_tree.setHeaderLabels(["Name", "Size", "Modified"])
+        self.contents_tree.setColumnWidth(0, 400)
+        self.contents_tree.setColumnWidth(1, 100)
+        self.contents_tree.setColumnWidth(2, 150)
+        self.contents_tree.setAlternatingRowColors(False)
+        self.contents_tree.setAnimated(True)
+        self.contents_tree.setStyle(SlowTreeAnimationStyle())
+        contents_layout.addWidget(self.contents_tree, 1)
 
-        self.contents_listbox = ListWidget()
-        self.contents_listbox.setMinimumHeight(250)  # Set larger minimum height
-        self.contents_listbox.setDragEnabled(True)  # Enable drag functionality
-        contents_box_sizer.addWidget(self.contents_listbox, 3)  # Increase stretch weight
-        # Set right-click menu
-        self.contents_listbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        # Context menu functionality removed
-        # self.contents_listbox.customContextMenuRequested.connect(self.show_contents_context_menu)
-        tab_sizer.addWidget(contents_box, 2) # Give contents box more stretch
+        tab_sizer.addWidget(contents_card, 2)
 
-        # List button
+        # === Action Buttons ===
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(15)
+        action_layout.addStretch()
+        
+        self.list_cancel_button = PushButton("Cancel")
+        self.list_cancel_button.setIcon(FluentIcon.CANCEL.qicon())
+        self.list_cancel_button.clicked.connect(self.cancel_list_archive_contents)
+        self.list_cancel_button.setEnabled(False)
+        action_layout.addWidget(self.list_cancel_button)
+        
         self.list_button = PrimaryPushButton("List Contents")
-
-        self.list_button.clicked.connect(self.start_list_archive_contents) # Changed signal
-        tab_sizer.addWidget(self.list_button, 0, Qt.AlignmentFlag.AlignCenter)
+        self.list_button.setIcon(FluentIcon.MENU.qicon())
+        self.list_button.clicked.connect(self.start_list_archive_contents)
+        action_layout.addWidget(self.list_button)
         
-        tab_sizer.addStretch(1) # Push content to top
+        tab_sizer.addLayout(action_layout)
+        tab_sizer.addStretch(1)
 
-    # --- Event handlers (converted to PySide6) ---
+
     def update_password_status(self, is_protected, status_text=None, tab="list"):
         """Update the password status indicator with improved visual feedback
         
@@ -699,88 +1876,35 @@ class ZipGUI(QMainWindow):
         # We don't need to verify it against an existing archive since we're creating a new one
         return True
     
-    def on_tab_changed(self, index):
-        """Handle tab change with optional slide animation effect based on UI_FLUENT environment variable"""
-        import sys
-        import os
-        sys.path.append(os.path.join(os.path.dirname(__file__), 'support'))
-        from support.check_flag import check_flag
+    def confirm_cancel(self, operation_name):
+        """Show confirmation dialog for canceling an operation
         
-        # Check if UI_FLUENT environment variable is set to YES using check_flag function
-        ui_fluent_enabled = check_flag("UI_FLUENT")
-        
-        # Skip animation if UI_FLUENT is not enabled
-        if not ui_fluent_enabled:
-            self._previous_tab_index = index
-            # Force layout update when animation is disabled
-            self.notebook.currentWidget().updateGeometry()
-            if self.notebook.currentWidget().layout():
-                self.notebook.currentWidget().layout().update()
-                self.notebook.currentWidget().layout().activate()
-            return
+        Args:
+            operation_name: Name of the operation being canceled
             
-        # Proceed with animation if UI_FLUENT is enabled
-        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
-        
-        # Get current tab widget
-        current_widget = self.notebook.currentWidget()
-        if not current_widget:
-            return
-            
-        # Skip animation during initial startup to prevent layout issues
-        if not hasattr(self, '_previous_tab_index') and not self.notebook.isVisible():
-            self._previous_tab_index = index
-            return
-            
-        # Get tab widget dimensions
-        tab_width = self.notebook.width()
-        tab_height = self.notebook.height()
-        
-        # Skip animation if window is not yet properly sized
-        if tab_width <= 0 or tab_height <= 0:
-            self._previous_tab_index = index
-            return
-        
-        # Determine slide direction based on tab index
-        if hasattr(self, '_previous_tab_index'):
-            if index > self._previous_tab_index:
-                # Sliding from right to left - start from 80% of width to prevent going out of bounds
-                start_pos = QRect(int(tab_width * 0.8), 0, tab_width, tab_height)
-            else:
-                # Sliding from left to right - start from -80% of width to prevent going out of bounds
-                start_pos = QRect(int(-tab_width * 0.8), 0, tab_width, tab_height)
-        else:
-            # First time, slide from right - start from 80% of width
-            start_pos = QRect(int(tab_width * 0.8), 0, tab_width, tab_height)
-        
-        # Set initial position
-        current_widget.setGeometry(start_pos)
-        
-        # Create slide animation
-        self.slide_animation = QPropertyAnimation(current_widget, b"geometry")
-        self.slide_animation.setDuration(300)  # 300ms animation for smooth slide
-        self.slide_animation.setStartValue(start_pos)
-        self.slide_animation.setEndValue(QRect(0, 0, tab_width, tab_height))
-        self.slide_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        
-        # Store current tab index for next animation
-        self._previous_tab_index = index
-        
-        # Connect animation finished signal to update layout
-        self.slide_animation.finished.connect(lambda: self._update_tab_layout(current_widget))
-        
-        # Start the animation
-        self.slide_animation.start()
+        Returns:
+            bool: True if user confirmed cancel, False otherwise
+        """
+        w = MessageBox("Cancel Operation",
+                       f"Are you sure you want to cancel the current {operation_name} operation?", self)
+        w.yesButton.setText(self.tr('Yes'))
+        w.cancelButton.setText(self.tr('No'))
+        return bool(w.exec())
     
-    def _update_tab_layout(self, widget):
-        """Update widget layout after animation completes"""
-        # Force layout update to prevent layout issues
-        if widget and widget.layout():
-            widget.layout().update()
-            widget.layout().activate()
-            widget.updateGeometry()
-            # Repaint the widget to ensure all elements are properly displayed
-            widget.repaint()
+    def log_cancel(self, operation_type):
+        """Log a cancel operation
+        
+        Args:
+            operation_type: Type of operation that was canceled
+        """
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] [CANCEL] {operation_type} operation canceled by user")
+    
+    def on_tab_changed(self, index):
+        """Handle tab change without animation"""
+        # Simply store the previous tab index and return
+        self._previous_tab_index = index
 
     
     
@@ -811,7 +1935,7 @@ class ZipGUI(QMainWindow):
             for path in paths:
                 if path not in self.create_sources:
                     self.create_sources.append(path)
-                    self.sources_listbox.addItem(path)
+                    self._add_file_to_sources_tree(path, is_folder=False)
 
     def add_source_folder(self):
         dir_dialog = QFileDialog(self)
@@ -821,13 +1945,21 @@ class ZipGUI(QMainWindow):
             folder_path = dir_dialog.selectedFiles()[0]
             if folder_path not in self.create_sources:
                 self.create_sources.append(folder_path)
-                self.sources_listbox.addItem(f"[FOLDER] {folder_path}")
+                self._add_file_to_sources_tree(folder_path, is_folder=True)
+
+    def _on_create_files_dropped(self, file_paths):
+        """Handle files dropped on create archive drop zone"""
+        for path in file_paths:
+            if path not in self.create_sources:
+                self.create_sources.append(path)
+                self._add_file_to_sources_tree(path, is_folder=False)
 
     def remove_source(self):
         """Remove selected source files"""
-        if not self.sources_listbox.selectedIndexes():
+        selected_items = self.sources_tree.selectedItems()
+        if not selected_items:
             self._show_popup(
-                target=self.sources_listbox,
+                target=self.sources_tree,
                 icon=InfoBarIcon.WARNING,
                 title='Warning',
                 content='Please select items to remove first',
@@ -835,24 +1967,65 @@ class ZipGUI(QMainWindow):
             )
             return
 
-        # Get selected rows
-        selected_rows = sorted(set(index.row() for index in self.sources_listbox.selectedIndexes()), reverse=True)
-        
-        # Remove from back to front to avoid index changes
-        for row in selected_rows:
-            self.sources_listbox.takeItem(row)
-            if row < len(self.create_sources):
-                self.create_sources.pop(row)
+        removed_count = 0
+        for item in selected_items:
+            index = self.sources_tree.indexOfTopLevelItem(item)
+            if index >= 0:
+                path = item.text(1)
+                if path in self.create_sources:
+                    self.create_sources.remove(path)
+                self.sources_tree.takeTopLevelItem(index)
+                removed_count += 1
         
         # Show removal success message
         self._show_info_bar(
             icon=InfoBarIcon.SUCCESS,
             title='Removal Successful',
-            content=f'Removed {len(selected_rows)} items',
+            content=f'Removed {removed_count} items',
             duration=2000
         )
 
+    def _add_file_to_sources_tree(self, path, is_folder=False):
+        """Add a file or folder to the sources tree widget"""
+        item = QTreeWidgetItem()
+        name = os.path.basename(path)
+        item.setText(0, name)
+        item.setText(1, path)
+        item.setText(2, "Folder" if is_folder else (os.path.splitext(name)[1] or "File"))
+        item.setIcon(0, self._get_file_icon(name, is_dir=is_folder).qicon())
+        item.setToolTip(0, path)
+        # Store metadata for drag-drop operations
+        item.setData(0, Qt.ItemDataRole.UserRole + 1, path)  # Full path
+        item.setData(0, Qt.ItemDataRole.UserRole + 3, is_folder)  # Is directory flag
+        if is_folder:
+            self._populate_folder_tree(item, path)
+        self.sources_tree.addTopLevelItem(item)
+
+    def _populate_folder_tree(self, parent_item, folder_path):
+        """Recursively populate tree with folder contents"""
+        try:
+            for entry in sorted(os.listdir(folder_path)):
+                full_path = os.path.join(folder_path, entry)
+                child = QTreeWidgetItem()
+                child.setText(0, entry)
+                child.setText(1, full_path)
+                is_dir = os.path.isdir(full_path)
+                if is_dir:
+                    child.setText(2, "Folder")
+                    child.setIcon(0, FluentIcon.FOLDER.qicon())
+                    child.setData(0, Qt.ItemDataRole.UserRole + 3, True)
+                    self._populate_folder_tree(child, full_path)
+                else:
+                    child.setText(2, os.path.splitext(entry)[1] or "File")
+                    child.setIcon(0, self._get_file_icon(entry).qicon())
+                    child.setData(0, Qt.ItemDataRole.UserRole + 3, False)
+                child.setData(0, Qt.ItemDataRole.UserRole + 1, full_path)
+                parent_item.addChild(child)
+        except PermissionError:
+            pass
+
     def update_create_progress(self, message, progress):
+        # Update both progress bar and label
         self.create_progress_label.setText(message)
         print(f"[Create Progress] {message}")  # Print progress information to console
         if progress >= 0:
@@ -873,7 +2046,7 @@ class ZipGUI(QMainWindow):
         # Check if source files are added
         if not self.create_sources:
             self._show_popup(
-                target=self.sources_listbox,
+                target=self.sources_tree,
                 icon=InfoBarIcon.WARNING,
                 title='Warning',
                 content='Please add files or folders to compress',
@@ -890,7 +2063,7 @@ class ZipGUI(QMainWindow):
         
         if self.create_archive_format in ['zip', 'rar', '7z']:
             # Ask user if they want to add password protection
-            from qfluentwidgets import MessageBox, FluentIcon
+            from UIkit import MessageBox, FluentIcon
             box = MessageBox(
                 'Password Protection',
                 f'Do you want to add password protection to the {self.create_archive_format.upper()} archive?',
@@ -950,6 +2123,10 @@ class ZipGUI(QMainWindow):
         self.create_progress_label.setText("Starting archive creation...")
         self.create_progress.setValue(0)
         
+        # Enable cancel button and disable create button during operation
+        self.create_button.setEnabled(False)
+        self.create_cancel_button.setEnabled(True)
+        
         self.create_zip_worker = CreateZipWorker(self.create_output_path, self.create_sources, self.create_archive_format, password)
         self.create_zip_worker_thread = QThread()
         self.create_zip_worker.moveToThread(self.create_zip_worker_thread)
@@ -957,35 +2134,38 @@ class ZipGUI(QMainWindow):
         self.create_zip_worker.finished.connect(self.on_create_archive_finished)
         self.create_zip_worker.progress_updated.connect(self.update_create_progress)
         self.create_zip_worker.conversion_error.connect(self.on_create_archive_error)
+        self.create_zip_worker.canceled.connect(self.on_create_archive_canceled)
         self.create_zip_worker_thread.started.connect(self.create_zip_worker.run)
         self.create_zip_worker_thread.start()
 
     def on_create_archive_finished(self):
-        # 使用强制线程清理方法
+        # Use forced thread cleanup method
         self._force_cleanup_create_thread()
-        
+
         # Update archive status
         archive_info = f"Archive created successfully: {os.path.basename(self.create_output_path)}"
         if self.create_zip_worker and hasattr(self.create_zip_worker, 'password') and self.create_zip_worker.password:
             archive_info += " (Password Protected)"
-        
+
+        # Show success notifications
         # Show success notification at the top
         self._show_info_bar(
             title='Success',
             content=archive_info,
             duration=2000
         )
-        
+
         # Update archive status display
         self.update_archive_status(archive_info, True)
 
     def on_create_archive_error(self, error_message):
-        # 使用强制线程清理方法
+        # Use forced thread cleanup method
         self._force_cleanup_create_thread()
-        
+
         # Update archive status
         archive_info = f"Archive creation failed: {str(error_message)}"
-        
+
+        # Show error notifications
         self._show_popup(
             target=self.create_progress,
             icon=InfoBarIcon.ERROR,
@@ -994,33 +2174,74 @@ class ZipGUI(QMainWindow):
             duration=3000
         )
         self.create_progress_label.setText("Archive creation failed.")
-        
+
         # Update archive status display
         self.update_archive_status(archive_info, False)
     
+    def cancel_create_archive(self):
+        """Cancel the archive creation process"""
+        if self.confirm_cancel("Archive Creation"):
+            self.log_cancel("Create Archive")
+            # Stop the worker
+            if self.create_zip_worker:
+                self.create_zip_worker.stop()
+        
+    def on_create_archive_canceled(self):
+        """Handle archive creation canceled"""
+        # Use forced thread cleanup method
+        self._force_cleanup_create_thread()
+        
+        # Reset button states
+        self.create_button.setEnabled(True)
+        self.create_cancel_button.setEnabled(False)
+        
+        # Update progress and status
+        self.create_progress.setValue(0)
+        self.create_progress_label.setText("Archive creation canceled")
+        
+        # Show cancel notification
+        self._show_info_bar(
+            title='Canceled',
+            content='Archive creation canceled by user',
+            duration=2000
+        )
+        
+        # Update archive status display
+        self.update_archive_status("Archive creation canceled", False)
+    
     def _force_cleanup_create_thread(self):
-        """强制清理创建归档的线程，确保完全终止"""
+        """Force cleanup archive creation thread to ensure complete termination"""
+        # Reset button states
+        self.create_button.setEnabled(True)
+        self.create_cancel_button.setEnabled(False)
+        
         if self.create_zip_worker_thread:
             if self.create_zip_worker_thread.isRunning():
-                # 先尝试正常退出
+                # First try to exit normally
                 self.create_zip_worker_thread.quit()
-                if not self.create_zip_worker_thread.wait(500):  # 等待0.5秒
-                    # 如果正常退出失败，强制终止
+                if not self.create_zip_worker_thread.wait(500):  # Wait 0.5 seconds
+                    # If normal exit fails, force terminate
                     self.create_zip_worker_thread.terminate()
-                    if not self.create_zip_worker_thread.wait(500):  # 再等待0.5秒
+                    if not self.create_zip_worker_thread.wait(500):  # 再Wait 0.5 seconds
                         # 如果终止也失败，尝试杀死线程
                         self.create_zip_worker_thread.kill()
-                        self.create_zip_worker_thread.wait(500)  # 等待0.5秒
+                        self.create_zip_worker_thread.wait(500)  # Wait 0.5 seconds
             
-            # 删除线程对象
+            # Delete thread object
             self.create_zip_worker_thread.deleteLater()
             self.create_zip_worker_thread = None
         
         if self.create_zip_worker:
-            # 删除worker对象
+            # Delete worker object
             self.create_zip_worker.deleteLater()
             self.create_zip_worker = None
 
+
+    def _on_extract_file_dropped(self, file_paths):
+        """Handle archive file dropped on single extract drop zone"""
+        if file_paths:
+            self.extract_zip_path = file_paths[0]
+            self.extract_zip_text.setText(self.extract_zip_path)
 
     def browse_extract_archive(self):
         file_dialog = QFileDialog(self)
@@ -1056,6 +2277,390 @@ class ZipGUI(QMainWindow):
             self.extract_dest_path = dir_dialog.selectedFiles()[0]
             self.extract_dest_text.setText(self.extract_dest_path)
 
+    def browse_batch_extract_dest(self):
+        """Browse for batch extraction destination folder"""
+        dir_dialog = QFileDialog(self)
+        dir_dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dir_dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        if dir_dialog.exec():
+            self.batch_extract_dest_path = dir_dialog.selectedFiles()[0]
+            self.batch_extract_dest_text.setText(self.batch_extract_dest_path)
+
+    def browse_batch_archive_files(self):
+        """Browse for archive files to batch extract"""
+        file_dialog = QFileDialog(self)
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        file_dialog.setNameFilters([
+            "Archive files (*.zip *.rar *.7z *.tar *.gz *.bz2 *.xz *.tar.gz *.tar.bz2 *.tar.xz *.tgz *.tbz2)",
+            "All files (*)"
+        ])
+        if file_dialog.exec():
+            file_paths = file_dialog.selectedFiles()
+            self.add_batch_files(file_paths)
+
+    def add_batch_files(self, file_paths):
+        """Add files to batch list"""
+        supported_formats = ('.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.tar.gz', '.tar.bz2', '.tar.xz', '.tgz', '.tbz2')
+        
+        for file_path in file_paths:
+            # Check if file is a supported archive format
+            if os.path.splitext(file_path.lower())[1] in supported_formats:
+                # Avoid duplicates
+                if file_path not in [self.batch_files_listbox.item(i).toolTip() for i in range(self.batch_files_listbox.count())]:
+                    item = QListWidgetItem(os.path.basename(file_path))
+                    item.setToolTip(file_path)
+                    self.batch_files_listbox.addItem(item)
+        
+        self.update_batch_stats()
+
+    def remove_selected_batch_files(self):
+        """Remove selected files from batch list"""
+        selected_items = self.batch_files_listbox.selectedItems()
+        if not selected_items:
+            return
+            
+        # Remove items in reverse order to maintain correct indices
+        indices = []
+        for item in selected_items:
+            indices.append(self.batch_files_listbox.row(item))
+        
+        indices.sort(reverse=True)
+        
+        for index in indices:
+            self.batch_files_listbox.takeItem(index)
+        
+        self.update_batch_stats()
+
+    def clear_batch_files(self):
+        """Clear all files from batch list"""
+        self.batch_files_listbox.clear()
+        self.update_batch_stats()
+
+    def get_batch_archive_files(self):
+        """Get list of all archive files in batch list"""
+        file_paths = []
+        for i in range(self.batch_files_listbox.count()):
+            item = self.batch_files_listbox.item(i)
+            file_paths.append(item.toolTip())
+        return file_paths
+
+    def on_batch_files_dropped(self, file_paths):
+        """Handle files dropped in batch area"""
+        self.add_batch_files(file_paths)
+
+    def update_batch_stats(self):
+        """Update batch statistics display"""
+        total_count = self.batch_files_listbox.count()
+        self.batch_total_count_label.setText(f"Total: {total_count}")
+        self.batch_success_count_label.setText("Success: 0")
+        self.batch_failed_count_label.setText("Failed: 0")
+
+    def start_batch_extract(self):
+        """Start batch extraction process"""
+        file_paths = self.get_batch_archive_files()
+        
+        if not file_paths:
+            self._show_popup(
+                target=self.batch_start_btn,
+                icon=InfoBarIcon.ERROR,
+                title='Error',
+                content='Please add archive files to extract',
+                duration=2000
+            )
+            return
+
+        if not self.batch_extract_dest_path:
+            self._show_popup(
+                target=self.batch_extract_dest_text,
+                icon=InfoBarIcon.ERROR,
+                title='Error',
+                content='Please specify the extraction destination folder',
+                duration=2000
+            )
+            return
+
+        # Validate destination folder
+        if not os.path.exists(self.batch_extract_dest_path):
+            try:
+                os.makedirs(self.batch_extract_dest_path, exist_ok=True)
+            except Exception as e:
+                self._show_popup(
+                    target=self.batch_start_btn,
+                    icon=InfoBarIcon.ERROR,
+                    title='Error',
+                    content=f'Failed to create destination folder: {str(e)}',
+                    duration=2000
+                )
+                return
+
+        # Create batch extract options
+        create_subfolders = self.batch_create_subfolders_check.isChecked()
+        
+        # Get overwrite strategy
+        overwrite_strategy = self.overwrite_strategy_combo.currentText()
+        
+        # Determine overwrite behavior based on strategy
+        if overwrite_strategy == "Overwrite all":
+            overwrite_files = True
+            skip_existing = False
+        elif overwrite_strategy == "Skip existing":
+            overwrite_files = False
+            skip_existing = True
+        elif overwrite_strategy == "Rename new":
+            overwrite_files = False
+            skip_existing = False
+            # Note: Rename new functionality would need to be implemented in the archive_manager
+        elif overwrite_strategy == "Overwrite if newer":
+            overwrite_files = True
+            skip_existing = False
+            # Note: Overwrite if newer functionality would need to be implemented in the archive_manager
+        else:
+            # Default behavior
+            overwrite_files = self.batch_overwrite_files_check.isChecked()
+            skip_existing = self.batch_skip_existing_files_check.isChecked()
+        
+        # Reset progress and statistics
+        self.batch_progress.setValue(0)
+        self.update_batch_stats()
+        self.batch_progress_label.setText("Preparing for batch extraction...")
+        
+        # Disable start button and enable stop button
+        self.batch_start_btn.setEnabled(False)
+        self.batch_stop_btn.setEnabled(True)
+        
+        # Create and start batch worker
+        self.batch_extract_worker = BatchExtractWorker(
+            file_paths, 
+            self.batch_extract_dest_path, 
+            create_subfolders, 
+            overwrite_files,
+            parent_gui=self  # Pass reference to main GUI for password dialogs
+        )
+        self.batch_extract_worker_thread = QThread()
+        self.batch_extract_worker.moveToThread(self.batch_extract_worker_thread)
+        
+        # Connect signals
+        self.batch_extract_worker.finished.connect(self.on_batch_extract_finished)
+        self.batch_extract_worker.progress_updated.connect(self.on_batch_extract_progress)
+        self.batch_extract_worker.conversion_error.connect(self.on_batch_extract_error)
+        self.batch_extract_worker.individual_progress.connect(self.on_batch_individual_progress)
+        self.batch_extract_worker.status_updated.connect(self.on_batch_status_updated)
+        self.batch_extract_worker_thread.started.connect(self.batch_extract_worker.run)
+        self.batch_extract_worker_thread.start()
+
+    def stop_batch_extract(self):
+        """Stop batch extraction process"""
+        if hasattr(self, 'batch_extract_worker'):
+            self.batch_extract_worker.stop()
+            self.batch_progress_label.setText("Stopping batch extraction...")
+            # Disable stop button to prevent multiple stops
+            self.batch_stop_btn.setEnabled(False)
+            # Start a timer to check if thread has stopped after a timeout
+            QTimer.singleShot(2000, self._check_batch_thread_status)
+        
+    def _check_batch_thread_status(self):
+        """Check if batch thread has stopped after timeout"""
+        if hasattr(self, 'batch_extract_worker_thread') and self.batch_extract_worker_thread.isRunning():
+            # Thread is still running, try to force stop
+            self.batch_progress_label.setText("Force stopping batch extraction...")
+            self._force_stop_batch_thread()
+            self.on_batch_extract_stopped()
+        
+    def _force_stop_batch_thread(self):
+        """Force stop batch extraction thread"""
+        if hasattr(self, 'batch_extract_worker_thread') and self.batch_extract_worker_thread.isRunning():
+            try:
+                # Try to quit gracefully first
+                self.batch_extract_worker_thread.quit()
+                if not self.batch_extract_worker_thread.wait(1000):  # Wait 1 second
+                    # If graceful quit fails, terminate
+                    self.batch_extract_worker_thread.terminate()
+                    self.batch_extract_worker_thread.wait(1000)  # Wait another second
+            except Exception as e:
+                print(f"Error stopping batch thread: {str(e)}")
+        
+    def on_batch_extract_stopped(self):
+        """Handle batch extraction stopped by user"""
+        self.batch_progress_label.setText("Batch extraction stopped by user")
+        self._cleanup_batch_thread()
+        # Update UI
+        self.batch_start_btn.setEnabled(True)
+        self.batch_stop_btn.setEnabled(False)
+        
+    def _cleanup_batch_thread(self):
+        """Clean up batch extraction thread and worker resources"""
+        # Clean up worker thread
+        if hasattr(self, 'batch_extract_worker_thread'):
+            if self.batch_extract_worker_thread.isRunning():
+                try:
+                    self.batch_extract_worker_thread.quit()
+                    self.batch_extract_worker_thread.wait(1000)
+                except Exception as e:
+                    print(f"Error cleaning up batch thread: {str(e)}")
+            
+            # Delete thread object
+            self.batch_extract_worker_thread.deleteLater()
+            delattr(self, 'batch_extract_worker_thread')
+        
+        # Clean up worker
+        if hasattr(self, 'batch_extract_worker'):
+            # Delete worker object
+            self.batch_extract_worker.deleteLater()
+            delattr(self, 'batch_extract_worker')
+
+    def on_batch_extract_progress(self, processed_count, total_count, current_file, success_count, failed_count):
+        """Handle batch extraction progress update"""
+        progress_percentage = int((processed_count / total_count) * 100)
+        self.batch_progress.setValue(progress_percentage)
+        
+        # Update statistics
+        self.batch_total_count_value.setText(str(total_count))
+        self.batch_success_count_value.setText(str(success_count))
+        self.batch_failed_count_value.setText(str(failed_count))
+        
+        # Update progress label with more detailed information
+        current_file_name = os.path.basename(current_file) if current_file else ""
+        self.batch_progress_label.setText(f"Processing: {current_file_name} ({processed_count}/{total_count}) - {progress_percentage}%")
+    
+    def on_batch_individual_progress(self, archive_name, message, progress):
+        """Handle individual archive extraction progress"""
+        # Update status bar with individual file progress
+        self.status_bar.showMessage(f"Extracting {archive_name}: {message} - {progress}%")
+    
+    def on_batch_status_updated(self, status_message):
+        """Handle batch extraction status updates"""
+        # Update status bar with general status messages
+        self.status_bar.showMessage(status_message)
+
+    def on_batch_extract_finished(self, success_count, failed_count, success_files=None, failed_files=None):
+        """Handle batch extraction finished"""
+        # Clean up thread
+        self._cleanup_batch_thread()
+        
+        # Update final statistics
+        total_count = success_count + failed_count
+        self.batch_total_count_value.setText(str(total_count))
+        self.batch_success_count_value.setText(str(success_count))
+        self.batch_failed_count_value.setText(str(failed_count))
+        
+        # Re-enable start button and disable stop button
+        self.batch_start_btn.setEnabled(True)
+        self.batch_stop_btn.setEnabled(False)
+        
+        # Show completion message with detailed results
+        result_message = f"Batch extraction completed: {success_count} successful, {failed_count} failed"
+        self.batch_progress_label.setText(result_message)
+        
+        # Show appropriate message based on results
+        if failed_count == 0:
+            self._show_info_bar(
+                title='Success',
+                content=f'All {total_count} archives extracted successfully!',
+                duration=3000
+            )
+        elif success_count == 0:
+            self._show_popup(
+                target=self.batch_progress,
+                icon=InfoBarIcon.ERROR,
+                title='Error',
+                content=f'Failed to extract all {total_count} archives.',
+                duration=3000
+            )
+            # Show detailed failures if available
+            if failed_files:
+                self._show_batch_extract_failures(failed_files)
+        else:
+            self._show_info_bar(
+                title='Partially Complete',
+                content=f'Extracted {success_count} out of {total_count} archives successfully.',
+                duration=3000
+            )
+            # Show detailed failures if available
+            if failed_files:
+                self._show_batch_extract_failures(failed_files)
+        
+        # Clear status bar
+        self.status_bar.clearMessage()
+    
+    def _show_batch_extract_failures(self, failed_files):
+        """Show detailed information about failed extractions"""
+        from UIkit import MessageBox
+        
+        # Create detailed failure message
+        failure_details = "Failed to extract the following archives:\n\n"
+        for file_path, error_msg in failed_files[:10]:  # Show first 10 failures
+            file_name = os.path.basename(file_path)
+            failure_details += f"• {file_name}: {error_msg}\n"
+        
+        if len(failed_files) > 10:
+            failure_details += f"\n... and {len(failed_files) - 10} more failures."
+        
+        # Show message box with failure details
+        msg_box = MessageBox(
+            'Batch Extraction Failures',
+            failure_details,
+            self
+        )
+        msg_box.yesButton.setText('OK')
+        msg_box.exec()
+        
+    def _force_cleanup_batch_thread(self):
+        """Deprecated method, use _cleanup_batch_thread instead"""
+        self._cleanup_batch_thread()
+
+    def on_batch_extract_error(self, error_message):
+        """Handle batch extraction error"""
+        # Clean up thread
+        self._force_cleanup_batch_thread()
+        
+        # Re-enable start button and disable stop button
+        self.batch_start_btn.setEnabled(True)
+        self.batch_stop_btn.setEnabled(False)
+        
+        self._show_popup(
+            target=self.batch_progress,
+            icon=InfoBarIcon.ERROR,
+            title='Error',
+            content=f'Batch extraction error: {str(error_message)}',
+            duration=3000
+        )
+
+    def on_batch_extract_stopped(self):
+        """Handle batch extraction stopped by user"""
+        # Clean up thread
+        self._force_cleanup_batch_thread()
+        
+        # Re-enable start button and disable stop button
+        self.batch_start_btn.setEnabled(True)
+        self.batch_stop_btn.setEnabled(False)
+        
+        self.batch_progress_label.setText("Stopped")
+        
+        self._show_popup(
+            target=self.batch_progress,
+            icon=InfoBarIcon.WARNING,
+            title='Stopped',
+            content='Batch extraction stopped by user.',
+            duration=2000
+        )
+
+    def _force_cleanup_batch_thread(self):
+        """Force cleanup batch extraction thread"""
+        if hasattr(self, 'batch_extract_worker_thread') and self.batch_extract_worker_thread.isRunning():
+            self.batch_extract_worker_thread.quit()
+            self.batch_extract_worker_thread.wait()
+
+    def reset_batch_ui(self):
+        """Reset batch extraction UI to initial state"""
+        self.batch_files_listbox.clear()
+        self.batch_extract_dest_path = ""
+        self.batch_extract_dest_text.setText("Select destination folder...")
+        self.batch_create_subfolders_check.setChecked(True)
+        self.batch_overwrite_files_check.setChecked(False)
+        self.batch_progress.setValue(0)
+        self.update_batch_stats()
+        self.batch_progress_label.setText("Ready")
+
     def auto_set_extract_dest_from_file(self, file_path):
         """Automatically set the extract destination to the file's parent directory"""
         try:
@@ -1067,6 +2672,7 @@ class ZipGUI(QMainWindow):
             print(f"Warning: Could not auto-set extract destination: {e}")
 
     def update_extract_progress(self, message, progress):
+        # Update both progress bar and label
         self.extract_progress_label.setText(message)
         print(f"[Extract Progress] {message}")  # Print progress information to console
         if progress >= 0:
@@ -1092,11 +2698,15 @@ class ZipGUI(QMainWindow):
             )
             return
 
-        # 清理可能存在的旧线程
+        # Clean up any existing old threads
         self._force_cleanup_thread()
 
         self.extract_progress_label.setText("Starting archive extraction...")
         self.extract_progress.setValue(0)
+        
+        # Enable cancel button and disable extract button during operation
+        self.extract_button.setEnabled(False)
+        self.extract_cancel_button.setEnabled(True)
 
         # Check if archive is password protected by attempting to list contents first
         try:
@@ -1148,11 +2758,12 @@ class ZipGUI(QMainWindow):
         self.extract_zip_worker.progress_updated.connect(self.update_extract_progress)
         self.extract_zip_worker.conversion_error.connect(self.on_extract_archive_error)
         self.extract_zip_worker.password_required.connect(self.on_extract_archive_error)
+        self.extract_zip_worker.canceled.connect(self.on_extract_archive_canceled)
         self.extract_zip_worker_thread.started.connect(self.extract_zip_worker.run)
         self.extract_zip_worker_thread.start()
 
     def on_extract_archive_finished(self):
-        # 确保线程被正确清理
+        # Ensure thread is properly cleaned up
         self._force_cleanup_thread()
         
         # Update password status to indicate successful extraction
@@ -1187,7 +2798,7 @@ class ZipGUI(QMainWindow):
             # Update password status to indicate password required (not incorrect)
             self.update_password_status_extract(True, "Password Required")
             
-            # 循环提示用户输入密码，直到输入正确的密码或取消
+            # Loop prompting user for password until correct password is entered or cancelled
             while True:
                 # Prompt for password again with neutral title and message
                 from password_dialog import get_password
@@ -1195,31 +2806,34 @@ class ZipGUI(QMainWindow):
                                       f"Please enter the password for '{os.path.basename(self.extract_zip_path)}':",
                                       "")  # Always use empty error message
                 if password:
-                    # 强制终止之前的线程
+                    # Force terminate previous thread
                     self._force_cleanup_thread()
                     
                     # Retry extraction with new password
                     self.extract_progress_label.setText("Retrying archive extraction...")
                     self.extract_progress.setValue(0)
                     
-                    # 创建新的工作线程
+                    # Create new worker thread
                     self.extract_zip_worker = ExtractZipWorker(self.extract_zip_path, self.extract_dest_path, password)
                     self.extract_zip_worker_thread = QThread()
                     self.extract_zip_worker.moveToThread(self.extract_zip_worker_thread)
+                    
+                    # Connect signals including canceled signal
+                    self.extract_zip_worker.canceled.connect(self.on_extract_archive_canceled)
 
-                    # 连接信号
+                    # Connect signals
                     self.extract_zip_worker.finished.connect(self.on_extract_archive_finished)
                     self.extract_zip_worker.progress_updated.connect(self.update_extract_progress)
                     self.extract_zip_worker.conversion_error.connect(self.on_extract_archive_error)
                     self.extract_zip_worker.password_required.connect(self.on_extract_archive_error)
                     self.extract_zip_worker_thread.started.connect(self.extract_zip_worker.run)
                     
-                    # 启动线程
+                    # Start thread
                     self.extract_zip_worker_thread.start()
                     return
                 else:
                     # User cancelled password entry
-                    # 强制终止之前的线程
+                    # Force terminate previous thread
                     self._force_cleanup_thread()
                     
                     self._show_popup(
@@ -1232,7 +2846,7 @@ class ZipGUI(QMainWindow):
                     self.extract_progress_label.setText("Archive extraction cancelled.")
                     return
         
-        # 对于非密码错误，确保线程被正确清理
+        # For non-password errors, ensure thread is properly cleaned up
         self._force_cleanup_thread()
         
         # Show error message for other types of errors
@@ -1248,29 +2862,66 @@ class ZipGUI(QMainWindow):
         )
         self.extract_progress_label.setText("Archive extraction failed.")
     
+    def cancel_extract_archive(self):
+        """Cancel the archive extraction process"""
+        if self.confirm_cancel("Archive Extraction"):
+            self.log_cancel("Extract Archive")
+            # Stop the worker
+            if self.extract_zip_worker:
+                self.extract_zip_worker.stop()
+        
+    def on_extract_archive_canceled(self):
+        """Handle archive extraction canceled"""
+        # Use forced thread cleanup method
+        self._force_cleanup_thread()
+        
+        # Update progress and status
+        self.extract_progress.setValue(0)
+        self.extract_progress_label.setText("Archive extraction canceled")
+        
+        # Show cancel notification
+        self._show_info_bar(
+            title='Canceled',
+            content='Archive extraction canceled by user',
+            duration=2000
+        )
+        
+        # Update password status to indicate unknown status
+        self.is_password_protected = False
+        self.update_password_status_extract(False, "Archive Status Unknown")
+    
     def _force_cleanup_thread(self):
-        """强制清理线程，确保完全终止"""
+        """Force cleanup thread to ensure complete termination"""
+        # Reset button states
+        self.extract_button.setEnabled(True)
+        self.extract_cancel_button.setEnabled(False)
+        
         if self.extract_zip_worker_thread:
             if self.extract_zip_worker_thread.isRunning():
-                # 先尝试正常退出
+                # First try to exit normally
                 self.extract_zip_worker_thread.quit()
-                if not self.extract_zip_worker_thread.wait(500):  # 等待0.5秒
-                    # 如果正常退出失败，强制终止
+                if not self.extract_zip_worker_thread.wait(500):  # Wait 0.5 seconds
+                    # If normal exit fails, force terminate
                     self.extract_zip_worker_thread.terminate()
-                    if not self.extract_zip_worker_thread.wait(500):  # 再等待0.5秒
+                    if not self.extract_zip_worker_thread.wait(500):  # 再Wait 0.5 seconds
                         # 如果终止也失败，尝试杀死线程
                         self.extract_zip_worker_thread.kill()
-                        self.extract_zip_worker_thread.wait(500)  # 等待0.5秒
+                        self.extract_zip_worker_thread.wait(500)  # Wait 0.5 seconds
             
-            # 删除线程对象
+            # Delete thread object
             self.extract_zip_worker_thread.deleteLater()
             self.extract_zip_worker_thread = None
         
         if self.extract_zip_worker:
-            # 删除worker对象
+            # Delete worker object
             self.extract_zip_worker.deleteLater()
             self.extract_zip_worker = None
 
+
+    def _on_add_archive_dropped(self, file_paths):
+        """Handle archive file dropped on add-to-archive drop zone"""
+        if file_paths:
+            self.add_zip_text.setText(file_paths[0])
 
     def browse_add_archive(self):
         file_dialog = QFileDialog(self)
@@ -1281,6 +2932,8 @@ class ZipGUI(QMainWindow):
         if file_dialog.exec():
             self.add_zip_path = file_dialog.selectedFiles()[0]
             self.add_zip_text.setText(self.add_zip_path)
+            # Load archive contents into tree
+            self._load_archive_to_tree()
             # Auto-detect password protection using the new PasswordDetector
             try:
                 from support.password_detector import password_detector
@@ -1295,6 +2948,546 @@ class ZipGUI(QMainWindow):
                 print(f"Warning: Could not detect password protection: {e}")
                 self.is_password_protected = False
 
+    def _load_archive_to_tree(self):
+        """Load archive contents into the tree view"""
+        if not self.add_zip_path or not os.path.exists(self.add_zip_path):
+            return
+
+        # Clear existing items
+        self.archive_tree.clear()
+
+        try:
+            from support.archive_manager import list_archive_contents
+            contents = list_archive_contents(self.add_zip_path)
+
+            if not contents:
+                # Show empty message
+                item = QTreeWidgetItem(self.archive_tree)
+                item.setText(0, "Archive is empty")
+                item.setIcon(0, FluentIcon.INFO.qicon())
+                return
+
+            # Build tree structure from contents
+            folder_nodes = {"": None}
+
+            # First pass: create all folders
+            for item_data in contents:
+                name = item_data.get("name", "")
+                is_dir = item_data.get("is_dir", False)
+
+                if not name:
+                    continue
+
+                # Split path
+                parts = name.rstrip("/").split("/")
+
+                # Create folder nodes
+                current_path = ""
+                for i, part in enumerate(parts[:-1] if not is_dir else parts):
+                    if current_path:
+                        current_path += "/" + part
+                    else:
+                        current_path = part
+
+                    if current_path not in folder_nodes:
+                        # Create folder item
+                        parent_node = folder_nodes.get(parts[0] if not current_path.split("/")[0] else current_path.rsplit("/", 1)[0], self.archive_tree)
+                        folder_item = QTreeWidgetItem(parent_node if parent_node else self.archive_tree)
+                        folder_item.setText(0, part)
+                        folder_item.setText(1, "<DIR>")
+                        folder_item.setText(2, "Folder")
+                        folder_item.setIcon(0, FluentIcon.FOLDER.qicon())
+                        folder_nodes[current_path] = folder_item
+
+            # Second pass: add files
+            for item_data in contents:
+                name = item_data.get("name", "")
+                size = item_data.get("size", 0)
+                is_dir = item_data.get("is_dir", False)
+
+                if not name or is_dir:
+                    continue
+
+                parts = name.rstrip("/").split("/")
+                file_name = parts[-1]
+                parent_path = "/".join(parts[:-1]) if len(parts) > 1 else ""
+
+                # Find parent
+                parent_item = folder_nodes.get(parent_path, self.archive_tree)
+
+                # Create file item
+                file_item = QTreeWidgetItem(parent_item)
+                file_item.setText(0, file_name)
+                file_item.setText(1, self._format_file_size(size))
+                file_item.setText(2, "File")
+                icon = self._get_file_icon(file_name, is_dir=False)
+                file_item.setIcon(0, icon.qicon())
+
+            # Expand all
+            self.archive_tree.expandAll()
+
+        except Exception as e:
+            print(f"Error loading archive: {e}")
+            item = QTreeWidgetItem(self.archive_tree)
+            item.setText(0, f"Error: {str(e)}")
+            item.setIcon(0, FluentIcon.INFO.qicon())
+
+    # --- Add to Archive Helper Methods ---
+    def _on_add_archive_path_changed(self, text):
+        """Handle archive path change - refresh preview"""
+        if text and os.path.exists(text):
+            self.add_zip_path = text
+            self._load_archive_to_tree()
+
+    def _refresh_unified_tree(self):
+        """Refresh unified tree with archive contents and pending files using Model/View"""
+        # Clear the model first
+        self.add_unified_tree_model.clear()
+        self.add_unified_tree_model.setHorizontalHeaderLabels(["Name", "Size", "Type", "Path"])
+
+        # Re-apply column widths after clearing model
+        self.add_unified_tree.setColumnWidth(0, 500)
+        self.add_unified_tree.setColumnWidth(1, 100)
+        self.add_unified_tree.setColumnWidth(2, 100)
+        self.add_unified_tree.setColumnWidth(3, 200)
+
+        # Add archive existing contents (excluding deleted items)
+        if self.add_zip_path and os.path.exists(self.add_zip_path):
+            try:
+                contents = list_archive_contents(self.add_zip_path)
+                if contents:
+                    # Filter out deleted items
+                    if hasattr(self, '_files_to_delete') and self._files_to_delete:
+                        contents = [c for c in contents if c.get('name') not in self._files_to_delete]
+                    self.add_unified_tree_model.add_existing_items(contents)
+            except Exception as e:
+                print(f"Error loading archive contents: {e}")
+
+        # Add pending files (in green)
+        self._refresh_pending_files_in_tree()
+
+        # Expand all nodes to show the structure
+        self.add_unified_tree.expandAll()
+
+    def _refresh_tree_view(self):
+        """Refresh the entire tree view"""
+        self._refresh_unified_tree()
+
+    def _refresh_pending_files_in_tree(self):
+        """Add pending files to unified tree model using new architecture"""
+        # Get existing folders from archive
+        existing_folders = []
+        if self.add_zip_path and os.path.exists(self.add_zip_path):
+            try:
+                contents = list_archive_contents(self.add_zip_path)
+                for item in contents:
+                    if item.get('is_dir'):
+                        existing_folders.append(item.get('name', ''))
+            except Exception:
+                pass
+
+        # Build folder structure from pending manager
+        root_node = self._pending_manager.build_folder_structure(existing_folders)
+
+        # Add pending items to tree model
+        self.add_unified_tree_model.add_pending_items_from_manager(root_node)
+
+    def _insert_files_to_archive(self):
+        """Insert files to archive (browse dialog)"""
+        file_dialog = QFileDialog(self)
+        file_dialog.setNameFilter("All files (*.*)")
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                self._add_pending_files(selected_files)
+
+    def _insert_folder_to_archive(self):
+        """Insert folder to archive (browse dialog)"""
+        folder_dialog = QFileDialog(self)
+        folder_dialog.setFileMode(QFileDialog.FileMode.Directory)
+        folder_dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        if folder_dialog.exec():
+            selected_folders = folder_dialog.selectedFiles()
+            if selected_folders:
+                self._add_pending_files(selected_folders)
+
+    def _add_pending_files(self, file_paths):
+        """Add files to pending list and refresh tree"""
+        target = self.add_target_path if hasattr(self, 'add_target_path') else ""
+
+        for file_path in file_paths:
+            if os.path.exists(file_path):
+                self._pending_manager.add_file(file_path, target)
+
+        # Refresh tree view
+        self._refresh_tree_view()
+
+    def _remove_pending_file(self):
+        """Remove selected file/folder from tree"""
+        current_index = self.add_unified_tree.currentIndex()
+        if not current_index.isValid():
+            return
+
+        item = self.add_unified_tree_model.itemFromIndex(current_index)
+        if not item:
+            return
+
+        item_type = item.data(Qt.ItemDataRole.UserRole + 2)
+        is_dir = item.data(Qt.ItemDataRole.UserRole + 3)
+        item_path = item.data(Qt.ItemDataRole.UserRole + 1)
+        item_name = item.text()
+
+        # Initialize deletion tracking for existing files
+        if not hasattr(self, '_files_to_delete'):
+            self._files_to_delete = set()
+
+        if item_type == "pending":
+            # Handle pending items - mark for deletion in manager
+            if is_dir:
+                # It's a folder - mark entire folder as deleted
+                folder_path = item_path.strip('/') if item_path else item_name
+                self._pending_manager.mark_deleted(folder_path + '/')
+            else:
+                # Mark single file for deletion
+                full_path = item_path.strip('/') if item_path else item_name
+                self._pending_manager.mark_deleted(full_path)
+
+        elif item_type == "existing":
+            # Handle existing items
+            if is_dir:
+                files_in_folder = self._collect_files_from_tree_folder(item)
+                for f in files_in_folder:
+                    self._files_to_delete.add(f)
+            else:
+                self._files_to_delete.add(item_path)
+
+        # Refresh tree view
+        self._refresh_tree_view()
+
+    def _collect_files_in_folder(self, folder_item, files_list):
+        """Recursively collect all file names in a pending folder"""
+        row_count = folder_item.rowCount()
+        for row in range(row_count):
+            child = folder_item.child(row, 0)
+            if child:
+                child_is_dir = child.data(Qt.ItemDataRole.UserRole + 3)
+                if child_is_dir:
+                    # Recursively collect from subfolder
+                    self._collect_files_in_folder(child, files_list)
+                else:
+                    # Add file name to list
+                    files_list.append(child.text())
+
+    def _collect_files_from_tree_folder(self, folder_item):
+        """Recursively collect all file paths from a folder in the tree model"""
+        files_list = []
+        row_count = folder_item.rowCount()
+        for row in range(row_count):
+            child = folder_item.child(row, 0)
+            if child:
+                child_is_dir = child.data(Qt.ItemDataRole.UserRole + 3)
+                child_path = child.data(Qt.ItemDataRole.UserRole + 1)
+                if child_is_dir:
+                    # Recursively collect from subfolder
+                    files_list.extend(self._collect_files_from_tree_folder(child))
+                elif child_path:
+                    # Add file path to list
+                    files_list.append(child_path)
+        return files_list
+
+    def _clear_pending_files(self):
+        """Clear all pending files"""
+        self._pending_manager.clear()
+        self._refresh_unified_tree()
+
+    def _on_unified_tree_item_clicked(self, index):
+        """Handle unified tree item click"""
+        if not index.isValid():
+            return
+        
+        # For QStandardItemModel, use itemFromIndex instead of internalPointer
+        item = self.add_unified_tree_model.itemFromIndex(index)
+        if not item:
+            return
+        
+        # Get item data from UserRole
+        item_type = item.data(Qt.ItemDataRole.UserRole + 2)
+        is_dir = item.data(Qt.ItemDataRole.UserRole + 3)
+        path = item.data(Qt.ItemDataRole.UserRole + 1)
+        
+        if item_type == "existing":
+            # For existing items, set target path if it's a folder
+            if is_dir:
+                self.add_target_path = path
+                self.add_target_path_label.setText(f"/{path}")
+    
+    def _on_add_files_dropped(self, files):
+        """Handle files dropped to add drop area"""
+        if not hasattr(self, 'add_file_path'):
+            self.add_file_path = []
+        if not isinstance(self.add_file_path, list):
+            self.add_file_path = []
+        self.add_file_path.extend(files)
+        self.update_add_files_list(self.add_file_path)
+
+    def _on_file_dropped_on_file(self, source_name, target_name):
+        """Handle when a file is dropped onto another file in the tree"""
+        # Show CreateFolderMessageBox dialog
+        dialog = CreateFolderMessageBox(source_name, target_name, self)
+
+        if dialog.exec() and dialog.folder_name:
+            folder_name = dialog.folder_name
+            self._create_folder_and_move_files(source_name, target_name, folder_name)
+            self._show_info_bar(
+                title='Folder Created',
+                content=f'Created folder "{folder_name}" and moved files into it',
+                duration=2000
+            )
+
+    def _on_file_dropped_on_folder(self, file_name, folder_name):
+        """Handle when a file is dropped onto a folder in the tree"""
+        file_item = self._find_tree_item(file_name, is_dir=False)
+        folder_item = self._find_tree_item(folder_name, is_dir=True)
+
+        if file_item and folder_item:
+            old_parent = file_item.parent() or self.archive_tree.invisibleRootItem()
+            index = old_parent.indexOfChild(file_item)
+            taken = old_parent.takeChild(index)
+            folder_item.addChild(taken)
+            folder_full_path = self._get_item_archive_path(folder_item)
+            self._pending_manager.update_file_target_by_basename(
+                file_name, f"{folder_full_path}/{file_name}")
+            self.archive_tree.expandAll()
+
+    def _find_tree_item(self, name, is_dir=None, parent=None):
+        """Recursively find a tree item by name and optionally by type"""
+        if parent is None:
+            parent = self.archive_tree.invisibleRootItem()
+        for i in range(parent.childCount()):
+            child = parent.child(i)
+            if not child:
+                continue
+            item_is_dir = child.data(0, Qt.ItemDataRole.UserRole + 3) is True
+            if child.text(0) == name and (is_dir is None or item_is_dir == is_dir):
+                return child
+            result = self._find_tree_item(name, is_dir, child)
+            if result:
+                return result
+        return None
+
+    def _get_item_archive_path(self, item) -> str:
+        """Walk up the tree to build full archive path like 'outer/inner/name'"""
+        parts = []
+        current = item
+        while current is not None:
+            parts.append(current.text(0))
+            current = current.parent()
+        parts.reverse()
+        return "/".join(parts)
+
+    def _create_folder_and_move_files(self, source_name, target_name, folder_name):
+        """Create a new folder in the common parent and move files into it"""
+        # Find items in tree before any modifications
+        source_item = self._find_tree_item(source_name, is_dir=False)
+        target_item = self._find_tree_item(target_name, is_dir=False)
+
+        if source_item and target_item:
+            # Capture parents before takeChild removes them
+            src_parent_item = source_item.parent()
+            tgt_parent_item = target_item.parent()
+
+            # Determine the insertion parent and full folder path
+            if src_parent_item is not None and src_parent_item is tgt_parent_item:
+                insert_parent = src_parent_item
+                parent_path = self._get_item_archive_path(src_parent_item)
+                full_folder_path = f"{parent_path}/{folder_name}"
+            else:
+                insert_parent = self.archive_tree.invisibleRootItem()
+                full_folder_path = folder_name
+
+            # Update pending manager with correct full paths
+            self._pending_manager.update_file_target_by_basename(source_name, f"{full_folder_path}/{source_name}")
+            self._pending_manager.update_file_target_by_basename(target_name, f"{full_folder_path}/{target_name}")
+
+            # Take items from their current parents
+            src_root = src_parent_item or self.archive_tree.invisibleRootItem()
+            tgt_root = tgt_parent_item or self.archive_tree.invisibleRootItem()
+            taken_src = src_root.takeChild(src_root.indexOfChild(source_item))
+            taken_tgt = tgt_root.takeChild(tgt_root.indexOfChild(target_item))
+
+            # Create folder item
+            folder_item = QTreeWidgetItem()
+            folder_item.setText(0, folder_name)
+            folder_item.setText(1, "<DIR>")
+            folder_item.setText(2, "Folder")
+            folder_item.setIcon(0, FluentIcon.FOLDER.qicon())
+            folder_item.setData(0, Qt.ItemDataRole.UserRole + 3, True)
+
+            # Add files under folder
+            folder_item.addChild(taken_src)
+            folder_item.addChild(taken_tgt)
+
+            # Insert at the correct parent (common parent or root)
+            insert_parent.addChild(folder_item)
+
+        self.archive_tree.expandAll()
+
+    def browse_add_folder(self):
+        """Browse for folder to add to archive"""
+        folder_dialog = QFileDialog(self)
+        folder_dialog.setFileMode(QFileDialog.FileMode.Directory)
+        folder_dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        if folder_dialog.exec():
+            selected_folders = folder_dialog.selectedFiles()
+            if selected_folders:
+                if not hasattr(self, 'add_file_path'):
+                    self.add_file_path = []
+                if not isinstance(self.add_file_path, list):
+                    self.add_file_path = []
+                self.add_file_path.extend(selected_folders)
+                self.update_add_files_list(self.add_file_path)
+
+    def remove_add_file(self):
+        """Remove selected file from add list"""
+        current_item = self.add_files_tree.currentItem()
+        if current_item:
+            index = self.add_files_tree.indexOfTopLevelItem(current_item)
+            self.add_files_tree.takeTopLevelItem(index)
+            # Update internal list
+            if hasattr(self, 'add_file_path') and isinstance(self.add_file_path, list):
+                if index < len(self.add_file_path):
+                    self.add_file_path.pop(index)
+
+    def clear_add_files(self):
+        """Clear all files from add list"""
+        self.add_files_tree.clear()
+        self.add_file_path = []
+
+    def refresh_add_archive_preview(self):
+        """Refresh archive contents preview"""
+        if not self.add_zip_path or not os.path.exists(self.add_zip_path):
+            self.add_archive_tree.clear()
+            return
+        try:
+            contents = list_archive_contents(self.add_zip_path)
+            self.add_archive_tree.clear()
+            if contents:
+                self._build_add_archive_tree(contents)
+        except Exception as e:
+            print(f"Error loading archive preview: {e}")
+            self.add_archive_tree.clear()
+
+    def _build_add_archive_tree(self, contents):
+        """Build tree structure for archive preview"""
+        folder_nodes = {"": self.add_archive_tree}
+        sorted_contents = sorted(contents, key=lambda x: x.get("name", ""))
+        for item in sorted_contents:
+            if not isinstance(item, dict) or "name" not in item:
+                continue
+            name = item["name"]
+            size = item.get("size", 0)
+            is_dir = item.get("is_dir", False)
+            path_parts = name.split("/")
+            if is_dir:
+                parent_path = "/".join(path_parts[:-1]) if len(path_parts) > 1 else ""
+                current_name = path_parts[-1] if path_parts else name
+            else:
+                parent_path = "/".join(path_parts[:-1]) if len(path_parts) > 1 else ""
+                current_name = path_parts[-1] if path_parts else name
+            if parent_path not in folder_nodes:
+                self._create_add_archive_parent_nodes(folder_nodes, parent_path)
+            parent_node = folder_nodes.get(parent_path, self.add_archive_tree)
+            node = QTreeWidgetItem(parent_node)
+            node.setText(0, current_name)
+            if is_dir:
+                node.setText(1, "<DIR>")
+                node.setIcon(0, FluentIcon.FOLDER.qicon())
+                current_path = name if name.endswith("/") else name + "/"
+                folder_nodes[current_path.rstrip("/")] = node
+            else:
+                node.setText(1, self._format_file_size(size))
+                icon = self._get_file_icon(current_name, is_dir=False)
+                node.setIcon(0, icon.qicon())
+
+    def _create_add_archive_parent_nodes(self, folder_nodes, parent_path):
+        """Create parent folder nodes for archive preview"""
+        if not parent_path or parent_path in folder_nodes:
+            return
+        parts = parent_path.split("/")
+        current_path = ""
+        for i, part in enumerate(parts):
+            if not part:
+                continue
+            if current_path:
+                current_path += "/" + part
+            else:
+                current_path = part
+            if current_path not in folder_nodes:
+                if i == 0:
+                    parent_node = self.add_archive_tree
+                else:
+                    parent_node = folder_nodes.get("/".join(parts[:i]), self.add_archive_tree)
+                node = QTreeWidgetItem(parent_node)
+                node.setText(0, part)
+                node.setText(1, "<DIR>")
+                node.setIcon(0, FluentIcon.FOLDER.qicon())
+                folder_nodes[current_path] = node
+
+    def _on_add_archive_item_clicked(self, item):
+        """Handle archive tree item click - set target path"""
+        # Build full path from item
+        path_parts = []
+        current = item
+        while current:
+            path_parts.insert(0, current.text(0))
+            current = current.parent()
+        full_path = "/".join(path_parts)
+        # Check if it's a directory
+        if item.text(1) == "<DIR>":
+            self.add_target_path = full_path
+            self.add_target_path_label.setText(f"/{full_path}")
+        else:
+            # For files, use parent directory
+            parent = item.parent()
+            if parent:
+                self._on_add_archive_item_clicked(parent)
+
+    def set_add_target_root(self):
+        """Set target path to root"""
+        self.add_target_path = ""
+        self.add_target_path_label.setText("/ (root)")
+
+    def update_add_files_list(self, files):
+        """Update the files to add tree"""
+        self.add_files_tree.clear()
+        if not files:
+            return
+        for file_path in files:
+            if not os.path.exists(file_path):
+                continue
+            item = QTreeWidgetItem(self.add_files_tree)
+            item.setText(0, os.path.basename(file_path))
+            if os.path.isdir(file_path):
+                item.setText(1, "<DIR>")
+                item.setIcon(0, FluentIcon.FOLDER.qicon())
+                # Calculate total size
+                total_size = 0
+                for root, dirs, filenames in os.walk(file_path):
+                    for f in filenames:
+                        fp = os.path.join(root, f)
+                        if os.path.exists(fp):
+                            total_size += os.path.getsize(fp)
+                item.setText(1, self._format_file_size(total_size))
+            else:
+                size = os.path.getsize(file_path)
+                item.setText(1, self._format_file_size(size))
+                icon = self._get_file_icon(file_path, is_dir=False)
+                item.setIcon(0, icon.qicon())
+            # Set target path
+            target = self.add_target_path if hasattr(self, 'add_target_path') else ""
+            item.setText(2, f"/{target}" if target else "/")
+
     def browse_add_file(self):
         file_dialog = QFileDialog(self)
         file_dialog.setNameFilter("All files (*.*)")
@@ -1304,11 +3497,210 @@ class ZipGUI(QMainWindow):
             if selected_files:
                 # Store files as list
                 self.add_file_path = selected_files
-                
-                # Update the UI display
+
+                # Add files to archive tree with green color for new files
+                self._add_files_to_archive_tree(selected_files)
+
+                # Also update legacy display
                 self.update_add_files_list(selected_files)
 
+                # Auto-save
+                self._schedule_auto_save()
+
+    def _add_files_to_archive_tree(self, files):
+        """Add files to archive tree with green color for new files"""
+        # Switch to Archives page
+        if hasattr(self, 'add_pivot'):
+            self.add_pivot.setCurrentItem("archives")
+
+        for file_path in files:
+            if not os.path.exists(file_path):
+                continue
+
+            # Create item
+            item = QTreeWidgetItem(self.archive_tree)
+            item.setText(0, os.path.basename(file_path))
+
+            if os.path.isdir(file_path):
+                item.setText(1, "<DIR>")
+                item.setText(2, "Folder")
+                item.setIcon(0, FluentIcon.FOLDER.qicon())
+                # Add children for directories
+                self._add_directory_children(item, file_path)
+            else:
+                size = os.path.getsize(file_path)
+                item.setText(1, self._format_file_size(size))
+                item.setText(2, "File")
+                icon = self._get_file_icon(file_path, is_dir=False)
+                item.setIcon(0, icon.qicon())
+
+            # Set green color for new files
+            item.setForeground(0, QColor(0, 200, 0))  # Green text
+
+            # Expand if has children
+            if item.childCount() > 0:
+                item.setExpanded(True)
+
+        # Expand root
+        self.archive_tree.expandAll()
+
+    def _add_directory_children(self, parent_item, dir_path):
+        """Recursively add directory contents to tree"""
+        try:
+            for entry in os.scandir(dir_path):
+                child_item = QTreeWidgetItem(parent_item)
+                child_item.setText(0, entry.name)
+
+                if entry.is_dir():
+                    child_item.setText(1, "<DIR>")
+                    child_item.setText(2, "Folder")
+                    child_item.setIcon(0, FluentIcon.FOLDER.qicon())
+                    self._add_directory_children(child_item, entry.path)
+                else:
+                    size = entry.stat().st_size
+                    child_item.setText(1, self._format_file_size(size))
+                    child_item.setText(2, "File")
+                    icon = self._get_file_icon(entry.name, is_dir=False)
+                    child_item.setIcon(0, icon.qicon())
+
+                # Green for new files
+                child_item.setForeground(0, QColor(0, 200, 0))
+        except PermissionError:
+            pass
+
+    def delete_selected_items(self):
+        """Delete selected items from the archive tree"""
+        selected = self.archive_tree.selectedItems()
+        if not selected:
+            return
+
+        # Confirmation dialog
+        count = len(selected)
+        msg = f"Delete {count} item(s) from the archive?"
+        w = MessageBox("Confirm Delete", msg, self)
+        w.yesButton.setText(self.tr('Yes'))
+        w.cancelButton.setText(self.tr('No'))
+        if not w.exec():
+            return
+
+        # Collect items to delete (including children for folders)
+        items_to_delete = []
+        for item in selected:
+            items_to_delete.append(item)
+            # If it's a folder, add all children
+            for i in range(item.childCount()):
+                child = item.child(i)
+                items_to_delete.append(child)
+
+        # Remove items from tree
+        for item in items_to_delete:
+            parent = item.parent()
+            if parent:
+                parent.removeChild(item)
+            else:
+                index = self.archive_tree.indexOfTopLevelItem(item)
+                if index >= 0:
+                    self.archive_tree.takeTopLevelItem(index)
+
+        self.delete_btn.setEnabled(len(self.archive_tree.selectedItems()) > 0)
+
+    def convert_archive_format(self):
+        """Convert archive to a different format"""
+        if not self.add_zip_path:
+            self._show_popup(
+                target=self.add_zip_text,
+                icon=InfoBarIcon.ERROR,
+                title='Error',
+                content='Please select an archive file first',
+                duration=2000
+            )
+            return
+
+        target_format = self.format_combo.currentText().lower()
+        source_path = Path(self.add_zip_path)
+        source_format = source_path.suffix.lower().lstrip('.')
+
+        if source_format == target_format:
+            self._show_popup(
+                target=self.format_combo,
+                icon=InfoBarIcon.WARNING,
+                title='Warning',
+                content='Source and target formats are the same',
+                duration=2000
+            )
+            return
+
+        # Show save dialog for new file
+        save_path = str(source_path.with_suffix(f'.{target_format}'))
+        new_path, _ = QFileDialog.getSaveFileName(
+            self, "Save As", save_path,
+            f"{target_format.upper()} files (*.{target_format})"
+        )
+
+        if not new_path:
+            return
+
+        self._show_info_bar(title='Converting', content=f'Converting to {target_format.upper()}...', duration=1000)
+
+        # TODO: Implement actual conversion using archive_manager
+
+    def _set_archive_password(self):
+        """Set or clear password for archive editing operations"""
+        if hasattr(self, '_add_archive_password') and self._add_archive_password:
+            # Password already set - ask to clear or change
+            w = MessageBox("Password Protection",
+                          "A password is already set. What would you like to do?", self)
+            w.yesButton.setText(self.tr('Change Password'))
+            w.cancelButton.setText(self.tr('Remove Password'))
+            if w.exec():
+                # Change password
+                from password_dialog import get_password
+                password = get_password(self, "Set Password",
+                                       "Enter new password for archive operations:")
+                if password:
+                    self._add_archive_password = password
+                    self.add_password_status.setText("Password set")
+                    self.add_password_status.setStyleSheet("color: #27ae60; font-weight: bold;")
+                    self.add_password_btn.setText("Change Password")
+            else:
+                # Remove password
+                self._add_archive_password = None
+                self.add_password_status.setText("No password set")
+                self.add_password_status.setStyleSheet("color: #888888;")
+                self.add_password_btn.setText("Set Password")
+        else:
+            # No password set - prompt to set one
+            from password_dialog import get_password
+            password = get_password(self, "Set Password",
+                                   "Enter password for archive operations:")
+            if password:
+                self._add_archive_password = password
+                self.add_password_status.setText("Password set")
+                self.add_password_status.setStyleSheet("color: #27ae60; font-weight: bold;")
+                self.add_password_btn.setText("Change Password")
+                self._show_info_bar(
+                    title='Password Set',
+                    content='Password protection enabled for archive operations',
+                    duration=2000
+                )
+
+    def _schedule_auto_save(self):
+        """Schedule auto-save with debounce so rapid additions batch together"""
+        if not hasattr(self, '_auto_save_timer'):
+            self._auto_save_timer = QTimer()
+            self._auto_save_timer.setSingleShot(True)
+            self._auto_save_timer.timeout.connect(self._auto_save_if_ready)
+        self._auto_save_timer.start(600)
+
+    def _auto_save_if_ready(self):
+        """Auto-save if archive path is set, pending files exist, and no operation running"""
+        if (self.add_zip_path and os.path.exists(self.add_zip_path)
+                and not self._pending_manager.is_empty()
+                and not self.add_to_zip_worker_thread):
+            self.start_add_to_archive()
+
     def update_add_progress(self, message, progress):
+        # Update both progress bar and label
         self.add_progress_label.setText(message)
         print(f"[Add Progress] {message}")  # Print progress information to console
         if progress >= 0:
@@ -1324,45 +3716,106 @@ class ZipGUI(QMainWindow):
                 duration=2000
             )
             return
-        if not self.add_file_path:
+
+        # Use pending manager instead of _pending_files
+        if self._pending_manager.is_empty():
             self._show_popup(
-                target=self.add_files_listbox,
+                target=self.add_unified_tree,
                 icon=InfoBarIcon.ERROR,
                 title='Error',
                 content='Please specify files to add to the archive',
                 duration=2000
             )
             return
+
         archive_format = Path(self.add_zip_path).suffix.lower().lstrip('.')
         # RAR format is now supported through external rar command
         # No need to show error message
 
+        # Check for conflicts before starting
+        if hasattr(self, 'add_unified_tree'):
+            # Get existing archive contents
+            existing_contents = []
+            if self.add_zip_path and os.path.exists(self.add_zip_path):
+                try:
+                    existing_contents = list_archive_contents(self.add_zip_path)
+                except Exception as e:
+                    print(f"Error loading archive contents for conflict check: {e}")
+
+            # Convert pending files to old format for conflict check
+            pending_files_old_format = []
+            for f in self._pending_manager.get_active_files():
+                pending_files_old_format.append({
+                    'path': f.path,
+                    'target': f.target
+                })
+
+            # Check for conflicts with existing files
+            conflicts = self.add_unified_tree.check_file_conflicts(pending_files_old_format, existing_contents)
+            if conflicts:
+                # Show conflict dialog
+                conflict_names = [os.path.basename(c['pending_file']['path']) for c in conflicts]
+                msg = MessageBox(
+                    self.tr('File Conflicts Detected'),
+                    self.tr(f'The following files conflict with existing archive contents:\n' +
+                           '\n'.join(conflict_names[:5]) +
+                           (f'\n... and {len(conflict_names) - 5} more' if len(conflict_names) > 5 else '') +
+                           '\n\nDo you want to overwrite existing files?'),
+                    self
+                )
+                msg.yesButton.setText(self.tr('Overwrite'))
+                msg.cancelButton.setText(self.tr('Cancel'))
+                if not msg.exec():
+                    return  # User cancelled
+
+            # Check for conflicts among pending files themselves
+            pending_conflicts = self.add_unified_tree.check_pending_conflicts(pending_files_old_format)
+            if pending_conflicts:
+                conflict_info = []
+                for c in pending_conflicts:
+                    file1 = os.path.basename(c['file1']['path'])
+                    file2 = os.path.basename(c['file2']['path'])
+                    path = c['common_path']
+                    conflict_info.append(f'  • "{file1}" and "{file2}" → {path}')
+
+                msg = MessageBox(
+                    self.tr('Duplicate Target Paths'),
+                    self.tr(f'Multiple files have the same target path:\n' +
+                           '\n'.join(conflict_info[:5]) +
+                           (f'\n... and {len(conflict_info) - 5} more' if len(conflict_info) > 5 else '') +
+                           '\n\nPlease resolve conflicts before adding to archive.'),
+                    self
+                )
+                msg.yesButton.setText(self.tr('OK'))
+                msg.cancelButton.hide()
+                msg.exec()
+                return  # Cannot proceed with conflicts
+
         self.add_progress_label.setText("Starting archive file addition...")
         self.add_progress.setValue(0)
 
-        # Handle multiple files - split by semicolon if contains multiple paths
-        if isinstance(self.add_file_path, list):
-            # Direct list of files (from drag and drop)
-            file_paths = self.add_file_path
-        elif ';' in self.add_file_path:
-            # Semicolon-separated paths from browse dialog
-            file_paths = [path.strip() for path in self.add_file_path.split(';') if path.strip()]
-        else:
-            # Single file path
-            file_paths = [self.add_file_path.strip()]
+        # Enable cancel button during operation
+        self.add_cancel_button.setEnabled(True)
+        if hasattr(self, 'add_saving_label'):
+            self.add_saving_label.setText("Saving...")
 
-        self.add_to_zip_worker = AddToZipWorker(self.add_zip_path, file_paths)
+        # Get file paths from pending manager with target paths
+        active_files = self._pending_manager.get_active_files()
+        file_infos = [{'path': f.path, 'target': f.target} for f in active_files]
+
+        self.add_to_zip_worker = AddToZipWorker(self.add_zip_path, file_infos)
         self.add_to_zip_worker_thread = QThread()
         self.add_to_zip_worker.moveToThread(self.add_to_zip_worker_thread)
 
         self.add_to_zip_worker.finished.connect(self.on_add_to_archive_finished)
         self.add_to_zip_worker.progress_updated.connect(self.update_add_progress)
-        self.add_to_zip_worker.conversion_error.connect(self.on_add_to_archive_error)
+        self.add_to_zip_worker.finished.connect(self.on_add_to_archive_finished)
+        self.add_to_zip_worker.canceled.connect(self.on_add_to_archive_canceled)
         self.add_to_zip_worker_thread.started.connect(self.add_to_zip_worker.run)
         self.add_to_zip_worker_thread.start()
 
     def on_add_to_archive_finished(self):
-        # 使用强制线程清理方法
+        # Use forced thread cleanup method
         self._force_cleanup_add_thread()
         
         # Count number of files added
@@ -1372,6 +3825,9 @@ class ZipGUI(QMainWindow):
                 file_count = len(self.add_to_zip_worker.files_to_add)
         file_text = "files" if file_count > 1 else "file"
         
+        # Refresh tree to show newly added files
+        self._refresh_unified_tree()
+
         # Show success notification at the top
         self._show_info_bar(
             title='Success',
@@ -1380,7 +3836,7 @@ class ZipGUI(QMainWindow):
         )
 
     def on_add_to_archive_error(self, error_message):
-        # 使用强制线程清理方法
+        # Use forced thread cleanup method
         self._force_cleanup_add_thread()
         
         self._show_popup(
@@ -1392,26 +3848,55 @@ class ZipGUI(QMainWindow):
         )
         self.add_progress_label.setText("Archive file addition failed.")
     
+    def cancel_add_to_archive(self):
+        """Cancel the add to archive process"""
+        if self.confirm_cancel("Add to Archive"):
+            self.log_cancel("Add to Archive")
+            # Stop the worker
+            if self.add_to_zip_worker:
+                self.add_to_zip_worker.stop()
+        
+    def on_add_to_archive_canceled(self):
+        """Handle add to archive canceled"""
+        # Use forced thread cleanup method
+        self._force_cleanup_add_thread()
+        
+        # Update progress and status
+        self.add_progress.setValue(0)
+        self.add_progress_label.setText("Add to archive canceled")
+        
+        # Show cancel notification
+        self._show_info_bar(
+            title='Canceled',
+            content='Add to archive canceled by user',
+            duration=2000
+        )
+    
     def _force_cleanup_add_thread(self):
-        """强制清理添加到归档的线程，确保完全终止"""
+        """强制清理Add to Archive的线程，确保完全终止"""
+        # Reset button states
+        self.add_cancel_button.setEnabled(False)
+        if hasattr(self, 'add_saving_label'):
+            self.add_saving_label.setText("")
+        
         if self.add_to_zip_worker_thread:
             if self.add_to_zip_worker_thread.isRunning():
-                # 先尝试正常退出
+                # First try to exit normally
                 self.add_to_zip_worker_thread.quit()
-                if not self.add_to_zip_worker_thread.wait(500):  # 等待0.5秒
-                    # 如果正常退出失败，强制终止
+                if not self.add_to_zip_worker_thread.wait(500):  # Wait 0.5 seconds
+                    # If normal exit fails, force terminate
                     self.add_to_zip_worker_thread.terminate()
-                    if not self.add_to_zip_worker_thread.wait(500):  # 再等待0.5秒
+                    if not self.add_to_zip_worker_thread.wait(500):  # 再Wait 0.5 seconds
                         # 如果终止也失败，尝试杀死线程
                         self.add_to_zip_worker_thread.kill()
-                        self.add_to_zip_worker_thread.wait(500)  # 等待0.5秒
+                        self.add_to_zip_worker_thread.wait(500)  # Wait 0.5 seconds
             
-            # 删除线程对象
+            # Delete thread object
             self.add_to_zip_worker_thread.deleteLater()
             self.add_to_zip_worker_thread = None
         
         if self.add_to_zip_worker:
-            # 删除worker对象
+            # Delete worker object
             self.add_to_zip_worker.deleteLater()
             self.add_to_zip_worker = None
 
@@ -1462,6 +3947,118 @@ class ZipGUI(QMainWindow):
         """Show right-click menu for archive contents list - functionality removed"""
         pass
 
+    def _show_archive_tree_context_menu(self, pos):
+        """Show RoundMenu context menu for the archive tree"""
+        from PySide6.QtGui import QCursor
+        menu = RoundMenu(parent=self)
+
+        menu.addAction(Action(FluentIcon.FOLDER_ADD, self.tr('New Folder'),
+                              triggered=self._context_add_folder))
+        menu.addAction(Action(FluentIcon.ADD, self.tr('Add File'),
+                              triggered=self._context_add_file))
+        menu.addSeparator()
+
+        has_selection = len(self.archive_tree.selectedItems()) > 0
+        remove_action = Action(FluentIcon.DELETE, self.tr('Remove Selected'),
+                               triggered=self.delete_selected_items)
+        remove_action.setEnabled(has_selection)
+        menu.addAction(remove_action)
+
+        menu.exec(QCursor.pos())
+
+    def _context_add_folder(self):
+        """Create a new folder at the selected location from context menu"""
+        dialog = NewFolderMessageBox(parent=self)
+        if not (dialog.exec() and dialog.folder_name):
+            return
+
+        folder_name = dialog.folder_name
+        selected = self.archive_tree.selectedItems()
+
+        folder_item = QTreeWidgetItem()
+        folder_item.setText(0, folder_name)
+        folder_item.setText(1, "<DIR>")
+        folder_item.setText(2, "Folder")
+        folder_item.setIcon(0, FluentIcon.FOLDER.qicon())
+        folder_item.setData(0, Qt.ItemDataRole.UserRole + 3, True)
+
+        if selected:
+            sel = selected[0]
+            is_dir = sel.data(0, Qt.ItemDataRole.UserRole + 3) is True
+            if is_dir:
+                sel.addChild(folder_item)
+                sel.setExpanded(True)
+            else:
+                parent = sel.parent() or self.archive_tree.invisibleRootItem()
+                parent.insertChild(parent.indexOfChild(sel) + 1, folder_item)
+        else:
+            self.archive_tree.invisibleRootItem().addChild(folder_item)
+
+        self.archive_tree.setCurrentItem(folder_item)
+        self._show_info_bar(
+            title='Folder Created',
+            content=f'Created folder "{folder_name}"',
+            duration=2000
+        )
+
+    def _context_add_file(self):
+        """Add files at the selected location from context menu"""
+        file_dialog = QFileDialog(self)
+        file_dialog.setNameFilter("All files (*.*)")
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        if not file_dialog.exec():
+            return
+
+        files = file_dialog.selectedFiles()
+        if not files:
+            return
+
+        # Determine target folder path from current selection
+        selected = self.archive_tree.selectedItems()
+        target_prefix = ""
+        insert_parent = self.archive_tree.invisibleRootItem()
+
+        if selected:
+            sel = selected[0]
+            is_dir = sel.data(0, Qt.ItemDataRole.UserRole + 3) is True
+            if is_dir:
+                target_prefix = self._get_item_archive_path(sel)
+                insert_parent = sel
+            else:
+                parent = sel.parent()
+                if parent:
+                    target_prefix = self._get_item_archive_path(parent)
+                    insert_parent = parent
+
+        if hasattr(self, 'add_pivot'):
+            self.add_pivot.setCurrentItem("archives")
+
+        for file_path in files:
+            if not os.path.exists(file_path):
+                continue
+            basename = os.path.basename(file_path)
+            target = f"{target_prefix}/{basename}" if target_prefix else basename
+            self._pending_manager.add_file(file_path, target)
+
+            item = QTreeWidgetItem()
+            item.setText(0, basename)
+            item.setText(1, self._format_file_size(os.path.getsize(file_path)))
+            item.setText(2, "File")
+            icon = self._get_file_icon(file_path, is_dir=False)
+            item.setIcon(0, icon.qicon())
+            item.setForeground(0, QColor(0, 200, 0))
+            insert_parent.addChild(item)
+
+        self.archive_tree.expandAll()
+        self._show_info_bar(
+            title='Files Added',
+            content=f'Added {len(files)} file(s) to archive',
+            duration=2000
+        )
+
+        # Auto-save
+        self._schedule_auto_save()
+
     def start_list_archive_contents(self):
         if not self.list_zip_path:
             self._show_popup(
@@ -1473,8 +4070,14 @@ class ZipGUI(QMainWindow):
             )
             return
 
-        self.contents_listbox.clear()
-        self.contents_listbox.addItem("Listing contents...")
+        self.contents_tree.clear()
+        item = QTreeWidgetItem(self.contents_tree)
+        item.setText(0, "Listing contents...")
+        item.setIcon(0, FluentIcon.INFO.qicon())
+        
+        # Enable cancel button and disable list button during operation
+        self.list_button.setEnabled(False)
+        self.list_cancel_button.setEnabled(True)
 
         # Reset password protection status
         self.is_password_protected = False
@@ -1490,12 +4093,13 @@ class ZipGUI(QMainWindow):
         self.list_zip_worker.finished.connect(self.on_list_zip_finished)
         self.list_zip_worker.conversion_error.connect(self.on_list_archive_error)
         self.list_zip_worker.password_required.connect(self.on_password_required)
+        self.list_zip_worker.canceled.connect(self.on_list_archive_canceled)
         self.list_zip_worker_thread.started.connect(self.list_zip_worker.run)
         self.list_zip_worker_thread.start()
 
     def on_list_zip_finished(self, contents):
         """Handle successful completion of listing zip contents"""
-        # 使用强制线程清理方法
+        # Use forced thread cleanup method
         self._force_cleanup_list_thread()
         
         # Update password status for successful listing
@@ -1512,54 +4116,45 @@ class ZipGUI(QMainWindow):
         if self.list_zip_worker_thread and self.list_zip_worker_thread.isRunning():
             self.list_zip_worker_thread.quit()
             self.list_zip_worker_thread.wait()
-        self.contents_listbox.clear()
+        
+        # Clear tree widget
+        self.contents_tree.clear()
+        
         # Reset password protection status
         self.is_password_protected = False
+        
         if contents:
             print(f"[DEBUG] update_contents_list: Processing {len(contents)} items")
-            for item in contents:
-                # Format display contents information
-                if isinstance(item, dict) and "name" in item:
-                    name = item["name"]
-                    size = item.get("size", 0)
-                    is_dir = item.get("is_dir", False)
-                    
-                    if is_dir:
-                        display_text = f"{name} <DIR>"
-                    else:
-                        # Format file size
-                        if size < 1024:
-                            size_str = f"{size} B"
-                        elif size < 1024 * 1024:
-                            size_str = f"{size // 1024} KB"
-                        elif size < 1024 * 1024 * 1024:
-                            size_str = f"{size // (1024 * 1024)} MB"
-                        else:
-                            size_str = f"{size // (1024 * 1024 * 1024)} GB"
-                        display_text = f"{name} ({size_str})"
-                    
-                    self.contents_listbox.addItem(display_text)
-                else:
-                    # If item is not a dictionary, directly add
-                    self.contents_listbox.addItem(str(item))
+            
+            # Build tree structure
+            self._build_tree_structure(contents)
+            
+            # Expand root node
+            root = self.contents_tree.topLevelItem(0)
+            if root:
+                root.setExpanded(True)
             
             # Update password status based on successful listing
             self.update_password_status_list(self.is_password_protected, "Contents Listed Successfully")
             
             self._show_info_bar(
                 title='Success',
-                content='Archive contents listed successfully!',
+                content=f'Archive contents listed successfully! ({len(contents)} items)',
                 duration=2000
             )
         else:
             print("[DEBUG] update_contents_list: No contents found")
-            self.contents_listbox.addItem("No contents found or invalid archive.")
+            
+            # Show empty message in tree
+            empty_item = QTreeWidgetItem(self.contents_tree)
+            empty_item.setText(0, "No contents found or invalid archive.")
+            empty_item.setIcon(0, FluentIcon.INFO.qicon())
             
             # Update password status for no contents found
             self.update_password_status_list(False, "No Contents Found")
             
             self._show_popup(
-                target=self.contents_listbox,
+                target=self.contents_tree,
                 icon=InfoBarIcon.WARNING,
                 title='Warning',
                 content='No contents found or invalid archive.',
@@ -1567,7 +4162,7 @@ class ZipGUI(QMainWindow):
             )
 
     def on_password_required(self, error_message):
-        # 使用强制线程清理方法
+        # Use forced thread cleanup method
         self._force_cleanup_list_thread()
         
         # Set password protection status
@@ -1593,8 +4188,10 @@ class ZipGUI(QMainWindow):
                 self._current_password = password
                 
                 # Retry listing contents with password
-                self.contents_listbox.clear()
-                self.contents_listbox.addItem("Retrying with password...")
+                self.contents_tree.clear()
+                item = QTreeWidgetItem(self.contents_tree)
+                item.setText(0, "Retrying with password...")
+                item.setIcon(0, FluentIcon.INFO.qicon())
                 
                 # Create new worker with password
                 self.list_zip_worker = ListZipContentsWorker(self.list_zip_path, password=password)
@@ -1609,28 +4206,32 @@ class ZipGUI(QMainWindow):
             else:
                 # User cancelled password entry
                 self._show_popup(
-                    target=self.contents_listbox,
+                    target=self.contents_tree,
                     icon=InfoBarIcon.WARNING,
                     title='Password Required',
                     content='Password entry cancelled. Contents cannot be listed.',
                     duration=3000
                 )
-                self.contents_listbox.clear()
-                self.contents_listbox.addItem("Password protected archive - contents cannot be listed")
+                self.contents_tree.clear()
+                item = QTreeWidgetItem(self.contents_tree)
+                item.setText(0, "Password protected archive - contents cannot be listed")
+                item.setIcon(0, FluentIcon.INFO.qicon())
         except ImportError:
             # Fallback if password dialog is not available
             self._show_popup(
-                target=self.contents_listbox,
+                target=self.contents_tree,
                 icon=InfoBarIcon.WARNING,
                 title='Password Required',
                 content=f'This archive is password protected: {str(error_message)}',
                 duration=3000
             )
-            self.contents_listbox.clear()
-            self.contents_listbox.addItem("Password protected archive - contents cannot be listed")
+            self.contents_tree.clear()
+            item = QTreeWidgetItem(self.contents_tree)
+        item.setText(0, "Password protected archive - contents cannot be listed")
+        item.setIcon(0, FluentIcon.INFO.qicon())
 
     def on_list_archive_error(self, error_message):
-        # 使用强制线程清理方法
+        # Use forced thread cleanup method
         self._force_cleanup_list_thread()
             
         # Check if this is a password error
@@ -1649,7 +4250,7 @@ class ZipGUI(QMainWindow):
                 
                 # Show error message
                 self._show_popup(
-                    target=self.contents_listbox,
+                    target=self.contents_tree,
                     icon=InfoBarIcon.ERROR,
                     title='Incorrect Password',
                     content='The password you entered is incorrect. Please try again.',
@@ -1672,32 +4273,64 @@ class ZipGUI(QMainWindow):
             content=f'Error listing archive contents: {str(error_message)}',
             duration=3000
         )
-        self.contents_listbox.clear()
-        self.contents_listbox.addItem("Error listing contents.")
+        self.contents_tree.clear()
+        item = QTreeWidgetItem(self.contents_tree)
+        item.setText(0, "Error listing contents.")
+        item.setIcon(0, FluentIcon.INFO.qicon())
         
         # Update password status for other errors
         self.update_password_status_list(False, "Error Listing Contents")
     
+    def cancel_list_archive_contents(self):
+        """Cancel the list archive contents process"""
+        if self.confirm_cancel("List Contents"):
+            self.log_cancel("List Contents")
+            # Stop the worker
+            if self.list_zip_worker:
+                self.list_zip_worker.stop()
+        
+    def on_list_archive_canceled(self):
+        """Handle list archive contents canceled"""
+        # Use forced thread cleanup method
+        self._force_cleanup_list_thread()
+        
+        # Update listbox and status
+        self.contents_tree.clear()
+        item = QTreeWidgetItem(self.contents_tree)
+        item.setText(0, "List contents canceled")
+        item.setIcon(0, FluentIcon.INFO.qicon())
+        
+        # Show cancel notification
+        self._show_info_bar(
+            title='Canceled',
+            content='List contents canceled by user',
+            duration=2000
+        )
+    
     def _force_cleanup_list_thread(self):
-        """强制清理列出归档内容的线程，确保完全终止"""
+        """Force cleanup list archive contents thread to ensure complete termination"""
+        # Reset button states
+        self.list_button.setEnabled(True)
+        self.list_cancel_button.setEnabled(False)
+        
         if self.list_zip_worker_thread:
             if self.list_zip_worker_thread.isRunning():
-                # 先尝试正常退出
+                # First try to exit normally
                 self.list_zip_worker_thread.quit()
-                if not self.list_zip_worker_thread.wait(500):  # 等待0.5秒
-                    # 如果正常退出失败，强制终止
+                if not self.list_zip_worker_thread.wait(500):  # Wait 0.5 seconds
+                    # If normal exit fails, force terminate
                     self.list_zip_worker_thread.terminate()
-                    if not self.list_zip_worker_thread.wait(500):  # 再等待0.5秒
+                    if not self.list_zip_worker_thread.wait(500):  # 再Wait 0.5 seconds
                         # 如果终止也失败，尝试杀死线程
                         self.list_zip_worker_thread.kill()
-                        self.list_zip_worker_thread.wait(500)  # 等待0.5秒
+                        self.list_zip_worker_thread.wait(500)  # Wait 0.5 seconds
             
-            # 删除线程对象
+            # Delete thread object
             self.list_zip_worker_thread.deleteLater()
             self.list_zip_worker_thread = None
         
         if self.list_zip_worker:
-            # 删除worker对象
+            # Delete worker object
             self.list_zip_worker.deleteLater()
             self.list_zip_worker = None
 
@@ -1794,6 +4427,8 @@ class ZipGUI(QMainWindow):
                     if archive_files:
                         self.add_zip_text.setText(archive_files[0])
                         current_archive = archive_files[0]
+                        # Load archive contents into tree
+                        self._load_archive_to_tree()
                     
                     # If we have files to add, update the UI
                     if files_to_add:
@@ -1811,8 +4446,8 @@ class ZipGUI(QMainWindow):
                                 seen.add(f)
                                 unique_files.append(f)
                         
-                        self.add_file_path = unique_files
-                        self.update_add_files_list(unique_files)
+                        # Add files to pending list using new unified tree
+                        self._add_pending_files(files_to_add)
                         
                         # Show success message
                         self._show_info_bar(
@@ -1839,10 +4474,7 @@ class ZipGUI(QMainWindow):
                             file_path = url.toLocalFile()
                             if os.path.exists(file_path) and file_path not in self.create_sources:
                                 self.create_sources.append(file_path)
-                                if os.path.isdir(file_path):
-                                    self.sources_listbox.addItem(f"[FOLDER] {file_path}")
-                                else:
-                                    self.sources_listbox.addItem(file_path)
+                                self._add_file_to_sources_tree(file_path, is_folder=os.path.isdir(file_path))
                         event.acceptProposedAction()
                         self._show_info_bar(
                             title='Files Added',

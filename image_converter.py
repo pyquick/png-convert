@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PNG to ICNS Converter with wxPython GUI
+PNG to ICNS Converter with PySide6
 
 This script provides a graphical interface for converting PNG images to ICNS format.
 """
@@ -14,69 +14,29 @@ import subprocess
 from PIL import Image
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel,
+    QLabel, QComboBox, QSpinBox, QListWidget,
     QFileDialog, QMessageBox, QTabWidget, QGroupBox, QSizePolicy,
-     QTreeWidgetItem, QFrame, QScrollArea, QListWidgetItem
+     QTreeWidgetItem, QFrame, QListWidgetItem, QAbstractItemView
 )
 from PySide6.QtGui import QPixmap, QIcon, QFont, QImage, QPalette
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread
 from PySide6.QtCore import QSettings
 from darkdetect import isDark
-import qfluentwidgets
+
 from support.toggle import theme_manager
-from qfluentwidgets import *
+from UIkit import *
 # Add the current directory to Python path to import convert module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from support import convert
+from support.GUI.image_support import (
+    DropZoneWidget, DirectoryDropLineEdit, PreviewTab, ThumbnailGridWidget,
+    ConversionWorker, BatchConversionWorker
+)
+
 
 from con import CON
-class ConversionWorker(QObject):
-    finished = Signal()
-    progress_updated = Signal(str, int)
-    conversion_error = Signal(str)
 
-    def __init__(self, input_path, output_path, output_format, min_size_param=None, max_size_param=None, quality_param=None):
-        super().__init__()
-        self.input_path = input_path
-        self.output_path = output_path
-        self.output_format = output_format
-        self.quality = int(quality_param) if quality_param is not None else 85
-        self.qss=CON.qss
-        if output_format == "icns":
-            self.min_size = int(min_size_param) if min_size_param is not None else 16
-            self.max_size = int(max_size_param) if max_size_param is not None else None # Keep None for convert.py
-        else:
-            self.min_size = None # Not relevant for non-icns
-            self.max_size = None # Not relevant for non-icns
-        
-
-    def run(self):
-        try:
-            if self.output_format == "icns":
-                convert.convert_image(
-                    self.input_path,
-                    self.output_path,
-                    self.output_format,
-                    int(self.min_size) if self.min_size is not None else 16, # Explicit conversion to int
-                    int(self.max_size) if self.max_size is not None else None, # Explicit conversion to int
-                    quality=self.quality,
-                    progress_callback=self._update_progress_callback
-                )
-            else:
-                convert.convert_image(
-                    self.input_path,
-                    self.output_path,
-                    self.output_format,
-                    quality=self.quality,
-                    progress_callback=self._update_progress_callback
-                )
-            self.finished.emit()
-        except Exception as e:
-            self.conversion_error.emit(str(e))
-
-    def _update_progress_callback(self, message, percentage):
-        self.progress_updated.emit(message, percentage)
-
+# ConversionWorker and BatchConversionWorker are now imported from support.GUI.image_support
 
 class ICNSConverterGUI(QMainWindow):
 
@@ -110,6 +70,11 @@ class ICNSConverterGUI(QMainWindow):
         self.setMinimumSize(1200, 400)
         #self.layout().setSizeConstraint(QLayout.SetFixedSize)
         self.init_variables()
+        
+        # Initialize signal transmission manager
+    
+        
+        
         self.setup_ui()
         self.center_window()
 
@@ -126,25 +91,143 @@ class ICNSConverterGUI(QMainWindow):
         
     def _onThemeChanged(self):
         """Theme change handling"""
-        
+        import darkdetect
+        is_dark_mode = darkdetect.isDark()
+
+        # Reload QSS and update all themed widgets
+        self._apply_theme(is_dark_mode)
+
+        # Sync UIkit theme
         setTheme(Theme.AUTO)
         
         
     def closeEvent(self, e):
+        # Stop all worker threads before closing
+        self._stop_all_workers()
+        
         # Stop listener thread
-        self.listener.terminate()
-        self.listener.deleteLater()
+        if hasattr(self, 'listener') and self.listener:
+            try:
+                self.listener.terminate()
+                self.listener.deleteLater()
+            except Exception as ex:
+                print(f"[WARNING] Error stopping listener: {ex}")
+        
         super().closeEvent(e)
+    
+    def _stop_all_workers(self):
+        """Stop all running worker threads safely"""
+        # Stop conversion worker
+        self._stop_conversion_worker()
+        
+        # Stop batch conversion worker
+        self._stop_batch_worker()
+    
+    def _stop_conversion_worker(self):
+        """Stop the conversion worker thread safely"""
+        try:
+            # Stop the worker if it exists
+            if hasattr(self, '_worker') and self._worker:
+                try:
+                    # Disconnect signals to prevent callbacks after stop
+                    try:
+                        self._worker.finished.disconnect()
+                    except:
+                        pass
+                    try:
+                        self._worker.progress_updated.disconnect()
+                    except:
+                        pass
+                    try:
+                        self._worker.conversion_error.disconnect()
+                    except:
+                        pass
+                except Exception as ex:
+                    print(f"[WARNING] Error disconnecting worker signals: {ex}")
+            
+            # Stop the thread if it's running
+            if hasattr(self, '_thread') and self._thread:
+                try:
+                    if self._thread.isRunning():
+                        self._thread.quit()
+                        # Wait with timeout to avoid blocking indefinitely
+                        if not self._thread.wait(2000):  # 2 second timeout
+                            print("[WARNING] Conversion thread did not stop in time, forcing termination")
+                            self._thread.terminate()
+                            self._thread.wait(1000)
+                except Exception as ex:
+                    print(f"[WARNING] Error stopping conversion thread: {ex}")
+                finally:
+                    # Clean up references
+                    self._worker = None
+                    self._thread = None
+        except Exception as ex:
+            print(f"[ERROR] Error in _stop_conversion_worker: {ex}")
+    
+    def _stop_batch_worker(self):
+        """Stop the batch conversion worker thread safely"""
+        try:
+            # Cancel the worker if it exists
+            if hasattr(self, 'batch_worker') and self.batch_worker:
+                try:
+                    # Cancel the batch conversion
+                    self.batch_worker.cancel()
+                    
+                    # Disconnect signals
+                    try:
+                        self.batch_worker.total_progress_updated.disconnect()
+                    except:
+                        pass
+                    try:
+                        self.batch_worker.progress_updated.disconnect()
+                    except:
+                        pass
+                    try:
+                        self.batch_worker.file_processed.disconnect()
+                    except:
+                        pass
+                    try:
+                        self.batch_worker.finished.disconnect()
+                    except:
+                        pass
+                    try:
+                        self.batch_worker.batch_error.disconnect()
+                    except:
+                        pass
+                except Exception as ex:
+                    print(f"[WARNING] Error disconnecting batch worker signals: {ex}")
+            
+            # Stop the thread if it's running
+            if hasattr(self, 'batch_thread') and self.batch_thread:
+                try:
+                    if self.batch_thread.isRunning():
+                        self.batch_thread.quit()
+                        # Wait with timeout
+                        if not self.batch_thread.wait(3000):  # 3 second timeout for batch
+                            print("[WARNING] Batch thread did not stop in time, forcing termination")
+                            self.batch_thread.terminate()
+                            self.batch_thread.wait(1000)
+                except Exception as ex:
+                    print(f"[WARNING] Error stopping batch thread: {ex}")
+                finally:
+                    # Clean up references
+                    self.batch_worker = None
+                    self.batch_thread = None
+        except Exception as ex:
+            print(f"[ERROR] Error in _stop_batch_worker: {ex}")
 
     def _apply_theme(self, is_dark_mode):
         if is_dark_mode:
             self.setStyleSheet(self.DARK_QSS)
-           
-           
         else:
             self.setStyleSheet(self.LIGHT_QSS)
             
-        
+        # Update DropZoneWidget theme if it exists
+        if hasattr(self, 'drop_zone') and self.drop_zone:
+            self.drop_zone.set_theme(is_dark_mode)
+        if hasattr(self, 'single_drop_zone') and self.single_drop_zone:
+            self.single_drop_zone.set_theme(is_dark_mode)
+            
         # Update success view theme if it exists and is visible
         if hasattr(self, 'success_widget') and self.success_widget and self.success_widget.isVisible():
             self._apply_success_theme()
@@ -171,10 +254,12 @@ class ICNSConverterGUI(QMainWindow):
         auto_preview_val = settings.value("image_converter/auto_preview", True, type=bool)
         remember_path_val = settings.value("image_converter/remember_path", True, type=bool)
         completion_notify_val = settings.value("image_converter/completion_notify", True, type=bool)
+        task_mode_val = settings.value("task_mode", False, type=bool)
         
         self.auto_preview = bool(auto_preview_val) if auto_preview_val is not None else True
         self.remember_path = bool(remember_path_val) if remember_path_val is not None else True
         self.completion_notify = bool(completion_notify_val) if completion_notify_val is not None else True
+        self.task_mode = bool(task_mode_val) if task_mode_val is not None else False
         
         # Load remembered paths if setting is enabled
         if self.remember_path:
@@ -202,7 +287,7 @@ class ICNSConverterGUI(QMainWindow):
         if hasattr(self, 'overwrite_confirm_check'):
             self.overwrite_confirm_check.setChecked(bool(self.overwrite_confirm))
         
-        print(f"Settings loaded: min_size={self.min_size}, max_size={self.max_size}, output_format={self.output_format}")
+        print(f"Settings loaded: min_size={self.min_size}, max_size={self.max_size}, output_format={self.output_format}, task_mode={self.task_mode}")
         
     def save_settings(self):
         """Save settings to QSettings"""
@@ -227,6 +312,8 @@ class ICNSConverterGUI(QMainWindow):
         settings.setValue("image_converter/remember_path", self.remember_path)
         settings.setValue("image_converter/completion_notify", self.completion_notify)
         
+        # Task mode setting removed - now controlled globally
+        
         # Save remembered paths if setting is enabled
         if self.remember_path:
             if hasattr(self, 'last_input_dir'):
@@ -237,7 +324,7 @@ class ICNSConverterGUI(QMainWindow):
         print(f"Settings saved: min_size={self.min_size}, max_size={self.max_size}, output_format={self.output_format}")
         
     def init_variables(self, reset_all=False):
-        """初始化或重置所有变量
+        """Initialize or reset all variables
         
         Args:
             reset_all (bool): If True, reset all variables including interface behavior settings.
@@ -259,6 +346,19 @@ class ICNSConverterGUI(QMainWindow):
         # Advanced options
         self.icns_method = "iconutil (Recommended)"
         self.overwrite_confirm = True
+        
+        # Batch conversion variables
+        self.batch_files = []
+        self.batch_file_settings = {}  # {file_path: {'output_dir': str, 'format': str}}
+        self.batch_converting = False
+        self.batch_worker = None
+        self.batch_thread = None
+        self.batch_current_index = 0
+        self.batch_current_file = ""
+        self.batch_success_count = 0
+        self.batch_failed_count = 0
+        self.batch_canceled = False
+        self.batch_results = []  # Store conversion results
         
         # Only reset interface behavior settings if explicitly requested
         if reset_all or not hasattr(self, 'auto_preview'):
@@ -332,6 +432,7 @@ class ICNSConverterGUI(QMainWindow):
 
         self.create_widgets()
         self.create_success_view()
+        self.create_batch_success_view()
         self.create_history_tab()
         self.show_main_view()
         
@@ -355,14 +456,59 @@ class ICNSConverterGUI(QMainWindow):
         
         # Main converter tab
         self.converter_tab = QWidget()
-        self.tab_widget.addTab(self.converter_tab, "Converter")
+        self.tab_widget.addTab(self.converter_tab, "Single Converter")
         
         # Setup main converter content
         self.setup_converter_tab()
         
+        # Batch converter tab
+        self.batch_converter_tab = QWidget()
+        self.tab_widget.addTab(self.batch_converter_tab, "Batch Converter")
+        
+        # Setup batch converter content
+        self.setup_batch_converter_tab()
+        
+        # Preview tab - for image preview functionality
+        self.preview_tab = PreviewTab()
+        self.tab_widget.addTab(self.preview_tab, "Preview")
+        
+        # Connect drop signals to update preview tab
+        self._connect_preview_signals()
+        
+    def _connect_preview_signals(self):
+        """Connect signals to update preview tab"""
+        # Connect drop zone signals to preview tab
+        self.drop_zone.filesDropped.connect(self.preview_tab.show_multiple_previews)
+        self.drop_zone.folderDropped.connect(self.preview_tab.show_multiple_previews)
+        
+        # Connect input text change to preview tab
+        self.input_text.textChanged.connect(self.on_input_text_changed)
+        
+    def on_input_text_changed(self):
+        """Handle input text change to update preview"""
+        input_path = self.input_text.text().strip()
+        if input_path and os.path.exists(input_path):
+            # Single file change
+            self.preview_tab.show_single_preview(input_path)
+        else:
+            # Clear preview if invalid path
+            self.preview_tab.clear_previews()
+        
     def setup_converter_tab(self):
         """Setup the main converter tab content"""
         converter_layout = QVBoxLayout(self.converter_tab)
+
+        # Deprecation warning
+        self.deprecation_bar = InfoBar(
+            icon=InfoBarIcon.WARNING,
+            title='Deprecation Notice',
+            content='Single Converter will be removed in a future version. Please use Batch Converter instead.',
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            duration=-1,
+            parent=self.converter_tab
+        )
+        converter_layout.addWidget(self.deprecation_bar)
 
         # Main content area: Left Panel (Input/Output) and Right Side (Options/Preview)
         main_content_h_layout = QHBoxLayout()
@@ -383,11 +529,17 @@ class ICNSConverterGUI(QMainWindow):
         file_ops_group_layout.setSpacing(10)
         left_layout.addWidget(file_ops_group_box)
 
+        # Drop zone for single file input
+        self.single_drop_zone = DropZoneWidget()
+        self.single_drop_zone.setFixedHeight(100)
+        self.single_drop_zone.filesDropped.connect(self._on_single_file_dropped)
+        file_ops_group_layout.addWidget(self.single_drop_zone)
+
         # Input File Selection (inside merged group box)
         input_layout = QHBoxLayout()
         input_label = QLabel("Input File:")
         self.input_text = LineEdit()
-        # self.input_text.setReadOnly(True)  # 允许用户手动输入路径
+        # self.input_text.setReadOnly(True)  # Allow users to manually input path
         input_button = PushButton("Browse...")
         # Apply custom style to input button
         setCustomStyleSheet(input_button, CON.qss, CON.qss)
@@ -403,7 +555,7 @@ class ICNSConverterGUI(QMainWindow):
         output_layout = QHBoxLayout()
         output_label = QLabel("Output File:")
         self.output_text = LineEdit()
-        # self.output_text.setReadOnly(True)  # 允许用户手动输入路径
+        # self.output_text.setReadOnly(True)  # Allow users to manually input path
         output_button = PushButton("Browse...")
         # Apply custom style to output button
         setCustomStyleSheet(output_button, CON.qss, CON.qss)
@@ -414,19 +566,6 @@ class ICNSConverterGUI(QMainWindow):
         output_layout.addWidget(self.output_text, 1) # Give text field more stretch
         output_layout.addWidget(output_button)
         file_ops_group_layout.addLayout(output_layout)
-
-        # Image Preview (moved from right panel)
-        preview_group_box = QGroupBox("Image Preview")
-        preview_group_layout = QVBoxLayout(preview_group_box)
-        preview_group_layout.setContentsMargins(10, 25, 10, 10)
-        left_layout.addWidget(preview_group_box, 1) # Give preview some stretch on the left
-
-        self.preview_label = QLabel()
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setFixedSize(250, 250) # Reduced fixed size for the preview area
-        self.preview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding) # Allow it to expand
-        self._set_placeholder_preview()
-        preview_group_layout.addWidget(self.preview_label, 1, Qt.AlignmentFlag.AlignCenter)
 
         # Add stretch to left layout to push content to top
         left_layout.addStretch(1)
@@ -446,22 +585,25 @@ class ICNSConverterGUI(QMainWindow):
         self.info_text = LineEdit()
         setCustomStyleSheet(self.info_text, self.qss_lie, self.qss_lie)
         self.info_text.setText("No image selected")
-        self.info_text.setReadOnly(True)  # 不允许用户手动输入信息
+        self.info_text.setReadOnly(True)  # Do not allow users to manually input information
         self.info_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         info_group_layout.addWidget(self.info_text)
 
         # Conversion Options with TreeWidget for better organization
         options_group_box = QGroupBox("Conversion Options")
         options_group_layout = QVBoxLayout(options_group_box)
-        options_group_layout.setContentsMargins(10, 25, 10, 10) # Reset margins for options group
-        right_side_v_layout.addWidget(options_group_box, 6)  # Give more stretch to options
+        options_group_layout.setContentsMargins(10, 10, 10, 10) # Reset margins for options group
+        options_group_box.setMinimumSize(250,500)
+        right_side_v_layout.addWidget(options_group_box, 8)  # Give even more stretch to options
         
         # Create scroll area for TreeWidget
-        scroll_area = QScrollArea()
+        scroll_area = ScrollArea()
         scroll_area.setWidgetResizable(True)
+        #scroll_area.setMinimumSize(90,90)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setMinimumHeight(450)  # Set minimum height for scroll area
+        # Use more flexible height settings, allowing automatic adjustment based on content
+        scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # Create TreeWidget for organized settings
         self.options_tree = TreeWidget()
@@ -482,6 +624,8 @@ class ICNSConverterGUI(QMainWindow):
         progress_group_layout.setContentsMargins(10, 25, 10, 10)
         left_layout.addWidget(progress_group_box, 0) # No stretch for progress, compact
 
+        # Task mode control removed - now controlled globally
+
         self.progress_label = QLabel("Ready")
         self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.progress = ProgressBar()
@@ -490,7 +634,11 @@ class ICNSConverterGUI(QMainWindow):
 
         progress_group_layout.addWidget(self.progress_label)
         progress_group_layout.addWidget(self.progress)
-        # Convert Button (moved before Progress) - Replace with PrimaryPushButton and apply custom style
+        # Convert and Cancel Button Layout
+        convert_control_layout = QHBoxLayout()
+        convert_control_layout.setSpacing(10)
+        
+        # Convert Button - Replace with PrimaryPushButton and apply custom style
         self.convert_button = PrimaryPushButton("Convert to ICNS")
         self.convert_button.setFixedSize(180, 40)
         font = self.convert_button.font()
@@ -500,7 +648,26 @@ class ICNSConverterGUI(QMainWindow):
         # Apply custom style to convert button
         setCustomStyleSheet(self.convert_button, CON.qss, CON.qss)
         self.convert_button.clicked.connect(self.on_start_conversion)
-        left_layout.addWidget(self.convert_button, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        # Cancel Button
+        self.cancel_button = PushButton("Cancel")
+        self.cancel_button.setFixedSize(180, 40)
+        font = self.cancel_button.font()
+        font.setPointSize(font.pointSize() + 1)
+        self.cancel_button.setFont(font)
+        self.cancel_button.setEnabled(False)
+        # Apply custom style to cancel button
+        setCustomStyleSheet(self.cancel_button, CON.qss, CON.qss)
+        self.cancel_button.clicked.connect(self.on_cancel_conversion)
+        
+        convert_control_layout.addWidget(self.convert_button)
+        convert_control_layout.addWidget(self.cancel_button)
+        # Create a wrapper widget to center the button layout
+        button_wrapper = QWidget()
+        button_wrapper_layout = QVBoxLayout(button_wrapper)
+        button_wrapper_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        button_wrapper_layout.addLayout(convert_control_layout)
+        left_layout.addWidget(button_wrapper)
 
         
 
@@ -512,6 +679,643 @@ class ICNSConverterGUI(QMainWindow):
 
         # Add a stretch to the converter layout to push everything to the top
         converter_layout.addStretch(1)
+    
+    def setup_batch_converter_tab(self):
+        """Setup the batch converter tab content"""
+        batch_layout = QVBoxLayout(self.batch_converter_tab)
+
+        # Title for batch converter
+        batch_title_label = QLabel("Batch Image Converter")
+        batch_title_font = QFont()
+        batch_title_font.setPointSize(batch_title_label.font().pointSize() + 6)
+        batch_title_font.setBold(True)
+        batch_title_label.setFont(batch_title_font)
+        batch_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        batch_layout.addWidget(batch_title_label, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        # Create horizontal layout for main content
+        main_batch_h_layout = QHBoxLayout()
+        main_batch_h_layout.setSpacing(20)
+        batch_layout.addLayout(main_batch_h_layout)
+
+        # Left Panel: File Selection and Preview
+        left_batch_panel = QWidget()
+        left_batch_layout = QVBoxLayout(left_batch_panel)
+        left_batch_layout.setContentsMargins(15, 15, 15, 15)
+        left_batch_layout.setSpacing(15)
+        main_batch_h_layout.addWidget(left_batch_panel, 1)
+
+        # Drop zone for files and folders
+        drop_group_box = QGroupBox("File Selection")
+        drop_group_layout = QVBoxLayout(drop_group_box)
+        drop_group_layout.setContentsMargins(10, 25, 10, 10)
+        drop_group_layout.setSpacing(15)
+        left_batch_layout.addWidget(drop_group_box)
+
+        # Drop zone
+        self.drop_zone = DropZoneWidget()
+        self.drop_zone.setFixedHeight(160)
+        drop_group_layout.addWidget(self.drop_zone)
+        
+        # Browse button for manual file selection
+        browse_file_layout = QHBoxLayout()
+        self.browse_file_button = PushButton("Browse...")
+        self.browse_file_button.setText("Browse...")
+        setCustomStyleSheet(self.browse_file_button, CON.qss, CON.qss)
+        self.browse_file_button.clicked.connect(self.on_browse_batch_input)
+        
+        browse_file_layout.addStretch()
+        browse_file_layout.addWidget(self.browse_file_button)
+        drop_group_layout.addLayout(browse_file_layout)
+        
+        # Connect drop signals
+        self.drop_zone.filesDropped.connect(self.on_batch_files_dropped)
+        self.drop_zone.folderDropped.connect(self.on_batch_folder_dropped)
+
+        # Output Directory Selection (moved here)
+        output_dir_group_box = QGroupBox("Output Directory")
+        output_dir_group_layout = QVBoxLayout(output_dir_group_box)
+        output_dir_group_layout.setContentsMargins(10, 25, 10, 10)
+        output_dir_group_layout.setSpacing(10)
+        left_batch_layout.addWidget(output_dir_group_box, 0)
+        
+        # Batch output directory layout with drag-drop support
+        batch_output_layout = QHBoxLayout()
+        
+        # Create icon + label container for Output Directory
+        from UIkit import IconWidget, FluentIcon
+        batch_output_icon_container = QWidget()
+        batch_output_icon_layout = QHBoxLayout(batch_output_icon_container)
+        batch_output_icon_layout.setContentsMargins(0, 0, 0, 0)
+        batch_output_icon_layout.setSpacing(5)
+        batch_output_icon = IconWidget(FluentIcon.FOLDER)
+        batch_output_icon.setFixedSize(16, 16)
+        batch_output_icon_layout.addWidget(batch_output_icon)
+        batch_output_label = QLabel("Output Directory:")
+        batch_output_icon_layout.addWidget(batch_output_label)
+        
+        self.batch_output_text = DirectoryDropLineEdit()  # Use new drag-and-drop supported input field
+        self.batch_output_text.setPlaceholderText("Same as input files directory")
+        setCustomStyleSheet(self.batch_output_text, CON.qss_line, CON.qss_line)
+        
+        batch_output_button = PushButton("Browse...")
+        setCustomStyleSheet(batch_output_button, CON.qss, CON.qss)
+        batch_output_button.clicked.connect(self.on_browse_batch_output)
+        
+        batch_output_layout.addWidget(batch_output_icon_container)
+        batch_output_layout.addWidget(self.batch_output_text, 1)
+        batch_output_layout.addWidget(batch_output_button)
+        output_dir_group_layout.addLayout(batch_output_layout)
+
+        # File list with remove functionality
+        file_list_group_box = QGroupBox("Selected Files")
+        file_list_group_layout = QVBoxLayout(file_list_group_box)
+        file_list_group_layout.setContentsMargins(10, 25, 10, 10)
+        left_batch_layout.addWidget(file_list_group_box, 1)
+
+        # File tree with per-file settings
+        self.file_list_tree = TreeWidget()
+        self.file_list_tree.setHeaderLabels(["Filename", "Output Path", "Format"])
+        self.file_list_tree.setColumnWidth(0, 200)
+        self.file_list_tree.setColumnWidth(1, 250)
+        self.file_list_tree.setColumnWidth(2, 80)
+        self.file_list_tree.setMinimumHeight(200)
+        self.file_list_tree.setMaximumHeight(300)
+        self.file_list_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.file_list_tree.itemDoubleClicked.connect(self._on_file_tree_double_clicked)
+        file_list_group_layout.addWidget(self.file_list_tree)
+
+        # File management buttons
+        file_mgmt_layout = QHBoxLayout()
+        self.clear_files_btn = PushButton("Clear All")
+        self.remove_selected_btn = PushButton("Remove Selected")
+        setCustomStyleSheet(self.clear_files_btn, CON.qss, CON.qss)
+        setCustomStyleSheet(self.remove_selected_btn, CON.qss, CON.qss)
+        
+        self.clear_files_btn.clicked.connect(self.clear_batch_files)
+        self.remove_selected_btn.clicked.connect(self.remove_selected_files)
+        
+        file_mgmt_layout.addWidget(self.clear_files_btn)
+        file_mgmt_layout.addWidget(self.remove_selected_btn)
+        file_list_group_layout.addLayout(file_mgmt_layout)
+
+        # Preview area removed - now in dedicated Preview tab
+
+        # Right Panel: Options and Progress
+        right_batch_panel = QWidget()
+        right_batch_layout = QVBoxLayout(right_batch_panel)
+        right_batch_layout.setContentsMargins(15, 15, 15, 15)
+        right_batch_layout.setSpacing(15)
+        main_batch_h_layout.addWidget(right_batch_panel, 1)
+
+        # Batch options (reusing existing options tree)
+        options_group_box = QGroupBox("Conversion Options")
+        options_group_layout = QVBoxLayout(options_group_box)
+        options_group_layout.setContentsMargins(10, 25, 10, 10)
+        right_batch_layout.addWidget(options_group_box, 10)
+
+        # Create scroll area for options
+        batch_scroll_area = ScrollArea()
+        batch_scroll_area.setWidgetResizable(True)
+        # Use more flexible sizing strategy
+        batch_scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        
+        self.batch_options_tree = TreeWidget()
+        self.batch_options_tree.setHeaderHidden(True)
+        self.batch_options_tree.setRootIsDecorated(True)
+        self.batch_options_tree.setIndentation(20)
+        
+        batch_scroll_area.setWidget(self.batch_options_tree)
+        options_group_layout.addWidget(batch_scroll_area)
+
+        # Setup batch options tree (reuse existing option structure)
+        self._setup_batch_options_tree()
+
+        # Batch Progress & Results section
+        progress_results_group_box = QGroupBox("Batch Progress & Results")
+        progress_results_layout = QVBoxLayout(progress_results_group_box)
+        progress_results_layout.setContentsMargins(10, 25, 10, 10)
+        progress_results_layout.setSpacing(15)
+        right_batch_layout.addWidget(progress_results_group_box, 2)
+
+        # Overall progress
+        self.batch_progress_label = QLabel("Ready")
+        self.batch_progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.batch_progress = ProgressBar()
+        self.batch_progress.setRange(0, 100)
+        self.batch_progress.setValue(0)
+
+        progress_results_layout.addWidget(self.batch_progress_label)
+        progress_results_layout.addWidget(self.batch_progress)
+
+        # Current file progress
+        self.current_file_label = QLabel("No file processing")
+        self.current_file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.current_file_progress = ProgressBar()
+        self.current_file_progress.setRange(0, 100)
+        self.current_file_progress.setValue(0)
+
+        progress_results_layout.addWidget(self.current_file_label)
+        progress_results_layout.addWidget(self.current_file_progress)
+
+        # Separator line
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        progress_results_layout.addWidget(separator)
+
+        # Results display with statistics
+        results_layout = QVBoxLayout()
+        results_layout.setSpacing(10)
+        
+        # Statistics
+        stats_layout = QHBoxLayout()
+        self.success_count_label = QLabel("Success: 0")
+        self.failed_count_label = QLabel("Failed: 0")
+        self.total_count_label = QLabel("Total: 0")
+        stats_layout.addWidget(self.success_count_label)
+        stats_layout.addWidget(self.failed_count_label)
+        stats_layout.addWidget(self.total_count_label)
+        stats_layout.addStretch(1)
+        results_layout.addLayout(stats_layout)
+
+        # Results list with scroll
+        results_scroll_area = ScrollArea()
+        results_scroll_area.setWidgetResizable(True)
+        results_scroll_area.setMinimumHeight(150)
+        
+        self.results_list_widget = ListWidget()
+        results_scroll_area.setWidget(self.results_list_widget)
+        results_layout.addWidget(results_scroll_area)
+
+        progress_results_layout.addLayout(results_layout)
+
+        # Batch control buttons
+        batch_control_layout = QHBoxLayout()
+        # Initialize with default format text
+        batch_output_format = self.batch_format_combo.currentText().lower() if hasattr(self, 'batch_format_combo') else 'icns'
+        self.start_batch_btn = PrimaryPushButton(f"Convert to {batch_output_format.upper()}")
+        self.stop_batch_btn = PushButton("Stop")
+        self.stop_batch_btn.setEnabled(False)
+        
+        setCustomStyleSheet(self.start_batch_btn, CON.qss, CON.qss)
+        setCustomStyleSheet(self.stop_batch_btn, CON.qss, CON.qss)
+        
+        self.start_batch_btn.clicked.connect(self.start_batch_conversion)
+        self.stop_batch_btn.clicked.connect(self.stop_batch_conversion)
+        
+        batch_control_layout.addWidget(self.start_batch_btn)
+        batch_control_layout.addWidget(self.stop_batch_btn)
+        right_batch_layout.addLayout(batch_control_layout)
+
+        # Add stretch to push content to top
+        right_batch_layout.addStretch(1)
+
+        # Add stretch to push content to top-left
+        batch_layout.addStretch(1)
+
+        # Initialize batch variables
+        self.batch_files = []
+        self.batch_converting = False
+        
+    def _setup_batch_options_tree(self):
+        """Setup the TreeWidget with organized settings for batch conversion (same structure as single conversion)"""
+        # Clear existing items
+        self.batch_options_tree.clear()
+        
+        # Create main categories with icons for better visual hierarchy (same as single conversion)
+        basic_item = QTreeWidgetItem(["Basic Options"])
+        basic_item.setIcon(0, FluentIcon.MENU.qicon())
+        processing_item = QTreeWidgetItem(["Image Processing"])
+        processing_item.setIcon(0, FluentIcon.PALETTE.qicon())
+        output_item = QTreeWidgetItem(["Output Options"])
+        output_item.setIcon(0, FluentIcon.SAVE.qicon())
+        advanced_item = QTreeWidgetItem(["Advanced Settings"])
+        advanced_item.setIcon(0, FluentIcon.SETTING.qicon())
+        
+        # Add to tree
+        self.batch_options_tree.addTopLevelItem(basic_item)
+        self.batch_options_tree.addTopLevelItem(processing_item)
+        self.batch_options_tree.addTopLevelItem(output_item)
+        self.batch_options_tree.addTopLevelItem(advanced_item)
+        
+        # Set font for categories to make them stand out (same as single conversion)
+        bold_font = self.batch_options_tree.font()
+        bold_font.setBold(True)
+        bold_font.setPointSize(bold_font.pointSize() + 1)
+        
+        basic_item.setFont(0, bold_font)
+        processing_item.setFont(0, bold_font)
+        output_item.setFont(0, bold_font)
+        advanced_item.setFont(0, bold_font)
+        
+        # Set background colors for categories (same as single conversion)
+        basic_item.setBackground(0, QColor(240, 248, 255, 80))  # Light blue
+        processing_item.setBackground(0, QColor(240, 255, 240, 80))  # Light green
+        output_item.setBackground(0, QColor(255, 250, 205, 80))  # Light yellow
+        advanced_item.setBackground(0, QColor(255, 248, 240, 80))  # Light orange
+        
+        # Basic Options (same structure as single conversion)
+        self._create_batch_basic_options(basic_item)
+        
+        # Processing Options (same structure as single conversion)
+        self._create_batch_processing_options(processing_item)
+        
+        # Output Options (new)
+        self._create_batch_output_options(output_item)
+        
+        # Advanced Options (same structure as single conversion)
+        self._create_batch_advanced_options(advanced_item)
+        
+        # Set expansion state (same as single conversion)
+        basic_item.setExpanded(True)
+        processing_item.setExpanded(True)
+        output_item.setExpanded(True)
+        advanced_item.setExpanded(False)  # Hidden by default
+        
+        # Connect tree signals (same as single conversion)
+        self.batch_options_tree.itemExpanded.connect(self._on_batch_tree_item_expanded)
+        self.batch_options_tree.itemCollapsed.connect(self._on_batch_tree_item_collapsed)
+    
+    def _create_batch_basic_options(self, parent_item):
+        """Create basic options widgets for batch conversion with responsive layout"""
+        # Output Format
+        format_widget = QWidget()
+        # Use more flexible sizing strategy
+        format_widget.setMinimumHeight(55)
+        format_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        format_layout = QHBoxLayout(format_widget)
+        format_layout.setContentsMargins(5, 8, 5, 8)
+        
+        # Create icon + label for Output Format
+        format_icon_container = QWidget()
+        format_icon_layout = QHBoxLayout(format_icon_container)
+        format_icon_layout.setContentsMargins(0, 0, 0, 0)
+        format_icon_layout.setSpacing(5)
+        format_icon = IconWidget(FluentIcon.VIEW)
+        format_icon.setFixedSize(16, 16)
+        format_icon_layout.addWidget(format_icon)
+        format_label = QLabel("Output Format:")
+        format_icon_layout.addWidget(format_label)
+        format_icon_container.setMinimumWidth(120)  # Ensure consistent width for labels
+        
+        self.batch_format_combo = ModelComboBox()
+        self.batch_format_combo.addItems(convert.SUPPORTED_FORMATS)
+        self.batch_format_combo.currentIndexChanged.connect(self.on_batch_format_change)
+        setCustomStyleSheet(self.batch_format_combo, CON.qss_combo, CON.qss_combo)
+        
+        format_layout.addWidget(format_icon_container)
+        format_layout.addWidget(self.batch_format_combo, 1)  # Give combo box more stretch
+        
+        format_item = QTreeWidgetItem()
+        parent_item.addChild(format_item)
+        self.batch_options_tree.setItemWidget(format_item, 0, format_widget)
+        
+        # Size Options (grouped in a sub-item)
+        size_item = QTreeWidgetItem(["Size Options"])
+        size_item.setIcon(0, FluentIcon.ZIP_FOLDER.qicon())
+        parent_item.addChild(size_item)
+        
+        # Minimum Size
+        min_size_widget = QWidget()
+        min_size_layout = QHBoxLayout(min_size_widget)
+        min_size_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        # Use more flexible sizing strategy
+        min_size_widget.setMinimumHeight(45)
+        min_size_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        min_size_label = QLabel("Min Size:")
+        min_size_label.setMinimumWidth(80)
+        self.batch_min_spin = SpinBox()
+        setCustomStyleSheet(self.batch_min_spin, CON.qss_spin, CON.qss_spin)
+        self.batch_min_spin.setRange(16, 512)
+        self.batch_min_spin.setValue(self.min_size)
+        self.batch_min_spin.setSuffix(" px")  # Add unit suffix
+        self.batch_min_spin.valueChanged.connect(self.on_batch_min_size_change)
+        
+        min_size_layout.addWidget(min_size_label)
+        min_size_layout.addWidget(self.batch_min_spin, 1)
+        
+        min_size_sub_item = QTreeWidgetItem()
+        size_item.addChild(min_size_sub_item)
+        self.batch_options_tree.setItemWidget(min_size_sub_item, 0, min_size_widget)
+        
+        # Maximum Size
+        max_size_widget = QWidget()
+        max_size_layout = QHBoxLayout(max_size_widget)
+        max_size_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        # Use more flexible sizing strategy
+        max_size_widget.setMinimumHeight(45)
+        max_size_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        max_size_label = QLabel("Max Size:")
+        max_size_label.setMinimumWidth(80)
+        self.batch_max_spin = SpinBox()
+        setCustomStyleSheet(self.batch_max_spin, CON.qss_spin, CON.qss_spin)
+        self.batch_max_spin.setRange(32, 1024)
+        self.batch_max_spin.setValue(self.max_size)
+        self.batch_max_spin.setSuffix(" px")  # Add unit suffix
+        self.batch_max_spin.valueChanged.connect(self.on_batch_max_size_change)
+        
+        max_size_layout.addWidget(max_size_label)
+        max_size_layout.addWidget(self.batch_max_spin, 1)
+        
+        max_size_sub_item = QTreeWidgetItem()
+        size_item.addChild(max_size_sub_item)
+        self.batch_options_tree.setItemWidget(max_size_sub_item, 0, max_size_widget)
+        
+        # Auto-detect max size checkbox
+        auto_detect_widget = QWidget()
+        auto_detect_layout = QHBoxLayout(auto_detect_widget)
+        auto_detect_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        # Use more flexible sizing strategy
+        auto_detect_widget.setMinimumHeight(45)
+        auto_detect_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        self.batch_auto_detect_check = CheckBox("🔍 Auto-detect max size for each image")
+        self.batch_auto_detect_check.stateChanged.connect(self.on_batch_auto_detect_toggle)
+        auto_detect_layout.addWidget(self.batch_auto_detect_check)
+        
+        auto_detect_sub_item = QTreeWidgetItem()
+        size_item.addChild(auto_detect_sub_item)
+        self.batch_options_tree.setItemWidget(auto_detect_sub_item, 0, auto_detect_widget)
+        
+        # Auto-detect button (disabled for now, will be removed later)
+        # auto_widget = QWidget()
+        # auto_layout = QHBoxLayout(auto_widget)
+        # auto_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        # # Use more flexible sizing strategy
+        # auto_widget.setMinimumHeight(40)
+        # auto_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # 
+        # self.batch_auto_button = PrimaryPushButton("🔍 Auto-detect Max Size")
+        # setCustomStyleSheet(self.batch_auto_button, CON.qss_debug, CON.qss_debug)
+        # self.batch_auto_button.clicked.connect(self.on_batch_auto_detect)
+        # auto_layout.addWidget(self.batch_auto_button)
+        # 
+        # auto_sub_item = QTreeWidgetItem()
+        # size_item.addChild(auto_sub_item)
+        # self.batch_options_tree.setItemWidget(auto_sub_item, 0, auto_widget)
+        
+        # Expand size options by default
+        size_item.setExpanded(True)
+    
+    def _create_batch_processing_options(self, parent_item):
+        """Create image processing options widgets for batch conversion (same as single conversion)"""
+        # Keep aspect ratio
+        aspect_widget = QWidget()
+        aspect_layout = QHBoxLayout(aspect_widget)
+        aspect_layout.setContentsMargins(5, 8, 5, 8)
+        # Use more flexible sizing strategy
+        aspect_widget.setMinimumHeight(45)
+        aspect_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.batch_keep_aspect_check = CheckBox("Maintain original aspect ratio")
+        self.batch_keep_aspect_check.setChecked(self.keep_aspect_ratio)
+        self.batch_keep_aspect_check.stateChanged.connect(self.on_batch_keep_aspect_changed)
+        aspect_layout.addWidget(self.batch_keep_aspect_check)
+        
+        aspect_item = QTreeWidgetItem()
+        parent_item.addChild(aspect_item)
+        self.batch_options_tree.setItemWidget(aspect_item, 0, aspect_widget)
+        
+        # Auto crop
+        crop_widget = QWidget()
+        crop_layout = QHBoxLayout(crop_widget)
+        crop_layout.setContentsMargins(5, 8, 5, 8)
+        # Use more flexible sizing strategy
+        crop_widget.setMinimumHeight(45)
+        crop_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        # Create icon + checkbox layout
+        crop_icon_layout = QHBoxLayout()
+        crop_icon_layout.setContentsMargins(0, 0, 0, 0)
+        crop_icon_layout.setSpacing(5)
+        crop_icon = IconWidget(FluentIcon.CUT)
+        crop_icon.setFixedSize(16, 16)
+        crop_icon_layout.addWidget(crop_icon)
+        self.batch_auto_crop_check = CheckBox("Auto-crop non-square to square")
+        self.batch_auto_crop_check.setChecked(self.auto_crop)
+        self.batch_auto_crop_check.stateChanged.connect(self.on_batch_auto_crop_changed)
+        crop_icon_layout.addWidget(self.batch_auto_crop_check)
+        crop_icon_layout.addStretch()
+        
+        crop_layout.addLayout(crop_icon_layout)
+        crop_item = QTreeWidgetItem()
+        parent_item.addChild(crop_item)
+        self.batch_options_tree.setItemWidget(crop_item, 0, crop_widget)
+        
+        # Quality slider
+        quality_widget = QWidget()
+        quality_layout = QHBoxLayout(quality_widget)
+        quality_layout.setContentsMargins(5, 8, 5, 8)
+        # Use more flexible sizing strategy
+        quality_widget.setMinimumHeight(55)
+        quality_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        # Create icon + label for Quality
+        quality_icon_container = QWidget()
+        quality_icon_layout = QHBoxLayout(quality_icon_container)
+        quality_icon_layout.setContentsMargins(0, 0, 0, 0)
+        quality_icon_layout.setSpacing(5)
+        quality_icon = IconWidget(FluentIcon.PALETTE)
+        quality_icon.setFixedSize(16, 16)
+        quality_icon_layout.addWidget(quality_icon)
+        quality_label = QLabel("Quality:")
+        quality_icon_layout.addWidget(quality_label)
+        quality_icon_container.setMinimumWidth(100)  # Ensure consistent width for labels
+        quality_layout.addWidget(quality_icon_container)
+        
+        self.batch_quality_slider = Slider(Qt.Orientation.Horizontal)
+        self.batch_quality_slider.setRange(1, 100)
+        self.batch_quality_slider.setValue(self.quality)
+        self.batch_quality_slider.valueChanged.connect(self.on_batch_quality_changed)
+        quality_layout.addWidget(self.batch_quality_slider, 1)  # Give slider more stretch
+        
+        # Use read-only QLabel for quality value, same as single conversion
+        self.batch_quality_label = QLabel(str(self.quality))
+        self.batch_quality_label.setMinimumWidth(30)  # Ensure consistent width for label
+        self.batch_quality_label.setMaximumWidth(60)  # Limit width
+        self.batch_quality_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        quality_layout.addWidget(self.batch_quality_label)
+        
+        quality_item = QTreeWidgetItem()
+        parent_item.addChild(quality_item)
+        self.batch_options_tree.setItemWidget(quality_item, 0, quality_widget)
+    
+    def _create_batch_output_options(self, parent_item):
+        """Create batch output options widgets"""
+        # Output Structure options
+        output_structure_item = QTreeWidgetItem(["📁 Output Structure Options"])
+        parent_item.addChild(output_structure_item)
+        
+        # Preserve folder structure
+        preserve_folder_widget = QWidget()
+        preserve_folder_layout = QHBoxLayout(preserve_folder_widget)
+        preserve_folder_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        # Use more flexible sizing strategy
+        preserve_folder_widget.setMinimumHeight(45)
+        preserve_folder_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        self.batch_preserve_folder_check = CheckBox("Preserve original folder structure")
+        self.batch_preserve_folder_check.setChecked(False)
+        preserve_folder_layout.addWidget(self.batch_preserve_folder_check)
+        
+        preserve_folder_sub_item = QTreeWidgetItem()
+        output_structure_item.addChild(preserve_folder_sub_item)
+        self.batch_options_tree.setItemWidget(preserve_folder_sub_item, 0, preserve_folder_widget)
+        
+        # Filename modification options
+        filename_mod_item = QTreeWidgetItem(["📝 Filename Modification"])
+        parent_item.addChild(filename_mod_item)
+        
+        # Prefix
+        prefix_widget = QWidget()
+        prefix_layout = QHBoxLayout(prefix_widget)
+        prefix_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        # Use more flexible sizing strategy
+        prefix_widget.setMinimumHeight(45)
+        prefix_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        prefix_label = QLabel("Prefix:")
+        prefix_label.setMinimumWidth(80)
+        self.batch_prefix_edit = LineEdit()
+        self.batch_prefix_edit.setPlaceholderText("Add prefix to filenames")
+        prefix_layout.addWidget(prefix_label)
+        prefix_layout.addWidget(self.batch_prefix_edit, 1)
+        
+        prefix_sub_item = QTreeWidgetItem()
+        filename_mod_item.addChild(prefix_sub_item)
+        self.batch_options_tree.setItemWidget(prefix_sub_item, 0, prefix_widget)
+        
+        # Suffix
+        suffix_widget = QWidget()
+        suffix_layout = QHBoxLayout(suffix_widget)
+        suffix_layout.setContentsMargins(25, 5, 5, 5)  # Indent for sub-item
+        # Use more flexible sizing strategy
+        suffix_widget.setMinimumHeight(45)
+        suffix_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        suffix_label = QLabel("Suffix:")
+        suffix_label.setMinimumWidth(80)
+        self.batch_suffix_edit = LineEdit()
+        self.batch_suffix_edit.setPlaceholderText("Add suffix to filenames")
+        suffix_layout.addWidget(suffix_label)
+        suffix_layout.addWidget(self.batch_suffix_edit, 1)
+        
+        suffix_sub_item = QTreeWidgetItem()
+        filename_mod_item.addChild(suffix_sub_item)
+        self.batch_options_tree.setItemWidget(suffix_sub_item, 0, suffix_widget)
+        
+        # Expand output structure options by default
+        output_structure_item.setExpanded(True)
+        filename_mod_item.setExpanded(True)
+    
+    def _create_batch_advanced_options(self, parent_item):
+        """Create advanced options widgets for batch conversion (same as single conversion)"""
+        # ICNS method
+        method_widget = QWidget()
+        method_layout = QHBoxLayout(method_widget)
+        method_layout.setContentsMargins(5, 8, 5, 8)
+        # Use more flexible sizing strategy
+        method_widget.setMinimumHeight(55)
+        method_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        # Create icon + label for ICNS method
+        method_icon_container = QWidget()
+        method_icon_layout = QHBoxLayout(method_icon_container)
+        method_icon_layout.setContentsMargins(0, 0, 0, 0)
+        method_icon_layout.setSpacing(5)
+        method_icon = IconWidget(FluentIcon.SETTING)
+        method_icon.setFixedSize(16, 16)
+        method_icon_layout.addWidget(method_icon)
+        method_label = QLabel("ICNS method:")
+        method_icon_layout.addWidget(method_label)
+        method_icon_container.setMinimumWidth(120)  # Ensure consistent width for labels
+        method_layout.addWidget(method_icon_container)
+        
+        self.batch_icns_method_combo = ModelComboBox()
+        self.batch_icns_method_combo.addItems(["iconutil (Recommended)", "Pillow Fallback"])
+        self.batch_icns_method_combo.setCurrentText(self.icns_method)
+        self.batch_icns_method_combo.currentTextChanged.connect(self.on_batch_icns_method_changed)
+        setCustomStyleSheet(self.batch_icns_method_combo, CON.qss_combo, CON.qss_combo)
+        method_layout.addWidget(self.batch_icns_method_combo, 1)  # Give combo box more stretch
+        
+        method_item = QTreeWidgetItem()
+        parent_item.addChild(method_item)
+        self.batch_options_tree.setItemWidget(method_item, 0, method_widget)
+        
+        # Overwrite confirmation
+        overwrite_widget = QWidget()
+        overwrite_layout = QHBoxLayout(overwrite_widget)
+        overwrite_layout.setContentsMargins(5, 8, 5, 8)
+        # Use more flexible sizing strategy
+        overwrite_widget.setMinimumHeight(45)
+        overwrite_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # Create icon + checkbox for overwrite confirmation
+        overwrite_icon_layout = QHBoxLayout()
+        overwrite_icon_layout.setContentsMargins(0, 0, 0, 0)
+        overwrite_icon_layout.setSpacing(5)
+        overwrite_icon = IconWidget(FluentIcon.INFO)
+        overwrite_icon.setFixedSize(16, 16)
+        overwrite_icon_layout.addWidget(overwrite_icon)
+        self.batch_overwrite_confirm_check = CheckBox("Confirm before overwriting files")
+        overwrite_icon_layout.addWidget(self.batch_overwrite_confirm_check)
+        overwrite_icon_layout.addStretch()
+        overwrite_layout.addLayout(overwrite_icon_layout)
+        self.batch_overwrite_confirm_check.setChecked(self.overwrite_confirm)
+        self.batch_overwrite_confirm_check.stateChanged.connect(self.on_batch_overwrite_confirm_changed)
+        overwrite_layout.addWidget(self.batch_overwrite_confirm_check)
+        
+        overwrite_item = QTreeWidgetItem()
+        parent_item.addChild(overwrite_item)
+        self.batch_options_tree.setItemWidget(overwrite_item, 0, overwrite_widget)
+        
+    def _update_batch_basic_options(self):
+        """Update batch basic options display"""
+        # Find and update the basic options item
+        basic_item = self.batch_options_tree.topLevelItem(0)
+        if basic_item and basic_item.text(0) == "Basic Options":
+            basic_item.setText(0, f"Basic Options (Min: {self.batch_min_spin.value()}px, Max: {self.batch_max_spin.value()}px, Format: {self.batch_format_combo.currentText()})")
     
     def create_history_tab(self):
         """Create the history tab for conversion history"""
@@ -643,7 +1447,7 @@ class ICNSConverterGUI(QMainWindow):
     
     def _show_clear_history_popup(self):
         """Show popup to confirm clearing history"""
-        from qfluentwidgets import MessageBox, FluentIcon
+        from UIkit import MessageBox, FluentIcon
         
         # Create confirmation dialog
         box = MessageBox(
@@ -665,7 +1469,7 @@ class ICNSConverterGUI(QMainWindow):
         self.update_history_display()
         
         # Show success info bar
-        from qfluentwidgets import InfoBar, InfoBarPosition, FluentIcon
+        from UIkit import InfoBar, InfoBarPosition, FluentIcon
         InfoBar.success(
             title='History Cleared',
             content='All conversion history has been successfully cleared.',
@@ -682,9 +1486,12 @@ class ICNSConverterGUI(QMainWindow):
         self.options_tree.clear()
         
         # Create main categories with icons for better visual hierarchy
-        basic_item = QTreeWidgetItem(["📋 Basic Options"])
-        processing_item = QTreeWidgetItem(["🎨 Image Processing"])
-        advanced_item = QTreeWidgetItem(["⚙️ Advanced Settings"])
+        basic_item = QTreeWidgetItem(["Basic Options"])
+        basic_item.setIcon(0, FluentIcon.MENU.qicon())
+        processing_item = QTreeWidgetItem(["Image Processing"])
+        processing_item.setIcon(0, FluentIcon.PALETTE.qicon())
+        advanced_item = QTreeWidgetItem(["Advanced Settings"])
+        advanced_item.setIcon(0, FluentIcon.SETTING.qicon())
         
         # Add to tree
         self.options_tree.addTopLevelItem(basic_item)
@@ -724,22 +1531,33 @@ class ICNSConverterGUI(QMainWindow):
         self.options_tree.itemCollapsed.connect(self._on_tree_item_collapsed)
     
     def _create_basic_options(self, parent_item):
-        """Create basic options widgets"""
+        """Create basic options widgets with responsive layout"""
         # Output Format
         format_widget = QWidget()
-        format_widget.setMinimumSize(300, 55)
+        # Use more flexible sizing strategy而不是固定最小尺寸
+        format_widget.setMinimumHeight(55)
+        format_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         format_layout = QHBoxLayout(format_widget)
         format_layout.setContentsMargins(5, 8, 5, 8)
         
-        format_label = QLabel("🗂️ Output Format:")
-        format_label.setMinimumWidth(120)  # Ensure consistent width for labels
+        # Create icon + label for Output Format
+        format_icon_container = QWidget()
+        format_icon_layout = QHBoxLayout(format_icon_container)
+        format_icon_layout.setContentsMargins(0, 0, 0, 0)
+        format_icon_layout.setSpacing(5)
+        format_icon = IconWidget(FluentIcon.VIEW)
+        format_icon.setFixedSize(16, 16)
+        format_icon_layout.addWidget(format_icon)
+        format_label = QLabel("Output Format:")
+        format_icon_layout.addWidget(format_label)
+        format_icon_container.setMinimumWidth(120)  # Ensure consistent width for labels
         
         self.format_combo = ModelComboBox()
         self.format_combo.addItems(convert.SUPPORTED_FORMATS)
         self.format_combo.currentIndexChanged.connect(self.on_format_change)
         setCustomStyleSheet(self.format_combo, CON.qss_combo, CON.qss_combo)
         
-        format_layout.addWidget(format_label)
+        format_layout.addWidget(format_icon_container)
         format_layout.addWidget(self.format_combo, 1)  # Give combo box more stretch
         
         format_item = QTreeWidgetItem()
@@ -747,7 +1565,8 @@ class ICNSConverterGUI(QMainWindow):
         self.options_tree.setItemWidget(format_item, 0, format_widget)
         
         # Size Options (grouped in a sub-item)
-        size_item = QTreeWidgetItem(["📏 Size Options"])
+        size_item = QTreeWidgetItem(["Size Options"])
+        size_item.setIcon(0, FluentIcon.ZIP_FOLDER.qicon())
         parent_item.addChild(size_item)
         
         # Minimum Size
@@ -811,13 +1630,15 @@ class ICNSConverterGUI(QMainWindow):
         size_item.setExpanded(True)
     
     def _create_processing_options(self, parent_item):
-        """Create image processing options widgets"""
+        """Create image processing options widgets with responsive layout"""
         # Keep aspect ratio
         aspect_widget = QWidget()
         aspect_layout = QHBoxLayout(aspect_widget)
         aspect_layout.setContentsMargins(5, 8, 5, 8)
-        aspect_widget.setMinimumSize(300, 45)
-        self.keep_aspect_check = CheckBox("📐 Maintain original aspect ratio")
+        # Use more flexible sizing strategy
+        aspect_widget.setMinimumHeight(45)
+        aspect_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.keep_aspect_check = CheckBox("Maintain original aspect ratio")
         self.keep_aspect_check.stateChanged.connect(self.on_keep_aspect_changed)
         aspect_layout.addWidget(self.keep_aspect_check)
         
@@ -830,9 +1651,18 @@ class ICNSConverterGUI(QMainWindow):
         crop_layout = QHBoxLayout(crop_widget)
         crop_layout.setContentsMargins(5, 8, 5, 8)
         crop_widget.setMinimumSize(300, 45)
-        self.auto_crop_check = CheckBox("✂️ Auto-crop non-square to square")
+        # Create icon + checkbox for auto-crop
+        crop_icon_layout = QHBoxLayout()
+        crop_icon_layout.setContentsMargins(0, 0, 0, 0)
+        crop_icon_layout.setSpacing(5)
+        crop_icon = IconWidget(FluentIcon.CUT)
+        crop_icon.setFixedSize(16, 16)
+        crop_icon_layout.addWidget(crop_icon)
+        self.auto_crop_check = CheckBox("Auto-crop non-square to square")
         self.auto_crop_check.stateChanged.connect(self.on_auto_crop_changed)
-        crop_layout.addWidget(self.auto_crop_check)
+        crop_icon_layout.addWidget(self.auto_crop_check)
+        crop_icon_layout.addStretch()
+        crop_layout.addLayout(crop_icon_layout)
         crop_item = QTreeWidgetItem()
         parent_item.addChild(crop_item)
         self.options_tree.setItemWidget(crop_item, 0, crop_widget)
@@ -842,9 +1672,19 @@ class ICNSConverterGUI(QMainWindow):
         quality_layout = QHBoxLayout(quality_widget)
         quality_layout.setContentsMargins(5, 8, 5, 8)
         quality_widget.setMinimumSize(300, 55)
-        quality_label = QLabel("🎨 Quality:")
-        quality_label.setMinimumWidth(100)  # Ensure consistent width for labels
-        quality_layout.addWidget(quality_label)
+        
+        # Create icon + label for Quality
+        quality_icon_container = QWidget()
+        quality_icon_layout = QHBoxLayout(quality_icon_container)
+        quality_icon_layout.setContentsMargins(0, 0, 0, 0)
+        quality_icon_layout.setSpacing(5)
+        quality_icon = IconWidget(FluentIcon.PALETTE)
+        quality_icon.setFixedSize(16, 16)
+        quality_icon_layout.addWidget(quality_icon)
+        quality_label = QLabel("Quality:")
+        quality_icon_layout.addWidget(quality_label)
+        quality_icon_container.setMinimumWidth(100)  # Ensure consistent width for labels
+        quality_layout.addWidget(quality_icon_container)
         
         self.quality_slider = Slider(Qt.Orientation.Horizontal)
         self.quality_slider.setRange(1, 100)
@@ -861,16 +1701,27 @@ class ICNSConverterGUI(QMainWindow):
         self.options_tree.setItemWidget(quality_item, 0, quality_widget)
     
     def _create_advanced_options(self, parent_item):
-        """Create advanced options widgets"""
-        # ICNS method
+        """Create advanced settings widgets with responsive layout"""
+        # ICNS method selection
         method_widget = QWidget()
         method_layout = QHBoxLayout(method_widget)
         method_layout.setContentsMargins(5, 8, 5, 8)
-        method_widget.setMinimumSize(300, 55)
+        # Use more flexible sizing strategy
+        method_widget.setMinimumHeight(55)
+        method_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
-        method_label = QLabel("⚙️ ICNS method:")
-        method_label.setMinimumWidth(120)  # Ensure consistent width for labels
-        method_layout.addWidget(method_label)
+        # Create icon + label for ICNS method
+        method_icon_container = QWidget()
+        method_icon_layout = QHBoxLayout(method_icon_container)
+        method_icon_layout.setContentsMargins(0, 0, 0, 0)
+        method_icon_layout.setSpacing(5)
+        method_icon = IconWidget(FluentIcon.SETTING)
+        method_icon.setFixedSize(16, 16)
+        method_icon_layout.addWidget(method_icon)
+        method_label = QLabel("ICNS method:")
+        method_icon_layout.addWidget(method_label)
+        method_icon_container.setMinimumWidth(120)  # Ensure consistent width for labels
+        method_layout.addWidget(method_icon_container)
         
         self.icns_method_combo = ModelComboBox()
         self.icns_method_combo.addItems(["iconutil (Recommended)", "Pillow Fallback"])
@@ -887,78 +1738,28 @@ class ICNSConverterGUI(QMainWindow):
         overwrite_layout = QHBoxLayout(overwrite_widget)
         overwrite_layout.setContentsMargins(5, 8, 5, 8)
         overwrite_widget.setMinimumSize(300, 45)
-        self.overwrite_confirm_check = CheckBox("⚠️ Confirm before overwriting files")
+        
+        # Create icon + checkbox for overwrite confirmation
+        overwrite_icon_layout = QHBoxLayout()
+        overwrite_icon_layout.setContentsMargins(0, 0, 0, 0)
+        overwrite_icon_layout.setSpacing(5)
+        overwrite_icon = IconWidget(FluentIcon.INFO)
+        overwrite_icon.setFixedSize(16, 16)
+        overwrite_icon_layout.addWidget(overwrite_icon)
+        self.overwrite_confirm_check = CheckBox("Confirm before overwriting files")
         self.overwrite_confirm_check.stateChanged.connect(self.on_overwrite_confirm_changed)
-        overwrite_layout.addWidget(self.overwrite_confirm_check)
+        overwrite_icon_layout.addWidget(self.overwrite_confirm_check)
+        overwrite_icon_layout.addStretch()
+        overwrite_layout.addLayout(overwrite_icon_layout)
         
         overwrite_item = QTreeWidgetItem()
         parent_item.addChild(overwrite_item)
         self.options_tree.setItemWidget(overwrite_item, 0, overwrite_widget)
     
     def on_tab_changed(self, index):
-        """Handle tab change with optional slide animation effect based on UI_FLUENT environment variable"""
-        import sys
-        import os
-        sys.path.append(os.path.join(os.path.dirname(__file__), 'support'))
-        from support.check_flag import check_flag
-        
-        # Check if UI_FLUENT environment variable is set to YES using check_flag function
-        ui_fluent_enabled = check_flag("UI_FLUENT")
-        
-        # Skip animation if UI_FLUENT is not enabled
-        if not ui_fluent_enabled:
-            self._previous_tab_index = index
-            return
-            
-        # Proceed with animation if UI_FLUENT is enabled
-        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
-        
-        # Get current tab widget
-        current_widget = self.tab_widget.currentWidget()
-        if not current_widget:
-            return
-            
-        # Skip animation during initial startup to prevent layout issues
-        if not hasattr(self, '_previous_tab_index') and not self.tab_widget.isVisible():
-            self._previous_tab_index = index
-            return
-            
-        # Get tab widget dimensions
-        tab_width = self.tab_widget.width()
-        tab_height = self.tab_widget.height()
-        
-        # Skip animation if window is not yet properly sized
-        if tab_width <= 0 or tab_height <= 0:
-            self._previous_tab_index = index
-            return
-        
-        # Determine slide direction based on tab index
-        if hasattr(self, '_previous_tab_index'):
-            if index > self._previous_tab_index:
-                # Sliding from right to left - start from 80% of width to prevent going out of bounds
-                start_pos = QRect(int(tab_width * 0.8), 0, tab_width, tab_height)
-            else:
-                # Sliding from left to right - start from -80% of width to prevent going out of bounds
-                start_pos = QRect(int(-tab_width * 0.8), 0, tab_width, tab_height)
-        else:
-            # First time, slide from right - start from 80% of width
-            start_pos = QRect(int(tab_width * 0.8), 0, tab_width, tab_height)
-        
-        # Set initial position
-        current_widget.setGeometry(start_pos)
-        
-        # Create slide animation
-        self.slide_animation = QPropertyAnimation(current_widget, b"geometry")
-        self.slide_animation.setDuration(300)  # 300ms animation for smooth slide
-        self.slide_animation.setStartValue(start_pos)
-        self.slide_animation.setEndValue(QRect(0, 0, tab_width, tab_height))
-        self.slide_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        
-        # Store current tab index for next animation
+        """Handle tab change without animation"""
+        # Simply store the previous tab index and return
         self._previous_tab_index = index
-        
-        # Start the animation
-        self.slide_animation.start()
     
     def _on_tree_item_expanded(self, item):
         """Handle tree item expansion"""
@@ -1012,14 +1813,11 @@ class ICNSConverterGUI(QMainWindow):
         title.setObjectName("success_title_label")
         center_layout.addWidget(title)
 
-        checkmark = QLabel("✓")
-        checkmark_font = checkmark.font()
-        checkmark_font.setPointSize(checkmark_font.pointSize() + 30) # Larger checkmark
-        checkmark_font.setBold(True)
-        checkmark.setFont(checkmark_font)
+        # Use FluentIcon for success checkmark
+        checkmark = IconWidget(FluentIcon.ACCEPT)
+        checkmark.setFixedSize(64, 64)
         checkmark.setObjectName("success_checkmark_label")
-        checkmark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        center_layout.addWidget(checkmark)
+        center_layout.addWidget(checkmark, 0, Qt.AlignmentFlag.AlignCenter)
 
         msg = QLabel(f"Your {str(self.output_format).upper()} file has been created successfully!")
         msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1048,18 +1846,178 @@ class ICNSConverterGUI(QMainWindow):
 
         self.success_widget.hide() # Initially hidden
 
-    def _set_placeholder_preview(self):
-        placeholder_text = "Drag and drop image here\nor click 'Browse...' to select file\n🖼️"
-        font = QFont()
-        font.setPointSize(16) # Larger font for placeholder
-        self.preview_label.setFont(font)
-        self.preview_label.setText(placeholder_text)
-        self.preview_label.setPixmap(QPixmap()) # Clear any previous image
+    def create_batch_success_view(self):
+        """Create a specialized batch conversion success view"""
+        # Create batch success widget as a top-level overlay
+        self.batch_success_widget = QWidget(self)
+        self.batch_success_widget.setObjectName("success_overlay")
         
-        # Enable drag and drop for the preview label
-        self.preview_label.setAcceptDrops(True)
-        self.preview_label.dragEnterEvent = self.dragEnterEvent
-        self.preview_label.dropEvent = self.dropEvent
+        # Set it to cover the entire window
+        self.batch_success_widget.setGeometry(self.rect())
+        
+        # Create layout for batch success widget
+        self.batch_success_layout = QVBoxLayout(self.batch_success_widget)
+        self.batch_success_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create a semi-transparent overlay background
+        overlay = QWidget()
+        overlay.setObjectName("success_overlay")
+        overlay_layout = QVBoxLayout(overlay)
+        overlay_layout.setContentsMargins(0, 0, 0, 0)
+        
+        center_panel = QWidget()
+        center_panel.setObjectName("success_center_panel")
+        center_layout = QVBoxLayout(center_panel)
+        center_layout.setContentsMargins(50, 50, 50, 50) # Increased margins
+        center_layout.setSpacing(20)
+        
+        # Add stretch to center the panel vertically
+        overlay_layout.addStretch()
+        overlay_layout.addWidget(center_panel, 0, Qt.AlignmentFlag.AlignCenter)
+        overlay_layout.addStretch()
+        
+        self.batch_success_layout.addWidget(overlay)
+
+        center_layout.addStretch()
+
+        # Batch success title
+        title = QLabel("Batch Conversion Complete!")
+        font = title.font()
+        font.setPointSize(font.pointSize() + 8) # Larger title
+        font.setBold(True)
+        title.setFont(font)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setObjectName("success_title_label")
+        center_layout.addWidget(title)
+
+        # Batch checkmark with FluentIcon
+        checkmark = IconWidget(FluentIcon.ACCEPT)
+        checkmark.setFixedSize(64, 64)
+        checkmark.setObjectName("success_checkmark_label")
+        center_layout.addWidget(checkmark, 0, Qt.AlignmentFlag.AlignCenter)
+
+        # Dynamic message - will be updated with actual batch stats
+        self.batch_success_message = QLabel("Processing batch conversion results...")
+        self.batch_success_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.batch_success_message.setObjectName("success_message_label")
+        center_layout.addWidget(self.batch_success_message)
+
+        # Batch statistics display
+        stats_widget = QWidget()
+        stats_layout = QVBoxLayout(stats_widget)
+        stats_layout.setSpacing(10)
+        
+        self.batch_file_count_label = QLabel("Files Processed: 0")
+        self.batch_file_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.batch_file_count_label.setObjectName("batch_file_count_label")
+        stats_layout.addWidget(self.batch_file_count_label)
+        
+        self.batch_success_count_label = QLabel("Successfully Converted: 0")
+        self.batch_success_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.batch_success_count_label.setObjectName("batch_success_count_label")
+        stats_layout.addWidget(self.batch_success_count_label)
+        
+        self.batch_failed_count_label = QLabel("Failed Conversions: 0")
+        self.batch_failed_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.batch_failed_count_label.setObjectName("batch_failed_count_label")
+        stats_layout.addWidget(self.batch_failed_count_label)
+        
+        self.batch_output_dir_label = QLabel("Output Directory: ")
+        self.batch_output_dir_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.batch_output_dir_label.setWordWrap(True)
+        self.batch_output_dir_label.setObjectName("batch_output_dir_label")
+        stats_layout.addWidget(self.batch_output_dir_label)
+        
+        center_layout.addWidget(stats_widget)
+
+        # Button layout
+        button_layout = QHBoxLayout()
+        
+        # Open output folder button
+        open_folder_btn = PrimaryPushButton("Open Output Folder")
+        open_folder_btn.clicked.connect(self.on_open_batch_output_folder)
+        open_folder_btn.setFixedSize(200, 45) # Larger buttons
+        open_folder_btn.setObjectName("open_converted_file_button") # Object name for QSS
+        setCustomStyleSheet(open_folder_btn, CON.qss, CON.qss)
+        button_layout.addWidget(open_folder_btn, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        # Return to converter button
+        return_btn = PushButton("Return to Converter")
+        return_btn.clicked.connect(self.show_main_view)
+        return_btn.setFixedSize(200, 45) # Larger buttons
+        return_btn.setObjectName("return_to_converter_button") # Object name for QSS
+        setCustomStyleSheet(return_btn, CON.qss, CON.qss)
+        button_layout.addWidget(return_btn, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        center_layout.addLayout(button_layout)
+        center_layout.addStretch()
+
+        self.batch_success_widget.hide() # Initially hidden
+
+    def show_batch_success_view(self, total_files=0, success_count=0, failed_count=0, output_dir="", format_name="PNG"):
+        """Show the batch success view with dynamic statistics"""
+        # Update the batch success widget geometry to match the window
+        self.batch_success_widget.setGeometry(self.rect())
+        
+        # Update dynamic content
+        if hasattr(self, 'batch_success_message'):
+            if failed_count == 0:
+                self.batch_success_message.setText(f"All {total_files} {format_name.upper()} files converted successfully!")
+            elif success_count == 0:
+                self.batch_success_message.setText(f"Batch conversion failed: {failed_count} files could not be converted")
+            else:
+                self.batch_success_message.setText(f"Batch conversion completed: {success_count}/{total_files} files converted successfully")
+        
+        if hasattr(self, 'batch_file_count_label'):
+            self.batch_file_count_label.setText(f"Files Processed: {total_files}")
+        
+        if hasattr(self, 'batch_success_count_label'):
+            self.batch_success_count_label.setText(f"Successfully Converted: {success_count}")
+        
+        if hasattr(self, 'batch_failed_count_label'):
+            if failed_count > 0:
+                self.batch_failed_count_label.setText(f"Failed Conversions: {failed_count}")
+                self.batch_failed_count_label.show()
+            else:
+                # Hide failed count when it's 0
+                self.batch_failed_count_label.hide()
+        
+        if hasattr(self, 'batch_output_dir_label'):
+            self.batch_output_dir_label.setText(f"Output Directory: {output_dir}")
+        
+        # Show the batch success widget as an overlay
+        self.batch_success_widget.show()
+        self.batch_success_widget.raise_()  # Bring to front
+        
+        # Apply theme-specific styles
+        self._apply_success_theme()
+
+    def on_open_batch_output_folder(self):
+        """Open the batch output folder in the file explorer"""
+        output_dir = self.output_dir_input.text().strip()
+        if output_dir and os.path.exists(output_dir):
+            try:
+                if sys.platform == "win32":
+                    os.startfile(output_dir)
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", output_dir])
+                else:  # Linux and other POSIX systems
+                    subprocess.run(["xdg-open", output_dir])
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not open folder: {str(e)}")
+        else:
+            QMessageBox.warning(self, "Error", "Output directory not found")
+
+    def _set_placeholder_preview(self):
+        """Set placeholder text in the preview tab"""
+        # Clear existing previews and show default info
+        self.preview_tab.clear_previews()
+
+
+    def _on_single_file_dropped(self, file_paths):
+        """Handle file dropped on single converter drop zone"""
+        if file_paths:
+            self.input_text.setText(file_paths[0])
 
     def on_browse_input(self):
         file_dialog = QFileDialog(self)
@@ -1131,6 +2089,41 @@ class ICNSConverterGUI(QMainWindow):
             # Remember the directory for next time if setting is enabled
             if self.remember_path:
                 self.last_output_dir = os.path.dirname(self.output_path)
+
+    def on_browse_batch_input(self):
+        """Browse for batch input files"""
+        file_dialog = QFileDialog(self)
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        file_dialog.setNameFilter("Supported Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp *.ico *.tiff);;All Files (*)")
+        file_dialog.setViewMode(QFileDialog.ViewMode.Detail)
+        
+        # Use last directory if available
+        if hasattr(self, 'last_batch_input_dir') and self.last_batch_input_dir:
+            file_dialog.setDirectory(self.last_batch_input_dir)
+        
+        if file_dialog.exec() == QFileDialog.DialogCode.Accept:
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                # Remember this directory for future use
+                self.last_batch_input_dir = os.path.dirname(selected_files[0])
+                
+                # Add files to batch file list
+                for file_path in selected_files:
+                    self._add_file_to_batch_list(file_path)
+    
+    def on_browse_batch_output(self):
+        """Browse for batch output directory"""
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Output Directory for Batch Conversion",
+            self.batch_output_text.text() if self.batch_output_text.text() else os.path.expanduser("~"),
+            QFileDialog.Option.ShowDirsOnly
+        )
+        
+        if directory:
+            self.batch_output_text.setText(directory)
+            # Remember this directory for future use
+            self.last_batch_output_dir = directory
             
     def on_format_change(self, index):
         self.output_format = self.format_combo.currentText().lower()
@@ -1146,6 +2139,28 @@ class ICNSConverterGUI(QMainWindow):
         self.min_spin.setEnabled(enable_size_options)
         self.max_spin.setEnabled(enable_size_options)
         self.auto_button.setEnabled(enable_size_options)
+        
+    def on_batch_format_change(self, index):
+        """Handle format change in batch conversion"""
+        batch_output_format = self.batch_format_combo.currentText().lower()
+        
+        # Update batch conversion button text to match format
+        if hasattr(self, 'start_batch_btn'):
+            self.start_batch_btn.setText(f"Convert to {batch_output_format.upper()}")
+        
+        # Enable/disable auto-detect button based on format
+        if hasattr(self, 'batch_use_auto_detect'):
+            if batch_output_format in ['png', 'jpg', 'jpeg', 'webp']:
+                self.batch_use_auto_detect.setEnabled(True)
+            else:
+                self.batch_use_auto_detect.setEnabled(False)
+                self.batch_use_auto_detect.setChecked(False)
+        
+        # Enable/disable min/max spin boxes based on format
+        if hasattr(self, 'batch_min_spin') and hasattr(self, 'batch_max_spin'):
+            enable_size_options = (batch_output_format == "icns")
+            self.batch_min_spin.setEnabled(enable_size_options)
+            self.batch_max_spin.setEnabled(enable_size_options)
         
     def auto_set_output(self):
         if self.input_path:
@@ -1199,30 +2214,17 @@ class ICNSConverterGUI(QMainWindow):
             
             
     def show_preview(self):
+        """Show preview in the preview tab"""
         if self.input_path and os.path.exists(self.input_path):
             try:
+                # Use the preview_tab to display the single preview
+                self.preview_tab.show_single_preview(self.input_path)
                 img = Image.open(self.input_path)
-                # img.thumbnail((350, 350)) # Removed PIL thumbnailing
-                
-                if img.mode == 'RGBA':
-                    qimage = QImage(img.tobytes("raw", "RGBA"), img.size[0], img.size[1], QImage.Format.Format_RGBA8888) # Corrected enum
-                else:
-                    qimage = QImage(img.tobytes("raw", "RGB"), img.size[0], img.size[1], QImage.Format.Format_RGB888) # Corrected enum
-
-                pixmap = QPixmap.fromImage(qimage)
-                # Scale pixmap to fit the label, maintaining aspect ratio
-                scaled_pixmap = pixmap.scaled(self.preview_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                self.preview_label.setPixmap(scaled_pixmap)
-                # Reset font to default if it was changed by placeholder
-                self.preview_label.setFont(QFont())
-                self.preview_label.setText("") # Clear placeholder text
                 self.status_bar.showMessage(f"Loaded: {os.path.basename(self.input_path)} ({img.size[0]}x{img.size[1]})")
             except Exception as e:
-                self.preview_label.setText("Preview error")
                 self.status_bar.showMessage("Preview error")
         else:
-            self.preview_label.clear()
-            self._set_placeholder_preview() # Show placeholder when no image selected
+            self.preview_tab.clear_previews()
             self.status_bar.showMessage("Ready")
             
     def on_min_size_change(self, value):
@@ -1247,6 +2249,32 @@ class ICNSConverterGUI(QMainWindow):
         self.quality_label.setText(str(value))
         self.save_settings()
         
+    def on_batch_auto_detect_toggle(self, state):
+        """Handle auto-detect toggle in batch conversion"""
+        auto_detect_enabled = bool(state)
+        # Enable/disable min and max size spin boxes based on auto-detect setting
+        if hasattr(self, 'batch_min_spin') and hasattr(self, 'batch_max_spin'):
+            self.batch_min_spin.setEnabled(not auto_detect_enabled)
+            self.batch_max_spin.setEnabled(not auto_detect_enabled)
+        
+        # Enable/disable auto-detect button if it exists
+        if hasattr(self, 'batch_auto_button'):
+            self.batch_auto_button.setEnabled(not auto_detect_enabled)
+    
+    def on_batch_auto_detect(self):
+        """Handle auto-detect in batch conversion"""
+        # This method is deprecated, will be removed in future
+        PopupTeachingTip.create(
+            target=self.batch_auto_button,
+            icon=InfoBarIcon.WARNING,
+            title='Notice',
+            content="Auto-detect is now available through the checkbox option.",
+            isClosable=True,
+            tailPosition=TeachingTipTailPosition.TOP,
+            duration=3000,
+            parent=self
+        )
+        
     def on_icns_method_changed(self, text):
         self.icns_method = text
         self.save_settings()
@@ -1254,6 +2282,45 @@ class ICNSConverterGUI(QMainWindow):
     def on_overwrite_confirm_changed(self, state):
         self.overwrite_confirm = bool(state)
         self.save_settings()
+        
+    # Batch conversion event handlers (mirroring single conversion handlers)
+    def on_batch_min_size_change(self, value):
+        if hasattr(self, 'batch_min_size'):
+            self.batch_min_size = value
+            
+    def on_batch_max_size_change(self, value):
+        if hasattr(self, 'batch_max_size'):
+            self.batch_max_size = value
+            
+    def on_batch_quality_changed(self, value):
+        if hasattr(self, 'batch_quality'):
+            self.batch_quality = value
+        if hasattr(self, 'batch_quality_label'):
+            self.batch_quality_label.setText(str(value))
+            
+    def on_batch_icns_method_changed(self, text):
+        if hasattr(self, 'batch_icns_method'):
+            self.batch_icns_method = text
+            
+    def on_batch_overwrite_confirm_changed(self, state):
+        if hasattr(self, 'batch_overwrite_confirm'):
+            self.batch_overwrite_confirm = bool(state)
+            
+    def on_batch_keep_aspect_changed(self, state):
+        if hasattr(self, 'batch_keep_aspect_ratio'):
+            self.batch_keep_aspect_ratio = bool(state)
+            
+    def on_batch_auto_crop_changed(self, state):
+        if hasattr(self, 'batch_auto_crop'):
+            self.batch_auto_crop = bool(state)
+            
+    def _on_batch_tree_item_expanded(self, item):
+        """Handle batch tree item expansion"""
+        pass  # Could be enhanced for batch-specific behavior
+        
+    def _on_batch_tree_item_collapsed(self, item):
+        """Handle batch tree item collapse"""
+        pass  # Could be enhanced for batch-specific behavior
     
     def on_interface_setting_changed(self):
         """Handle changes to interface behavior settings"""
@@ -1373,6 +2440,7 @@ class ICNSConverterGUI(QMainWindow):
             
         self.converting = True
         self.convert_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
         self.progress.setValue(0)
         self.progress_label.setText("Starting conversion...")
         
@@ -1391,16 +2459,55 @@ class ICNSConverterGUI(QMainWindow):
         self._thread.started.connect(self._worker.run)
         self._thread.start()
 
+
+    
+    def on_cancel_conversion(self):
+        """Cancel the ongoing conversion process"""
+        if not self.converting:
+            return
+        
+        # Update UI to show cancellation
+        self.progress_label.setText("Canceling conversion...")
+        self.cancel_button.setEnabled(False)
+        
+        # Stop the worker thread safely using the dedicated method
+        self._stop_conversion_worker()
+        
+        # Update UI state
+        self.converting = False
+        self.convert_button.setEnabled(True)
+        self.progress.setValue(0)
+        self.progress_label.setText("Conversion canceled")
+        self.status_bar.showMessage("Conversion canceled by user")
+    
     def on_conversion_finished(self):
         self.converting = False
-        if hasattr(self, '_thread') and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait()
+        
+        # Stop the thread safely with timeout
+        if hasattr(self, '_thread') and self._thread:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    if not self._thread.wait(2000):  # 2 second timeout
+                        print("[WARNING] Thread did not stop in time, forcing termination")
+                        self._thread.terminate()
+                        self._thread.wait(1000)
+            except Exception as ex:
+                print(f"[WARNING] Error stopping thread: {ex}")
+            finally:
+                # Clean up references but keep for potential reuse
+                self._worker = None
+                self._thread = None
+        
+        # Reset button states
+        self.convert_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         
         # Add to history if remember_path is enabled
         if self.remember_path:
             self.add_to_history(self.input_path, self.output_path, str(self.output_format))
         
+        # Show success notifications
         # Show top success notification
         InfoBar.success(
             title='Conversion Successful',
@@ -1421,17 +2528,52 @@ class ICNSConverterGUI(QMainWindow):
             self.show_success_view()
         else:
             # If completion notification is disabled, just show a simple status message
-            self.convert_button.setEnabled(True)
             self.progress.setValue(100)
             self.progress_label.setText("Conversion completed successfully!")
             self.status_bar.showMessage(f"Conversion completed: {os.path.basename(self.output_path)}")
         
+        # Auto-reset after conversion completion
+        self._reset_after_conversion()
+        
+    def _reset_after_conversion(self):
+        """Reset conversion state after completion to prepare for next conversion"""
+        # Only reset variables if remember_path is disabled
+        if not self.remember_path:
+            # Reset all variables when remember_path is disabled
+            self.init_variables(reset_all=True)
+            
+            # Reset UI elements
+            if hasattr(self, 'input_text'):
+                self.input_text.clear()
+            if hasattr(self, 'output_text'):
+                self.output_text.clear()
+            if hasattr(self, 'info_text'):
+                self.info_text.setText("No image selected")
+            if hasattr(self, 'preview_tab'):
+                self.preview_tab.clear_previews()  # Clear previews when returning to main view
+    
     def on_conversion_error(self, error_message):
         self.converting = False
         self.convert_button.setEnabled(True)
-        if hasattr(self, '_thread') and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait()
+        self.cancel_button.setEnabled(False) # Reset cancel button state
+        
+        # Stop the thread safely with timeout
+        if hasattr(self, '_thread') and self._thread:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    if not self._thread.wait(2000):  # 2 second timeout
+                        print("[WARNING] Thread did not stop in time, forcing termination")
+                        self._thread.terminate()
+                        self._thread.wait(1000)
+            except Exception as ex:
+                print(f"[WARNING] Error stopping thread: {ex}")
+            finally:
+                # Clean up references
+                self._worker = None
+                self._thread = None
+        
+        # Show error notifications
         PopupTeachingTip.create(
             target=self.convert_button,
             icon=InfoBarIcon.ERROR,
@@ -1443,6 +2585,445 @@ class ICNSConverterGUI(QMainWindow):
             parent=self
         )
         self.progress_label.setText("Conversion Failed")
+
+    # Batch conversion callback methods
+    def on_batch_files_dropped(self, file_paths):
+        """Handle multiple files dropped in the batch converter"""
+        # Filter only supported image files
+        supported_formats = ('.png', '.jpg', '.jpeg', '.webp', '.ico', '.tiff', '.tif', '.icns', '.bmp', '.gif', '.svg', '.heic', '.heif', '.avif', '.jxl', '.pdf', '.eps', '.dds', '.exr')
+        new_files = []
+        
+        for file_path in file_paths:
+            if os.path.splitext(file_path.lower())[1] in supported_formats:
+                new_files.append(file_path)
+        
+        if new_files:
+            self.batch_files.extend(new_files)
+            self.update_batch_file_list()
+            # Update preview tab with multiple previews
+            self.preview_tab.show_multiple_previews(new_files)
+            self.update_batch_statistics()
+            
+    def on_batch_folder_dropped(self, folder_path):
+        """Handle folder dropped in the batch converter"""
+        # Scan folder for supported image files
+        supported_formats = ('.png', '.jpg', '.jpeg', '.webp', '.ico', '.tiff', '.tif', '.icns', '.bmp', '.gif', '.svg', '.heic', '.heif', '.avif', '.jxl', '.pdf', '.eps', '.dds', '.exr')
+        found_files = []
+        
+        try:
+            for root, dirs, files in os.walk(folder_path):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in supported_formats):
+                        file_path = os.path.join(root, file)
+                        found_files.append(file_path)
+        except Exception as e:
+            PopupTeachingTip.create(
+                target=self.drop_zone,
+                icon=InfoBarIcon.ERROR,
+                title='ERROR',
+                content=f"Cannot scan folder: {str(e)}",
+                isClosable=True,
+                tailPosition=TeachingTipTailPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+            return
+        
+        if found_files:
+            self.batch_files.extend(found_files)
+            self.update_batch_file_list()
+            # Update preview tab with multiple previews from folder
+            self.preview_tab.show_multiple_previews(found_files)
+            self.update_batch_statistics()
+            
+            PopupTeachingTip.create(
+                target=self.drop_zone,
+                icon=InfoBarIcon.SUCCESS,
+                title='SUCCESS',
+                content=f"Added {len(found_files)} files from folder: {os.path.basename(folder_path)}",
+                isClosable=True,
+                tailPosition=TeachingTipTailPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+        else:
+            PopupTeachingTip.create(
+                target=self.drop_zone,
+                icon=InfoBarIcon.WARNING,
+                title='WARNING',
+                content="No supported image files found in the folder",
+                isClosable=True,
+                tailPosition=TeachingTipTailPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+            
+    def update_batch_file_list(self):
+        """Update the file tree widget with current batch files"""
+        self.file_list_tree.clear()
+        default_output = self.get_batch_output_directory() or os.path.expanduser("~/Documents")
+        default_format = self.batch_format_combo.currentText() if hasattr(self, 'batch_format_combo') else 'icns'
+
+        for file_path in self.batch_files:
+            settings = self.batch_file_settings.get(file_path, {})
+            output_dir = settings.get('output_dir', default_output)
+            fmt = settings.get('format', default_format)
+
+            item = QTreeWidgetItem()
+            item.setText(0, os.path.basename(file_path))
+            item.setText(1, output_dir)
+            item.setText(2, fmt)
+            item.setToolTip(0, file_path)
+            item.setData(0, Qt.ItemDataRole.UserRole, file_path)
+            self.file_list_tree.addTopLevelItem(item)
+            
+    def update_batch_statistics(self):
+        """Update batch conversion statistics"""
+        total_count = len(self.batch_files)
+        self.total_count_label.setText(f"Total: {total_count}")
+        
+    def clear_batch_files(self):
+        """Clear all batch files"""
+        self.batch_files.clear()
+        self.batch_file_settings.clear()
+        self.update_batch_file_list()
+        # Clear preview tab
+        self.preview_tab.clear_previews()
+        self.update_batch_statistics()
+        self.clear_batch_results()
+        
+    def remove_selected_files(self):
+        """Remove selected files from batch"""
+        selected_items = self.file_list_tree.selectedItems()
+        if not selected_items:
+            return
+
+        for item in selected_items:
+            file_path = item.data(0, Qt.ItemDataRole.UserRole)
+            if file_path in self.batch_files:
+                self.batch_files.remove(file_path)
+            self.batch_file_settings.pop(file_path, None)
+
+        self.update_batch_file_list()
+        # Update preview tab with remaining files
+        self.preview_tab.show_multiple_previews(self.batch_files)
+        self.update_batch_statistics()
+
+    def _on_file_tree_double_clicked(self, item, column):
+        """Handle double-click on file tree to edit per-file settings"""
+        file_path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not file_path:
+            return
+
+        if column == 1:  # Output Path column
+            dir_path = QFileDialog.getExistingDirectory(
+                self, "Select Output Directory", item.text(1)
+            )
+            if dir_path:
+                item.setText(1, dir_path)
+                if file_path not in self.batch_file_settings:
+                    self.batch_file_settings[file_path] = {}
+                self.batch_file_settings[file_path]['output_dir'] = dir_path
+        elif column == 2:  # Format column
+            formats = list(convert.SUPPORTED_OUTPUT_FORMATS.keys()) if hasattr(convert, 'SUPPORTED_OUTPUT_FORMATS') else [
+                'icns', 'png', 'jpg', 'jpeg', 'bmp', 'gif', 'tiff', 'webp', 'ico', 'pdf'
+            ]
+            current = item.text(2).lower()
+            try:
+                idx = formats.index(current)
+                next_fmt = formats[(idx + 1) % len(formats)]
+            except ValueError:
+                next_fmt = formats[0]
+            item.setText(2, next_fmt)
+            if file_path not in self.batch_file_settings:
+                self.batch_file_settings[file_path] = {}
+            self.batch_file_settings[file_path]['format'] = next_fmt
+
+    def start_batch_conversion(self):
+        """Start batch conversion process"""
+        if not self.batch_files:
+            PopupTeachingTip.create(
+                target=self.start_batch_btn,
+                icon=InfoBarIcon.WARNING,
+                title='WARNING',
+                content="Please select files to convert",
+                isClosable=True,
+                tailPosition=TeachingTipTailPosition.TOP,
+                duration=2000,
+                parent=self
+            )
+            return
+            
+        # Get current conversion options
+        options = self._get_batch_conversion_options()
+        if not options:
+            return
+            
+        # Start batch conversion in background thread
+        self.batch_converting = True
+        self.start_batch_btn.setEnabled(False)
+        self.stop_batch_btn.setEnabled(True)
+        
+        # Reset progress and results
+        self.batch_progress.setValue(0)
+        self.current_file_progress.setValue(0)
+        self.clear_batch_results()
+        
+        # Start batch conversion thread
+        self.batch_thread = QThread()
+        self.batch_worker = BatchConversionWorker(
+            self.batch_files,
+            self.get_batch_output_directory(),
+            options['output_format'],
+            min_size_param=options['min_size'],
+            max_size_param=options['max_size'],
+            quality_param=options['quality'],
+            preserve_folder_structure=options['preserve_folder_structure'],
+            prefix=options['prefix'],
+            suffix=options['suffix'],
+            auto_detect_max_size=options['auto_detect_max_size'],
+            per_file_settings=self.batch_file_settings
+        )
+        self.batch_worker.moveToThread(self.batch_thread)
+        
+        # Connect signals
+        self.batch_worker.total_progress_updated.connect(self.on_batch_progress)
+        self.batch_worker.progress_updated.connect(self.on_batch_file_progress)
+        self.batch_worker.file_processed.connect(self.on_batch_file_processed)
+        self.batch_worker.finished.connect(self.on_batch_finished)
+        self.batch_worker.batch_error.connect(self.on_batch_error)
+        
+        # Start the thread
+        self.batch_thread.started.connect(self.batch_worker.run)
+        self.batch_thread.start()
+        
+    def stop_batch_conversion(self):
+        """Stop batch conversion process"""
+        if hasattr(self, 'batch_worker') and self.batch_worker and self.batch_converting:
+            try:
+                self.batch_worker.cancel()
+            except Exception as ex:
+                print(f"[WARNING] Error canceling batch worker: {ex}")
+        self.on_batch_stopped()
+            
+    def on_batch_stopped(self):
+        """Handle batch conversion stopped"""
+        self.batch_converting = False
+        self.start_batch_btn.setEnabled(True)
+        self.stop_batch_btn.setEnabled(False)
+        self.batch_progress_label.setText("Stopped")
+        self.current_file_label.setText("No file processing")
+        
+        # Clean up thread safely with timeout
+        if hasattr(self, 'batch_thread') and self.batch_thread:
+            try:
+                if self.batch_thread.isRunning():
+                    self.batch_thread.quit()
+                    if not self.batch_thread.wait(3000):  # 3 second timeout for batch
+                        print("[WARNING] Batch thread did not stop in time, forcing termination")
+                        self.batch_thread.terminate()
+                        self.batch_thread.wait(1000)
+            except Exception as ex:
+                print(f"[WARNING] Error stopping batch thread: {ex}")
+            finally:
+                # Clean up references
+                self.batch_worker = None
+                self.batch_thread = None
+            
+    def on_batch_progress(self, overall_progress, message=None):
+        """Update batch overall progress"""
+        self.batch_progress.setValue(overall_progress)
+        if message:
+            self.batch_progress_label.setText(message)
+        else:
+            self.batch_progress_label.setText(f"Overall progress: {overall_progress}%")
+        
+    def on_batch_file_progress(self, current_index, total_count, current_file, percentage):
+        """Update current file progress"""
+        self.current_file_progress.setValue(percentage)
+        self.current_file_label.setText(f"Processing {current_file} ({current_index}/{total_count})")
+        
+    def on_batch_file_processed(self, filename, input_path, output_path, success, error_message):
+        """Handle individual file processing result"""
+        if success:
+            item = QListWidgetItem(filename)
+            item.setIcon(FluentIcon.ACCEPT.qicon())
+            item.setForeground(Qt.green)
+            # Add to history if conversion was successful and remember_path is enabled
+            if self.remember_path:
+                format_type = self.batch_format_combo.currentText().lower()
+                self.add_to_history(input_path, output_path, format_type)
+        else:
+            item = QListWidgetItem(f"{filename}: {error_message}")
+            item.setIcon(FluentIcon.CANCEL.qicon())
+            item.setForeground(Qt.red)
+        
+        self.results_list_widget.addItem(item)
+        
+    def on_batch_finished(self):
+        """Handle batch conversion finished"""
+        self.batch_converting = False
+        self.start_batch_btn.setEnabled(True)
+        self.stop_batch_btn.setEnabled(False)
+        
+        # Clean up thread safely with timeout
+        if hasattr(self, 'batch_thread') and self.batch_thread:
+            try:
+                if self.batch_thread.isRunning():
+                    self.batch_thread.quit()
+                    if not self.batch_thread.wait(3000):  # 3 second timeout
+                        print("[WARNING] Batch thread did not stop in time, forcing termination")
+                        self.batch_thread.terminate()
+                        self.batch_thread.wait(1000)
+            except Exception as ex:
+                print(f"[WARNING] Error stopping batch thread: {ex}")
+            finally:
+                # Clean up references
+                self.batch_worker = None
+                self.batch_thread = None
+            
+        # Get statistics from results list
+        success_count = 0
+        failed_count = 0
+        
+        for i in range(self.results_list_widget.count()):
+            item = self.results_list_widget.item(i)
+            if item:
+                # Check by icon instead of text
+                if not item.icon().isNull():
+                    success_count += 1
+                else:
+                    failed_count += 1
+        
+        self.success_count_label.setText(f"Success: {success_count}")
+        self.failed_count_label.setText(f"Failed: {failed_count}")
+        
+        # Update statistics label
+        total_files = success_count + failed_count
+        
+        # Show batch completion details
+        self.batch_progress_label.setText(f"Completed: {total_files} files")
+            
+        # Get output directory path
+        output_dir = self.get_batch_output_directory()
+            
+        # Show batch success view (even if there were some failures, we still show the results)
+        self.show_batch_success_view(
+            total_files=total_files,
+            success_count=success_count,
+            failed_count=failed_count,
+            output_dir=output_dir,
+            format_name=self.batch_format_combo.currentText()
+        )
+        
+        # Auto-reset after batch conversion completion
+        self._reset_batch_after_conversion()
+            
+    def _reset_batch_after_conversion(self):
+        """Reset batch conversion state after completion to prepare for next conversion"""
+        # Clear file list and results
+        self.clear_batch_files()
+        self.clear_batch_results()
+        
+        # Reset progress bars
+        self.batch_progress.setValue(0)
+        self.current_file_progress.setValue(0)
+        self.batch_progress_label.setText("Ready for new conversion")
+        self.current_file_label.setText("No file processing")
+        
+        # Clear preview tab
+        if hasattr(self, 'preview_tab'):
+            self.preview_tab.clear_previews()
+    
+    def on_batch_error(self, error_message):
+        """Handle batch conversion error"""
+        self.batch_converting = False
+        self.start_batch_btn.setEnabled(True)
+        self.stop_batch_btn.setEnabled(False)
+
+        PopupTeachingTip.create(
+            target=self.start_batch_btn,
+            icon=InfoBarIcon.ERROR,
+            title='ERROR',
+            content=f"Batch conversion failed: {error_message}",
+            isClosable=True,
+            tailPosition=TeachingTipTailPosition.TOP,
+            duration=5000,
+            parent=self
+        )
+
+        # Clean up thread safely with timeout
+        if hasattr(self, 'batch_thread') and self.batch_thread:
+            try:
+                if self.batch_thread.isRunning():
+                    self.batch_thread.quit()
+                    if not self.batch_thread.wait(3000):  # 3 second timeout
+                        print("[WARNING] Batch thread did not stop in time, forcing termination")
+                        self.batch_thread.terminate()
+                        self.batch_thread.wait(1000)
+            except Exception as ex:
+                print(f"[WARNING] Error stopping batch thread: {ex}")
+            finally:
+                # Clean up references
+                self.batch_worker = None
+                self.batch_thread = None
+            
+    def clear_batch_results(self):
+        """Clear batch conversion results"""
+        self.results_list_widget.clear()
+        self.success_count_label.setText("Success: 0")
+        self.failed_count_label.setText("Failed: 0")
+        
+    def _get_batch_conversion_options(self):
+        """Get conversion options from batch options tree (same structure as single conversion)"""
+        try:
+            options = {
+                'output_format': self.batch_format_combo.currentText(),
+                'min_size': self.batch_min_spin.value(),
+                'max_size': self.batch_max_spin.value(),
+                'use_auto_detect': getattr(self, 'batch_use_auto_detect', False),
+                'auto_detect_max_size': self.batch_auto_detect_check.isChecked() if hasattr(self, 'batch_auto_detect_check') else False,
+                'keep_aspect_ratio': self.batch_keep_aspect_check.isChecked(),
+                'auto_crop': self.batch_auto_crop_check.isChecked(),
+                'quality': self.batch_quality_slider.value(),
+                'icns_method': self.batch_icns_method_combo.currentText(),
+                'overwrite_confirm': self.batch_overwrite_confirm_check.isChecked(),
+                'preserve_folder_structure': self.batch_preserve_folder_check.isChecked() if hasattr(self, 'batch_preserve_folder_check') else False,
+                'prefix': self.batch_prefix_edit.text().strip() if hasattr(self, 'batch_prefix_edit') else "",
+                'suffix': self.batch_suffix_edit.text().strip() if hasattr(self, 'batch_suffix_edit') else ""
+            }
+            return options
+        except Exception as e:
+            PopupTeachingTip.create(
+                target=self.batch_options_tree,
+                icon=InfoBarIcon.ERROR,
+                title='ERROR',
+                content=f"Invalid conversion options: {str(e)}",
+                isClosable=True,
+                tailPosition=TeachingTipTailPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+            return None
+            
+    def get_output_directory(self):
+        """Get output directory for batch conversion"""
+        if hasattr(self, 'output_text') and self.output_text.text():
+            return self.output_text.text()
+        else:
+            # Default to current directory if no output path set
+            return os.path.dirname(self.input_text.text()) if hasattr(self, 'input_text') and self.input_text.text() else os.getcwd()
+
+    def get_batch_output_directory(self):
+        """Get output directory for batch conversion"""
+        if hasattr(self, 'batch_output_text') and self.batch_output_text.text():
+            return self.batch_output_text.text()
+        elif hasattr(self, 'output_text') and self.output_text.text():
+            # Fall back to single conversion output directory
+            return self.output_text.text()
+        else:
+            # Default to current directory if no output path set
+            return os.getcwd()
 
     def show_success_view(self):
         # Update the success widget geometry to match the window
@@ -1496,24 +3077,12 @@ class ICNSConverterGUI(QMainWindow):
         if hasattr(self, 'success_widget'):
             self.success_widget.hide()
         
-        # Only reset variables if remember_path is disabled
-        if not self.remember_path:
-            # Reset all variables when remember_path is disabled
-            self.init_variables(reset_all=True)
-            
-            # Reset UI elements
-            if hasattr(self, 'input_text'):
-                self.input_text.clear()
-            if hasattr(self, 'output_text'):
-                self.output_text.clear()
-            if hasattr(self, 'info_text'):
-                self.info_text.setText("No image selected")
-            if hasattr(self, 'preview_label'):
-                self.preview_label.clear()
-                self._set_placeholder_preview() # Show placeholder when returning to main view
-        else:
-            # If remember_path is enabled, only reset the UI state but keep the paths
-            pass
+        # Hide the batch success widget if it's shown
+        if hasattr(self, 'batch_success_widget'):
+            self.batch_success_widget.hide()
+        
+        # Reset conversion state when returning to main view
+        self._reset_after_conversion()
         
         # Always reset these UI elements regardless of remember_path setting
         if hasattr(self, 'min_spin'):
@@ -1548,6 +3117,35 @@ class ICNSConverterGUI(QMainWindow):
         if hasattr(self, 'status_bar'):
             self.status_bar.showMessage("Ready")
         
+        # Reset batch conversion related UI elements when returning to main view
+        if hasattr(self, 'batch_output_text'):
+            self.batch_output_text.clear()  # Clear batch output directory
+        if hasattr(self, 'batch_format_combo'):
+            self.batch_format_combo.setCurrentText("icns")  # Reset batch output format
+        if hasattr(self, 'batch_min_spin'):
+            self.batch_min_spin.setValue(16)  # Reset batch min size
+        if hasattr(self, 'batch_max_spin'):
+            self.batch_max_spin.setValue(1024)  # Reset batch max size
+        if hasattr(self, 'batch_options_tree'):
+            self.batch_options_tree.collapseAll()  # Reset batch options tree
+            # Expand basic categories for batch options
+            if self.batch_options_tree.topLevelItemCount() >= 3:
+                item0 = self.batch_options_tree.topLevelItem(0)
+                item1 = self.batch_options_tree.topLevelItem(1)
+                item2 = self.batch_options_tree.topLevelItem(2)
+                if item0:
+                    item0.setExpanded(True)  # Basic Options
+                if item1:
+                    item1.setExpanded(True)  # Image Processing
+                if item2:
+                    item2.setExpanded(False)  # Advanced Settings
+        if hasattr(self, 'start_batch_btn'):
+            self.start_batch_btn.setEnabled(True)  # Reset batch start button
+        if hasattr(self, 'stop_batch_btn'):
+            self.stop_batch_btn.setEnabled(False)  # Reset batch stop button
+        if hasattr(self, 'results_list_widget'):
+            self.results_list_widget.clear()  # Clear batch results list
+        
         # Only update history tab visibility if it's the first time or remember_path setting changed
         if not hasattr(self, '_history_tab_initialized'):
             self.create_history_tab()
@@ -1555,6 +3153,7 @@ class ICNSConverterGUI(QMainWindow):
 
             
     def update_progress(self, message, percentage):
+        # Update both progress bar and label
         self.progress_label.setText(message)
         self.progress.setValue(percentage)
 
@@ -1610,6 +3209,9 @@ class ICNSConverterGUI(QMainWindow):
         # Update the success widget geometry when the window is resized
         if hasattr(self, 'success_widget') and self.success_widget:
             self.success_widget.setGeometry(self.rect())
+        # Update the batch success widget geometry when the window is resized
+        if hasattr(self, 'batch_success_widget') and self.batch_success_widget:
+            self.batch_success_widget.setGeometry(self.rect())
 
 
 class ICNSConverterApp:

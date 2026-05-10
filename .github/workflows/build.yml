@@ -23,6 +23,12 @@ jobs:
               run: |
                 brew install upx
                 /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m pip install --ignore-requires-python  -r requirements.txt
+            - name: Generate Build Info
+              run: |
+                /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 commit_info.py
+            - name: Set Version Info
+              run: |
+                echo "VERSION_TAG=$(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -c 'from con import CON; print(CON.__version__)')" >> $GITHUB_ENV
             - name: Build Apps
               run: |
                 /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 build_project_arm64.py
@@ -30,10 +36,10 @@ jobs:
               if: github.event_name == 'push'
               uses: softprops/action-gh-release@v2
               with:
-                tag_name: 2.0.0
-                name: 2.0.0 Stable
+                tag_name: ${{ env.VERSION_TAG }}
+                name: ${{ env.VERSION_TAG }}
                 body: ${{ github.event.head_commit.message }}
-                prerelease: false
+                prerelease: true
                 files: |
                     ./dist/Converter_arm64_darwin.zip
     build_intel:
@@ -51,6 +57,12 @@ jobs:
             - name: Install Dependencies
               run: |
                 /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m pip install --ignore-requires-python  -r requirements.txt
+            - name: Generate Build Info
+              run: |
+                /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 commit_info.py
+            - name: Set Version Info
+              run: |
+                echo "VERSION_TAG=$(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -c 'from con import CON; print(CON.__version__)')" >> $GITHUB_ENV
             - name: Build Apps
               run: |
                 /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 build_project_intel.py
@@ -58,10 +70,9 @@ jobs:
               if: github.event_name == 'push'
               uses: softprops/action-gh-release@v2
               with:
-                tag_name: 2.0.0
-                name: 2.0.0 Stable
+                tag_name: ${{ env.VERSION_TAG }}
+                name: ${{ env.VERSION_TAG }}
                 body: ${{ github.event.head_commit.message }}
-                prerelease: false
+                prerelease: true
                 files: |
                     ./dist/Converter_intel_darwin.zip
-                    

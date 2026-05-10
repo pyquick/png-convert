@@ -12,7 +12,7 @@ cd "$SCRIPT_DIR"
 # Check if requirements.txt exists and install dependencies if needed
 if [ -f "requirements.txt" ]; then
     echo "Checking dependencies..."
-    python3.13 -c "import PIL" 2>/dev/null || {
+    python3.14 -c "import PIL" 2>/dev/null || {
         echo "Installing required dependencies..."
         pip3.13 install -r requirements.txt
     }
@@ -22,7 +22,7 @@ fi
 echo "Starting PNG to ICNS Converter..."
 echo ""
 
-python3.13 Converter.py
+python3.14 Converter.py
 
 # Check if the command was successful
 if [ $? -eq 0 ]; then

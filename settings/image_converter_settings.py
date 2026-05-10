@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QLabel)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIntValidator
-from qfluentwidgets import *
+from UIkit import *
 
 class ImageConverterSettingsWidget(QWidget):
     """Image Converter settings widget"""

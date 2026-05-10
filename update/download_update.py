@@ -47,7 +47,7 @@ class UpdateDownloader:
         Get the actual download URL from GitHub API
         
         Args:
-            tag_name: Version tag name (e.g., v2.0.0)
+            tag_name: Version tag name (e.g., v2.1.0A11)
             
         Returns:
             str: Actual zip file download URL, returns None if extraction fails
@@ -121,7 +121,7 @@ class UpdateDownloader:
         Download and extract update files
         
         Args:
-            tag_name: Version tag name (e.g., v2.0.0)
+            tag_name: Version tag name (e.g., v2.1.0A11)
             progress_callback: Progress callback function
             
         Returns:
@@ -690,6 +690,9 @@ def download_and_apply_update(update_info: Dict[str, Any], progress_callback=Non
         # Create target directory for update
         target_directory = tempfile.mkdtemp(prefix="converter_update_")
         downloader = UpdateDownloader(download_url, target_directory)
+        created_downloader = True
+    else:
+        created_downloader = False
     
     try:
         result = downloader.download_update(latest_version, progress_callback)
@@ -717,14 +720,19 @@ def download_and_apply_update(update_info: Dict[str, Any], progress_callback=Non
                 print(f"❌ Failed to start update process: {e}")
                 result["status"] = "error"
                 result["message"] = f"Failed to start update process: {e}"
+                # Clean up if we created the downloader and update failed
+                if created_downloader:
+                    downloader.cleanup()
                 return result
         
         # Add downloader object to result for cleanup by caller when appropriate
         result["downloader"] = downloader
+        result["created_downloader"] = created_downloader
         return result
     except Exception as e:
         # Clean up immediately if an exception occurs
-        downloader.cleanup()
+        if created_downloader:
+            downloader.cleanup()
         return {
             "status": "error",
             "message": f"Error occurred during download: {e}"
@@ -734,8 +742,8 @@ def download_and_apply_update(update_info: Dict[str, Any], progress_callback=Non
 if __name__ == "__main__":
     # Test code
     test_info = {
-        "download_url": "https://github.com/pyquick/converter/releases/tag/v2.0.0",
-        "latest_version": "2.0.0"
+        "download_url": "https://github.com/pyquick/converter/releases/tag/v2.1.0A11",
+        "latest_version": "2.1.0A11"
     }
     
     result = download_and_apply_update(test_info, "./test_update")
